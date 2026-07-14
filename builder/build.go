@@ -248,6 +248,22 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		return result, err
 	}
 
+	// Embed module build information so runtime/debug.ReadBuildInfo() works,
+	// mirroring what the standard `go build` toolchain does. We fill
+	// runtime/debug.modinfo (a plain string global) from the module info that
+	// `go list` already reported for the loaded packages; runtime/debug parses
+	// it back into a *BuildInfo. An explicit -ldflags="-X runtime/debug.modinfo=..."
+	// takes precedence. This is skipped in GOPATH mode (no module info) and when
+	// the main package isn't in a module.
+	if _, overridden := globalValues["runtime/debug"]["modinfo"]; !overridden {
+		if mi := moduleBuildInfo(lprogram); mi != "" {
+			if globalValues["runtime/debug"] == nil {
+				globalValues["runtime/debug"] = map[string]string{}
+			}
+			globalValues["runtime/debug"]["modinfo"] = mi
+		}
+	}
+
 	// Store which filesystem paths map to which package name.
 	result.PackagePathMap = make(map[string]string, len(lprogram.Packages))
 	for _, pkg := range lprogram.Sorted() {
@@ -1595,4 +1611,67 @@ func b2u8(b bool) uint8 {
 		return 1
 	}
 	return 0
+}
+
+// moduleBuildInfo constructs the module build-info string embedded into the
+// runtime/debug.modinfo global, in the same textual format that
+// runtime/debug.BuildInfo.String() produces (minus the leading "go" line, which
+// runtime/debug supplies from runtime.Version()). runtime/debug.ReadBuildInfo
+// parses it back into a *BuildInfo, so `go build`-style version reporting works
+// under TinyGo without -ldflags. It returns "" when there is no module
+// information to embed (e.g. GOPATH mode, or a main package outside any module).
+//
+// The layout is the reverse of runtime/debug.ParseBuildInfo:
+//
+//	path\t<main package import path>\n
+//	mod\t<main module path>\t<version>\t<sum>\n
+//	dep\t<module path>\t<version>\t<sum>\n   (one per contributing module, sorted)
+//
+// The main module version is reported as "(devel)" for a local checkout, as the
+// go toolchain does; VCS-derived pseudo-version stamping is a separate follow-up.
+func moduleBuildInfo(lprogram *loader.Program) string {
+	main := lprogram.MainPkg()
+	if main == nil || main.Module.Path == "" {
+		return "" // GOPATH mode or no module: nothing to embed.
+	}
+
+	// Collect the distinct non-main modules that contributed packages to the
+	// build. As in the go toolchain, a module is listed if any of its packages
+	// are part of the build graph.
+	depVersions := make(map[string]string) // module path -> version
+	for _, pkg := range lprogram.Sorted() {
+		m := pkg.Module
+		if m.Path == "" || m.Main || m.Path == main.Module.Path {
+			continue
+		}
+		depVersions[m.Path] = m.Version
+	}
+	deps := make([]string, 0, len(depVersions))
+	for path := range depVersions {
+		deps = append(deps, path)
+	}
+	sort.Strings(deps)
+
+	mainVersion := main.Module.Version
+	if mainVersion == "" {
+		mainVersion = "(devel)"
+	}
+
+	var b strings.Builder
+	b.WriteString("path\t")
+	b.WriteString(main.ImportPath)
+	b.WriteByte('\n')
+	b.WriteString("mod\t")
+	b.WriteString(main.Module.Path)
+	b.WriteByte('\t')
+	b.WriteString(mainVersion)
+	b.WriteString("\t\n") // trailing tab leaves the checksum column empty
+	for _, path := range deps {
+		b.WriteString("dep\t")
+		b.WriteString(path)
+		b.WriteByte('\t')
+		b.WriteString(depVersions[path])
+		b.WriteString("\t\n") // go list -json carries no checksum; leave it empty
+	}
+	return b.String()
 }
