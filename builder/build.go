@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/tinygo-org/tinygo/compileopts"
@@ -33,6 +34,8 @@ import (
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/stacksize"
 	"github.com/tinygo-org/tinygo/transform"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -1652,9 +1655,18 @@ func moduleBuildInfo(lprogram *loader.Program) string {
 	}
 	sort.Strings(deps)
 
+	// Derive the main module version. `go list` leaves it empty for a local
+	// checkout, so fall back to VCS stamping (as `go build` does): an exact tag
+	// on HEAD, otherwise a pseudo-version. This also yields the vcs.* build
+	// settings appended below. If VCS info isn't available, use "(devel)".
 	mainVersion := main.Module.Version
+	var vcsSettings string
 	if mainVersion == "" {
-		mainVersion = "(devel)"
+		if v, s := gitVCSStamp(main.Module.Dir); v != "" {
+			mainVersion, vcsSettings = v, s
+		} else {
+			mainVersion = "(devel)"
+		}
 	}
 
 	var b strings.Builder
@@ -1673,5 +1685,78 @@ func moduleBuildInfo(lprogram *loader.Program) string {
 		b.WriteString(depVersions[path])
 		b.WriteString("\t\n") // go list -json carries no checksum; leave it empty
 	}
+	// Build settings (vcs.*) come after the module lines, matching
+	// runtime/debug.BuildInfo.String().
+	b.WriteString(vcsSettings)
 	return b.String()
+}
+
+// gitVCSStamp derives the main-module version and the vcs.* build settings from
+// the git checkout at dir, mirroring what the standard `go build` toolchain
+// records under -buildvcs. It returns ("", "") when dir is not a git work tree
+// or git is unavailable, so the caller can fall back to "(devel)".
+func gitVCSStamp(dir string) (version, settings string) {
+	if dir == "" {
+		return "", ""
+	}
+	git := func(args ...string) (string, bool) {
+		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+		if err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(string(out)), true
+	}
+	if out, ok := git("rev-parse", "--is-inside-work-tree"); !ok || out != "true" {
+		return "", ""
+	}
+	rev, ok := git("rev-parse", "HEAD")
+	if !ok || rev == "" {
+		return "", ""
+	}
+
+	// Commit time (Unix seconds → UTC), used in the pseudo-version and vcs.time.
+	var commitTime time.Time
+	if s, ok := git("show", "-s", "--format=%ct", "HEAD"); ok {
+		if sec, err := strconv.ParseInt(s, 10, 64); err == nil {
+			commitTime = time.Unix(sec, 0).UTC()
+		}
+	}
+
+	// The tree is "modified" if there are any uncommitted changes (tracked or
+	// untracked), as reported by `git status --porcelain` — same as `go build`.
+	modified := false
+	if status, ok := git("status", "--porcelain"); ok && status != "" {
+		modified = true
+	}
+
+	// Version: an exact semver tag pointing at HEAD, else a Go-style
+	// pseudo-version based on the most recent reachable tag.
+	if tags, ok := git("tag", "--points-at", "HEAD"); ok {
+		for _, t := range strings.Fields(tags) {
+			if semver.IsValid(t) && semver.Canonical(t) == t {
+				version = t
+				break
+			}
+		}
+	}
+	if version == "" {
+		older := ""
+		if base, ok := git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"); ok && semver.IsValid(base) {
+			older = base
+		}
+		short := rev
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		version = module.PseudoVersion(semver.Major(older), older, commitTime, short)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("build\tvcs=git\n")
+	sb.WriteString("build\tvcs.revision=" + rev + "\n")
+	if !commitTime.IsZero() {
+		sb.WriteString("build\tvcs.time=" + commitTime.Format(time.RFC3339) + "\n")
+	}
+	sb.WriteString("build\tvcs.modified=" + strconv.FormatBool(modified) + "\n")
+	return version, sb.String()
 }
