@@ -390,8 +390,48 @@ func signal_enable(s uint32) {
 	// scheduler (and therefore there is no parallelism).
 	hasSignals = true
 
+	// Under the threads scheduler there is no scheduler idle loop to notice
+	// signals: checkSignals() is only reached from sleepTicks(), i.e. while
+	// some goroutine happens to be inside time.Sleep. A program blocked purely
+	// on I/O or channels would otherwise never observe a signal (Ctrl+C would
+	// be ignored). Start a dedicated watcher thread to cover that case. This is
+	// a no-op for every other scheduler.
+	startSignalWatcher()
+
 	// It's easier to implement this function in C.
 	tinygo_signal_enable(s)
+}
+
+// signalWatcherStarted guards the one-time start of signalWatcher. signal_enable
+// is serialized by os/signal's handlers lock, but this stays defensive.
+var signalWatcherStarted atomic.Uint32
+
+// startSignalWatcher starts the signal watcher thread the first time a signal is
+// enabled, but only under the threads scheduler (!hasScheduler && hasParallelism
+// is true only there). The cooperative and multicore schedulers process signals
+// from their idle loop (waitForEvents), and the "none" scheduler has no
+// goroutines, so none of them need this.
+func startSignalWatcher() {
+	if hasScheduler || !hasParallelism {
+		return
+	}
+	if signalWatcherStarted.Swap(1) == 0 {
+		go signalWatcher()
+	}
+}
+
+// signalWatcher runs on its own thread under the threads scheduler. It blocks on
+// signalFutex and resumes the signal-receiving goroutine (signal_recv) whenever
+// a signal arrives, decoupling signal delivery from sleepTicks(). It mirrors the
+// signal half of waitForEvents(), which the threads scheduler never calls.
+func signalWatcher() {
+	for {
+		// Block until the signal handler bumps the futex from 0 to 1.
+		signalFutex.Wait(0)
+		if signalFutex.Swap(0) != 0 {
+			checkSignals()
+		}
+	}
 }
 
 //go:linkname signal_ignore os/signal.signal_ignore
