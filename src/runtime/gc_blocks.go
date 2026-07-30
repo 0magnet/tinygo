@@ -464,6 +464,16 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		// Unfortunately the heap could not be increased. This
 		// happens on baremetal systems for example (where all
 		// available RAM has already been dedicated to the heap).
+		//
+		// Release the heap lock BEFORE panicking: the panic machinery
+		// allocates (the recover path packs the error value into an
+		// interface, ~32 bytes), which re-enters alloc and self-deadlocks
+		// on the non-reentrant gcLock — wedging the whole program at 0%
+		// CPU with the "out of memory" message never printed. Observed
+		// live: a 1GiB scrypt allocation OOM'd inside net/http (which
+		// recovers), and every thread then parked on gcLock at its next
+		// allocation.
+		gcLock.Unlock()
 		runtimePanicAt(returnAddress(0), "out of memory")
 	}
 

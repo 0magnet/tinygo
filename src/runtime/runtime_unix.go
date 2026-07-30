@@ -324,7 +324,17 @@ func allocateHeap() {
 	// Allocate a large chunk of virtual memory. Because it is virtual, it won't
 	// really be allocated in RAM. Memory will only be allocated when it is
 	// first touched.
-	heapMaxSize = 1 * 1024 * 1024 * 1024 // 1GB for the entire heap
+	if TargetBits == 64 {
+		// 16GB of virtual address space for the heap on 64-bit hosts. This is
+		// a *reservation*, not a commitment: pages cost physical RAM only when
+		// touched, and the halving loop below still adapts if mmap refuses.
+		// The old 1GB cap made any single ~1GiB allocation (e.g. the scrypt
+		// key-derivation buffer in the skycoin wallet, N=1<<20 r=8 → 1GiB)
+		// a guaranteed OOM regardless of available system memory.
+		heapMaxSize = 16 * 1024 * 1024 * 1024
+	} else {
+		heapMaxSize = 1 * 1024 * 1024 * 1024 // 1GB for the entire heap
+	}
 	for {
 		addr := mmap(nil, heapMaxSize, flag_PROT_READ|flag_PROT_WRITE, flag_MAP_PRIVATE|flag_MAP_ANONYMOUS, -1, 0)
 		if addr == unsafe.Pointer(^uintptr(0)) {
