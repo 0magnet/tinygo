@@ -82,4 +82,10 @@ type MemStats struct {
 
 	// GCSys is bytes of memory in garbage collection metadata.
 	GCSys uint64
+
+	// NumGC is the number of completed GC cycles.
+	//
+	// TinyGo does not track GC cycle counts; present for API compatibility so
+	// callers that read runtime.MemStats.NumGC compile (it stays 0).
+	NumGC uint32
 }
