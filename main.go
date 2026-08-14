@@ -177,8 +177,15 @@ func Build(pkgName, outpath string, config *compileopts.Config) error {
 				// Pick a default output path based on the main directory.
 				outpath = filepath.Base(result.MainDir) + config.DefaultBinaryExtension()
 			}
+		} else if fi, statErr := os.Stat(outpath); statErr == nil && fi.IsDir() {
+			var name string
+			if strings.HasSuffix(pkgName, ".go") {
+				name = filepath.Base(pkgName[:len(pkgName)-3]) + config.DefaultBinaryExtension()
+			} else {
+				name = filepath.Base(result.MainDir) + config.DefaultBinaryExtension()
+			}
+			outpath = filepath.Join(outpath, name)
 		}
-
 		if err := os.Rename(result.Binary, outpath); err != nil {
 			// Moving failed. Do a file copy.
 			inf, err := os.Open(result.Binary)
@@ -1122,13 +1129,19 @@ const (
 	jtagReset    = "jtag"
 )
 
+var progressFunc = func(current, total int) {
+	pct := float64(current) / float64(total) * 100
+	bar := int(pct / 2)
+	fmt.Printf("\r[%-50s] %6.1f%%", strings.Repeat("#", bar)+strings.Repeat(".", 50-bar), pct)
+	if current >= total {
+		fmt.Println()
+	}
+}
+
 func flashBinUsingEsp32(port, resetMode, tmppath string, options *compileopts.Options) error {
 	opts := espflasher.DefaultOptions()
 	opts.Compress = true
 	opts.Logger = &espflasher.StdoutLogger{W: os.Stdout}
-	if options.BaudRate != 0 {
-		opts.FlashBaudRate = options.BaudRate
-	}
 
 	if resetMode == jtagReset {
 		opts.ResetMode = espflasher.ResetUSBJTAG
@@ -1152,21 +1165,12 @@ func flashBinUsingEsp32(port, resetMode, tmppath string, options *compileopts.Op
 		return err
 	}
 
-	if err := flasher.EraseFlash(); err != nil {
+	if err := flasher.EraseFlash(progressFunc); err != nil {
 		return fmt.Errorf("erase failed: %v", err)
 	}
 
-	progress := func(current, total int) {
-		pct := float64(current) / float64(total) * 100
-		bar := int(pct / 2)
-		fmt.Printf("\r[%-50s] %6.1f%%", strings.Repeat("#", bar)+strings.Repeat(".", 50-bar), pct)
-		if current >= total {
-			fmt.Println()
-		}
-	}
-
 	// Flash with progress reporting
-	err = flasher.FlashImage(data, offset, progress)
+	err = flasher.FlashImage(data, offset, progressFunc)
 	if err != nil {
 		return err
 	}

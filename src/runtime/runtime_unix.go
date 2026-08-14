@@ -155,7 +155,7 @@ func tinygo_sigpanic() {
 	case sig_SIGFPE:
 		runtimePanic("divide by zero")
 	default:
-		runtimePanic("signal")
+		runtimeFatal("signal")
 	}
 }
 
@@ -344,7 +344,7 @@ func allocateHeap() {
 			// This can happen on 32-bit systems.
 			heapMaxSize /= 2
 			if heapMaxSize < 4096 {
-				runtimePanic("cannot allocate heap memory")
+				runtimeFatal("cannot allocate heap memory")
 			}
 			continue
 		}
@@ -513,7 +513,7 @@ func signal_recv() uint32 {
 			// There are no signals to receive. Sleep until there are.
 			if signalRecvWaiter.Swap(task.Current()) != nil {
 				// We expect only a single goroutine to call signal_recv.
-				runtimePanic("signal_recv called concurrently")
+				runtimeFatal("signal_recv called concurrently")
 			}
 			task.Pause()
 			continue
@@ -557,6 +557,6 @@ func waitForEvents() {
 		}
 	} else {
 		// The program doesn't use signals, so this is a deadlock.
-		runtimePanic("deadlocked: no event source")
+		runtimeFatal("deadlocked: no event source")
 	}
 }
