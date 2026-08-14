@@ -134,47 +134,6 @@ func TestCompiler(t *testing.T) {
 	}
 }
 
-// fuzzyEqualIR returns true if the two LLVM IR strings passed in are roughly
-// equal. That means, only relevant lines are compared (excluding comments
-// etc.).
-func fuzzyEqualIR(s1, s2 string) bool {
-	// Golden files are written using the pre-LLVM21 'nocapture' spelling,
-	// which LLVM printed before any co-occurring attribute such as
-	// 'readonly' (e.g. "ptr nocapture readonly"). LLVM 21+ prints the
-	// equivalent 'captures(none)' instead, and after such attributes (e.g.
-	// "ptr readonly captures(none)"). Normalize both name and position back
-	// to the old spelling to keep a single golden file working across LLVM
-	// versions.
-	s1 = normalizeCapturesAttr(s1)
-	s2 = normalizeCapturesAttr(s2)
-
-	// LLVM 21+ also added an explicit 'nocreateundeforpoison' attribute to
-	// certain intrinsic declarations (e.g. llvm.umin) that were implicitly
-	// assumed not to create undef/poison before. It's unrelated to the
-	// behavior under test, so ignore it for comparison.
-	s1 = strings.ReplaceAll(s1, "nocreateundeforpoison ", "")
-	s2 = strings.ReplaceAll(s2, "nocreateundeforpoison ", "")
-
-	// LLVM 22 dropped the (redundant) i64 size argument from
-	// llvm.lifetime.start/end. Normalize away that argument so golden files
-	// written against the two-argument form still match.
-	s1 = lifetimeSizeArgRe.ReplaceAllString(s1, "$1")
-	s2 = lifetimeSizeArgRe.ReplaceAllString(s2, "$1")
-
-	lines1 := filterIrrelevantIRLines(strings.Split(s1, "\n"))
-	lines2 := filterIrrelevantIRLines(strings.Split(s2, "\n"))
-	if len(lines1) != len(lines2) {
-		return false
-	}
-	for i, line1 := range lines1 {
-		line2 := lines2[i]
-		if line1 != line2 {
-			return false
-		}
-	}
-	return true
-}
-
 func TestOptimizedLargeAggregateABI(t *testing.T) {
 	options := &compileopts.Options{Target: "wasm"}
 	mod, errs := testCompilePackage(t, options, "large-optimized.go")
