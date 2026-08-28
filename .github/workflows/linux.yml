@@ -23,7 +23,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.0-rc.2'
+          go-version: '1.27.0'
           cache: true
       - name: Run go mod tidy
         run: go mod tidy
@@ -36,7 +36,7 @@ jobs:
     # statically linked binary.
     runs-on: ubuntu-latest
     container:
-      image: golang:1.27rc2-alpine
+      image: golang:1.27-alpine
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -160,7 +160,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.0-rc.2'
+          go-version: '1.27.0'
           cache: true
       - name: Install wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
@@ -180,7 +180,43 @@ jobs:
       - run: make tinygo-test-wasip1-fast
       - run: make tinygo-test-wasip2-fast
       - run: make tinygo-test-wasm
-      - run: make smoketest
+  smoketest-linux:
+    # Build a binary for every supported board, using the binaries built in the
+    # build-linux job. This is the only job that runs the full smoke test. The
+    # result does not depend on the host OS, so the other jobs build a
+    # representative board for each architecture with smoketest-quick.
+    runs-on: ubuntu-latest
+    needs: build-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        # Balanced with the measured build time of each group, so that the
+        # shards finish at about the same time.
+        group:
+          - smoketest-rp2xxx smoketest-selftest smoketest-wasm-sim
+          - smoketest-esp smoketest-riscv smoketest-flags
+          - smoketest-examples smoketest-nxp smoketest-pwm-usb smoketest-avr
+          - smoketest-samd smoketest-stm32 smoketest-nrf smoketest-wasm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Download release artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: tinygo${{ needs.build-linux.outputs.version }}.linux-amd64.tar.gz
+      - name: Extract release tarball
+        run: |
+          mkdir -p ~/lib
+          tar -C ~/lib -xf tinygo${{ needs.build-linux.outputs.version }}.linux-amd64.tar.gz
+          ln -s ~/lib/tinygo/bin/tinygo ~/go/bin/tinygo
+      - run: make testchdir ${{ matrix.group }}
   assert-test-linux:
     # Run all tests that can run on Linux, with LLVM assertions enabled to catch
     # potential bugs.
@@ -196,6 +232,10 @@ jobs:
           cat /proc/cpuinfo
           sudo apt-get update
           sudo apt-get install --no-install-recommends \
+              libgcrypt20 \
+              libpixman-1-0 \
+              libsdl2-2.0-0 \
+              libslirp0 \
               qemu-system-arm \
               qemu-system-riscv32 \
               qemu-user \
@@ -204,7 +244,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.0-rc.2'
+          go-version: '1.27.0'
           cache: true
       - name: Install Node.js
         uses: actions/setup-node@v6
@@ -216,6 +256,14 @@ jobs:
           version: "29.0.1"
       - name: Setup `wasm-tools`
         uses: bytecodealliance/actions/wasm-tools/setup@v1
+      - name: Install Espressif QEMU
+        run: |
+          release=esp-develop-9.2.2-20260417
+          archive=qemu-xtensa-softmmu-${release//-/_}-x86_64-linux-gnu.tar.xz
+          curl -fL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/espressif/qemu/releases/download/$release/$archive"
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/qemu/bin" >> "$GITHUB_PATH"
       - name: Restore LLVM source cache
         uses: actions/cache/restore@v5
         id: cache-llvm-source
@@ -281,7 +329,7 @@ jobs:
           echo "$(pwd)/build" >> $GITHUB_PATH
       - name: Test stdlib packages
         run: make tinygo-test
-      - run: make smoketest
+      - run: make smoketest-quick
       - run: make wasmtest
       - run: make tinygo-test-baremetal
       - name: Check Go code formatting
@@ -323,7 +371,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.0-rc.2'
+          go-version: '1.27.0'
           cache: true
       - name: Restore LLVM source cache
         uses: actions/cache/restore@v5

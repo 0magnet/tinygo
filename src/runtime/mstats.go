@@ -85,7 +85,6 @@ type MemStats struct {
 
 	// NumGC is the number of completed GC cycles.
 	//
-	// TinyGo does not track GC cycle counts; present for API compatibility so
-	// callers that read runtime.MemStats.NumGC compile (it stays 0).
+	// The leaking collector never collects, so it always reports 0.
 	NumGC uint32
 }

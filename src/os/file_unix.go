@@ -163,11 +163,9 @@ func (f *File) Truncate(size int64) (err error) {
 	return Truncate(f.name, size)
 }
 
-// Chown changes the numeric uid and gid of the named file. It mirrors Truncate:
-// the unix os.File was missing this method (it exists only on the baremetal/wasm
-// path in file_other.go), which broke callers such as github.com/pkg/sftp that
-// require the full os.File surface. Delegates to the package-level Chown
-// (file_anyos.go) on the file's path.
+// Chown changes the numeric uid and gid of the named file.
+// A uid or gid of -1 means to not change that value.
+// If there is an error, it will be of type *PathError.
 func (f *File) Chown(uid, gid int) error {
 	if f.handle == nil {
 		return ErrClosed
