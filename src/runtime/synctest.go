@@ -13,3 +13,9 @@ func synctest_acquire() any {
 func synctest_release(sg any) {
 	// Dummy: we don't support synctest.
 }
+
+//go:linkname synctest_inBubble internal/synctest.inBubble
+func synctest_inBubble(bubble any, f func()) {
+	// Dummy: we don't support synctest, so run f outside of any bubble.
+	f()
+}
