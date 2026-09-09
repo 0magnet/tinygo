@@ -157,3 +157,16 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 func LoadX509KeyPair(certFile, keyFile string) (Certificate, error) {
 	return Certificate{}, errors.New("tls:LoadX509KeyPair not implemented")
 }
+
+// X509KeyPair parses a public/private key pair from a pair of PEM encoded
+// data. On successful return, Certificate.Leaf will be nil because the parsed
+// form of the certificate is not retained.
+func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
+	return Certificate{}, errors.New("tls:X509KeyPair not implemented")
+}
+
+// Listen creates a TLS listener accepting connections on the given network
+// address using net.Listen.
+func Listen(network, laddr string, config *Config) (net.Listener, error) {
+	return nil, errors.New("tls:Listen not implemented")
+}
