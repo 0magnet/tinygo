@@ -39,6 +39,9 @@ func NewConfig(options *compileopts.Options) (*compileopts.Config, error) {
 		if gorootMajor != 1 || gorootMinor < minorMin || gorootMinor > minorMax {
 			// Note: when this gets updated, also update the Go compatibility matrix:
 			// https://github.com/tinygo-org/tinygo-site/blob/dev/content/docs/reference/go-compat-matrix.md
+			if gorootMajor == 1 && gorootMinor > minorMax {
+				return nil, fmt.Errorf("requires go version 1.%d through 1.%d, got go%d.%d (set GOTOOLCHAIN=go1.%d.0 to use a supported Go, or use -go-compatibility=false to skip this check)", minorMin, minorMax, gorootMajor, gorootMinor, minorMax)
+			}
 			return nil, fmt.Errorf("requires go version 1.%d through 1.%d, got go%d.%d", minorMin, minorMax, gorootMajor, gorootMinor)
 		}
 	}
