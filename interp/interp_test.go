@@ -151,3 +151,44 @@ func filterIrrelevantIRLines(lines []string) []string {
 	}
 	return out
 }
+
+// TestInterpLargeArray serializes a mostly-zero global that init has written
+// to. Each element used to be handed the rest of the buffer rather than its
+// own bytes, and the zero check rescanned all of it, which made this
+// quadratic: at the size of a per-rune lookup table it took about half an
+// hour.
+func TestInterpLargeArray(t *testing.T) {
+	t.Parallel()
+	ctx := llvm.NewContext()
+	defer ctx.Dispose()
+	buf, err := llvm.NewMemoryBufferFromFile("testdata/largearray.ll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod, err := ctx.ParseIR(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mod.Dispose()
+
+	start := time.Now()
+	if err := Run(mod, 10*time.Minute, DefaultMaxInterpBlockEntries, false); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 30*time.Second {
+		t.Errorf("interp took %v", d)
+	}
+
+	init := mod.NamedGlobal("lut").Initializer()
+	plane := init.Operand(0)
+	if !plane.IsConstantString() {
+		t.Fatal("first plane is not a byte array")
+	}
+	got := plane.ConstGetAsString()
+	if len(got) != 0x110000 || got[0] != 1 || got[767] != 2 || strings.Trim(got[1:767]+got[768:], "\x00") != "" {
+		t.Errorf("first plane holds the wrong bytes")
+	}
+	if !init.Operand(1).IsNull() {
+		t.Errorf("second plane is not zero")
+	}
+}
