@@ -407,9 +407,11 @@ func (p Pin) SetInterrupt(change PinChange, callback func(Pin)) error {
 		return setupPinInterruptErr
 	}
 
+	// Bit 2 is the PRO CPU interrupt enable. See ESP32 TRM section 6.13.1,
+	// register 6.30 GPIO_PINn_REG.
 	p.pinReg().Set(
 		(p.pinReg().Get() & ^uint32(esp.GPIO_PIN_INT_TYPE_Msk|esp.GPIO_PIN_INT_ENA_Msk)) |
-			uint32(change)<<esp.GPIO_PIN_INT_TYPE_Pos | uint32(1)<<esp.GPIO_PIN_INT_ENA_Pos)
+			uint32(change)<<esp.GPIO_PIN_INT_TYPE_Pos | uint32(4)<<esp.GPIO_PIN_INT_ENA_Pos)
 
 	return nil
 }
@@ -478,7 +480,7 @@ var (
 		rtsctsSignal: 199,
 	}
 
-	onceUart = sync.Once{}
+	uartInterruptConfigured bool
 )
 
 // CPU interrupt line used for all UART peripherals.
@@ -588,11 +590,13 @@ func (uart *UART) configureInterrupt() {
 	}
 
 	// Register the ISR only once (shared across all UARTs on the same CPU int).
-	// interrupt.New is a compiler intrinsic and requires a plain (non-capturing)
-	// handler function, so we use a named package-level function.
-	onceUart.Do(func() {
+	// Avoid sync.Once here because serial is initialized before a task exists.
+	state := interrupt.Disable()
+	if !uartInterruptConfigured {
 		_ = interrupt.New(cpuInterruptFromUART, handleUARTInterrupt).Enable()
-	})
+		uartInterruptConfigured = true
+	}
+	interrupt.Restore(state)
 }
 
 // handleUARTInterrupt is the shared UART interrupt handler. It must be a plain

@@ -50,6 +50,9 @@ func scheduleTask(t *task.Task) {
 	// Pause() will panic, so this should not be reachable.
 }
 
+func scheduleTaskNoWake(t *task.Task) {
+}
+
 func Gosched() {
 	// There are no other goroutines, so there's nothing to schedule.
 }
@@ -60,15 +63,15 @@ func NumCPU() int {
 }
 
 func addTimer(tim *timerNode) {
-	runtimePanic("timers not supported without a scheduler")
+	runtimePanic(errTimersUnsupported)
 }
 
 func reAddTimer(tn *timerNode) {
-	runtimePanic("timers not supported without a scheduler")
+	runtimePanic(errTimersUnsupported)
 }
 
 func removeTimer(tim *timer) *timerNode {
-	runtimePanic("timers not supported without a scheduler")
+	runtimePanic(errTimersUnsupported)
 	return nil
 }
 

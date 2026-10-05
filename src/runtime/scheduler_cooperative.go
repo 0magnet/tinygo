@@ -56,7 +56,9 @@ var finalizerIdleGC func() bool
 func deadlock() {
 	// Keep permanently blocked tasks reachable so their suspended stacks remain
 	// GC roots, but never put them back on the runnable queue.
-	deadlockedTasks.Push(task.Current())
+	current := task.Current()
+	synctestTaskBlock(current)
+	deadlockedTasks.Push(current)
 	task.Pause()
 	runtimeFatal("unreachable")
 }
@@ -64,10 +66,7 @@ func deadlock() {
 // exitGoroutine ends an asyncify task that returned from its function.
 // Unlike deadlock, this task will not resume.
 func exitGoroutine() {
-	if finalizerIdleGC != nil {
-		task.MarkFinishing()
-	}
-	task.Pause()
+	task.Exit()
 	runtimeFatal("unreachable")
 }
 
@@ -86,14 +85,16 @@ func wasmExportExit() {
 }
 
 func goexit() {
-	if finalizerIdleGC != nil {
-		task.MarkFinishing()
-	}
-	task.Exit()
+	task.Goexit()
 }
 
 // Add this task to the end of the run queue.
 func scheduleTask(t *task.Task) {
+	synctestTaskWake(t)
+	scheduleTaskNoWake(t)
+}
+
+func scheduleTaskNoWake(t *task.Task) {
 	runqueue.Push(t)
 }
 
@@ -153,11 +154,12 @@ func addTimer(tim *timerNode) {
 	interrupt.Restore(mask)
 }
 
-// reAddTimer advances and re-adds a periodic timer (a ticker) after its
-// callback has run. The cooperative scheduler runs timer callbacks to
-// completion inside the scheduler loop, so a timer can't be stopped or reset
-// while its callback is running and the timer can always be re-added directly.
+// reAddTimer finishes firing a timer. The cooperative scheduler runs timer
+// callbacks to completion, so periodic timers can be re-added directly.
 func reAddTimer(tn *timerNode) {
+	if tn.timer.period == 0 {
+		return
+	}
 	tn.timer.when += tn.timer.period
 	addTimer(tn)
 }
@@ -295,6 +297,9 @@ func scheduler(returnAtDeadlock bool) {
 //go:linkname sleep time.Sleep
 func sleep(duration int64) {
 	if duration <= 0 {
+		return
+	}
+	if synctestSleep(duration) {
 		return
 	}
 	addSleepTask(task.Current(), nanosecondsToTicks(duration))

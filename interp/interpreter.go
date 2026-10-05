@@ -182,7 +182,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 			}
 			// Return instruction doesn't return anything, it's just 'ret void'.
 			return nil, mem, nil
-		case llvm.Br:
+		case opBr:
 			switch len(operands) {
 			case 1:
 				// Unconditional branch: [nextBB]
@@ -285,6 +285,22 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 			case callFn.name == "internal/task.Pause":
 				// Task scheduling isn't possible at compile time.
 				return nil, mem, r.errorAt(inst, errUnsupportedRuntimeInst)
+			case callFn.name == "runtime.fastrand" || callFn.name == "runtime.fastrand64":
+				// Use a local sequence instead of the global RNG state. The
+				// state is replaced by initRand before initAll runs anyway.
+				bits := inst.llvmInst.Type().IntTypeWidth()
+				var result uint64
+				if bits == 64 {
+					r.xorshift64State = xorshiftMult64(r.xorshift64State)
+					result = r.xorshift64State
+				} else {
+					r.xorshift32State = xorshift32(r.xorshift32State)
+					result = uint64(r.xorshift32State)
+				}
+				locals[inst.localIndex] = makeLiteralInt(result, bits)
+				if r.debug {
+					fmt.Fprintln(os.Stderr, indent+callFn.name, "->", result)
+				}
 			case callFn.name == "runtime.nanotime" && r.pkgName == "time":
 				// The time package contains a call to runtime.nanotime.
 				// This appears to be to work around a limitation in Windows
@@ -652,6 +668,29 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 			// while changing the LLVM type.
 			// Because interp doesn't preserve the type, these operations are
 			// identity operations.
+			if inst.opcode != llvm.BitCast {
+				bits := int(r.pointerSize * 8)
+				if inst.opcode == llvm.PtrToInt {
+					bits = inst.llvmInst.Type().IntTypeWidth()
+				}
+				if int(operands[0].len(r)*8) != bits {
+					// ptrtoint and inttoptr truncate or zero-extend when sizes differ.
+					// https://llvm.org/docs/LangRef.html#ptrtoint-to-instruction
+					_, isPtr := operands[0].(pointerValue)
+					if raw, ok := operands[0].(rawValue); ok && raw.hasPointer() {
+						isPtr = true
+					}
+					if isPtr || (bits != 8 && bits != 16 && bits != 32 && bits != 64) {
+						err := r.runAtRuntime(fn, inst, locals, &mem, indent)
+						if err != nil {
+							return nil, mem, err
+						}
+						continue
+					}
+					locals[inst.localIndex] = makeLiteralInt(operands[0].Uint(r), bits)
+					continue
+				}
+			}
 			if r.debug {
 				fmt.Fprintln(os.Stderr, indent+instructionNameMap[inst.opcode]+":", operands[0])
 			}
@@ -960,6 +999,10 @@ func (r *runner) runAtRuntime(fn *function, inst instruction, locals []value, me
 		}
 	case llvm.BitCast:
 		result = r.builder.CreateBitCast(operands[0], inst.llvmInst.Type(), inst.name)
+	case llvm.PtrToInt:
+		result = r.builder.CreatePtrToInt(operands[0], inst.llvmInst.Type(), inst.name)
+	case llvm.IntToPtr:
+		result = r.builder.CreateIntToPtr(operands[0], inst.llvmInst.Type(), inst.name)
 	case llvm.ExtractValue:
 		indices := inst.llvmInst.Indices()
 		// Note: the Go LLVM API doesn't support multiple indices, so simulate

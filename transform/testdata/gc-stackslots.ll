@@ -5,10 +5,19 @@ target triple = "wasm32-unknown-unknown-wasm"
 @someGlobal = global i8 3
 @ptrGlobal = global ptr null
 @arrGlobal = global [8 x i8] zeroinitializer
+@structGlobal = global {ptr, i32, [2 x ptr]} zeroinitializer
+@ptrArrayGlobal = global [8 x ptr] zeroinitializer
+@constantPtrGlobal = constant ptr @someGlobal
 
 declare void @runtime.trackPointer(ptr nocapture readonly)
 
 declare noalias nonnull ptr @runtime.alloc(i32, ptr)
+
+declare i32 @runtime.gcGlobalRootCount()
+
+declare ptr @runtime.gcGlobalRoot(i32)
+
+declare i32 @runtime.gcGlobalRootSize(i32)
 
 ; Generic function that returns a pointer (that must be tracked).
 define ptr @getPointer() {
@@ -18,7 +27,7 @@ define ptr @getPointer() {
 define ptr @needsStackSlots() {
   ; Tracked pointer. Although, in this case the value is immediately returned
   ; so tracking it is not really necessary.
-  %ptr = call ptr @runtime.alloc(i32 4, ptr null)
+  %ptr = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %ptr)
   call void @someArbitraryFunction()
   %val = load i8, ptr @someGlobal
@@ -27,8 +36,6 @@ define ptr @needsStackSlots() {
 
 ; Check some edge cases of pointer tracking.
 define ptr @needsStackSlots2() {
-  ; Only one stack slot should be created for this (but at the moment, one is
-  ; created for each call to runtime.trackPointer).
   %ptr1 = call ptr @getPointer()
   call void @runtime.trackPointer(ptr %ptr1)
   call void @runtime.trackPointer(ptr %ptr1)
@@ -39,7 +46,7 @@ define ptr @needsStackSlots2() {
   call void @runtime.trackPointer(ptr %ptr2)
 
   ; Here is finally the point where an allocation happens.
-  %unused = call ptr @runtime.alloc(i32 4, ptr null)
+  %unused = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %unused)
 
   ret ptr %ptr1
@@ -57,7 +64,7 @@ define ptr @fibNext(ptr %x, ptr %y) {
   %x.val = load i8, ptr %x
   %y.val = load i8, ptr %y
   %out.val = add i8 %x.val, %y.val
-  %out.alloc = call ptr @runtime.alloc(i32 1, ptr null)
+  %out.alloc = call ptr @runtime.alloc(i32 1, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %out.alloc)
   store i8 %out.val, ptr %out.alloc
   ret ptr %out.alloc
@@ -65,9 +72,9 @@ define ptr @fibNext(ptr %x, ptr %y) {
 
 define ptr @allocLoop() {
 entry:
-  %entry.x = call ptr @runtime.alloc(i32 1, ptr null)
+  %entry.x = call ptr @runtime.alloc(i32 1, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %entry.x)
-  %entry.y = call ptr @runtime.alloc(i32 1, ptr null)
+  %entry.y = call ptr @runtime.alloc(i32 1, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %entry.y)
   store i8 1, ptr %entry.y
   br label %loop
@@ -87,13 +94,126 @@ end:
   ret ptr %next.x
 }
 
+; Unlike @allocLoop above, the loop header phi here carries the only marker:
+; neither incoming value is tracked on its own. This is what SimplifyCFG leaves
+; behind when it sinks two runtime.trackPointer calls into a common successor
+; and merges them. A slot for the phi alone roots whichever value the current
+; iteration selected, so %loop.entry and %loop.next each need one too.
+define ptr @loopPhiUntrackedInput(i1 %repeat) {
+entry:
+  %loop.entry = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  br label %loop
+
+loop:
+  %loop.cur = phi ptr [ %loop.entry, %entry ], [ %loop.next, %loop ]
+  call void @runtime.trackPointer(ptr %loop.cur)
+  %loop.next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  br i1 %repeat, label %loop, label %end
+
+end:
+  ret ptr %loop.cur
+}
+
+; Nested loops merge the markers through one phi per loop, so the input of the
+; inner phi is the outer phi rather than a plain value. Expanding only the
+; inner one would leave %original unrooted once the outer loop repeats.
+define ptr @nestedLoopPhiUntrackedInput(i1 %repeat.inner, i1 %repeat.outer) {
+entry:
+  %original = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  br label %outer
+
+outer:
+  %outer.ptr = phi ptr [ %original, %entry ], [ %inner.ptr, %latch ]
+  br label %inner
+
+inner:
+  %inner.ptr = phi ptr [ %outer.ptr, %outer ], [ %next, %inner ]
+  call void @runtime.trackPointer(ptr %inner.ptr)
+  %next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  br i1 %repeat.inner, label %inner, label %latch
+
+latch:
+  br i1 %repeat.outer, label %outer, label %end
+
+end:
+  ret ptr %original
+}
+
+define ptr @duplicateAcrossBranches(i1 %condition) {
+entry:
+  %original = call ptr @getPointer()
+  br i1 %condition, label %left, label %right
+
+left:
+  call void @runtime.trackPointer(ptr %original)
+  br label %join
+
+right:
+  call void @runtime.trackPointer(ptr %original)
+  br label %join
+
+join:
+  call void @runtime.trackPointer(ptr %original)
+  %unused = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  ret ptr %original
+}
+
+define ptr @duplicateNestedLoopPhis(i1 %repeat.inner, i1 %repeat.outer) {
+entry:
+  %original = call ptr @getPointer()
+  call void @runtime.trackPointer(ptr %original)
+  call void @runtime.trackPointer(ptr %original)
+  br label %outer
+
+outer:
+  %outer.ptr = phi ptr [ %original, %entry ], [ %inner.ptr, %latch ]
+  call void @runtime.trackPointer(ptr %outer.ptr)
+  call void @runtime.trackPointer(ptr %outer.ptr)
+  br label %inner
+
+inner:
+  %inner.ptr = phi ptr [ %outer.ptr, %outer ], [ %next, %inner ]
+  call void @runtime.trackPointer(ptr %inner.ptr)
+  call void @runtime.trackPointer(ptr %inner.ptr)
+  %next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  call void @runtime.trackPointer(ptr %next)
+  call void @runtime.trackPointer(ptr %next)
+  br i1 %repeat.inner, label %inner, label %latch
+
+latch:
+  br i1 %repeat.outer, label %outer, label %end
+
+end:
+  ret ptr %inner.ptr
+}
+
+define ptr @duplicateAcyclicPhi(i1 %condition) {
+entry:
+  br i1 %condition, label %left, label %right
+
+left:
+  %left.ptr = call ptr @getPointer()
+  br label %join
+
+right:
+  %right.ptr = call ptr @getPointer()
+  br label %join
+
+join:
+  %merged = phi ptr [ %left.ptr, %left ], [ %right.ptr, %right ]
+  call void @runtime.trackPointer(ptr %merged)
+  call void @runtime.trackPointer(ptr %merged)
+  %unused = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  ret ptr %merged
+}
+
 declare ptr @arrayAlloc()
 
 define void @testGEPBitcast() {
   %arr = call ptr @arrayAlloc()
   %arr.bitcast = getelementptr [32 x i8], ptr %arr, i32 0, i32 0
   call void @runtime.trackPointer(ptr %arr.bitcast)
-  %other = call ptr @runtime.alloc(i32 1, ptr null)
+  %other = call ptr @runtime.alloc(i32 1, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %other)
   ret void
 }
@@ -103,7 +223,7 @@ define void @someArbitraryFunction() {
 }
 
 define void @earlyPopRegression() {
-  %x.alloc = call ptr @runtime.alloc(i32 4, ptr null)
+  %x.alloc = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %x.alloc)
   ; At this point the pass used to pop the stack chain, resulting in a potential use-after-free during allocAndSave.
   musttail call void @allocAndSave(ptr %x.alloc)
@@ -111,7 +231,7 @@ define void @earlyPopRegression() {
 }
 
 define void @allocAndSave(ptr %x) {
-  %y = call ptr @runtime.alloc(i32 4, ptr null)
+  %y = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   call void @runtime.trackPointer(ptr %y)
   store ptr %y, ptr %x
   store ptr %x, ptr @ptrGlobal

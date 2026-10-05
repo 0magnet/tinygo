@@ -37,6 +37,7 @@ import (
 	"github.com/tinygo-org/tinygo/transform"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
+	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -127,6 +128,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	globalValues := map[string]map[string]string{
 		"runtime": {
 			"buildVersion": goenv.Version(),
+			"goroot":       goenv.Get("GOROOT"),
 		},
 		"testing": {},
 	}
@@ -220,6 +222,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		Debug:              !config.Options.SkipDWARF, // emit DWARF except when -internal-nodwarf is passed
 		Nobounds:           config.Options.Nobounds,
 		PanicStrategy:      config.PanicStrategy(),
+		PanicUnwind:        config.PanicUnwind(),
 	}
 
 	// Load the target machine, which is the LLVM object that contains all
@@ -629,6 +632,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			irbuilder := mod.Context().NewBuilder()
 			defer irbuilder.Dispose()
 			irbuilder.SetInsertPointAtEnd(block)
+			if config.Debug() && !config.Options.SkipDWARF {
+				addInitAllDebugInfo(mod, llvmInitFn, irbuilder, program)
+			}
 			ptrType := llvm.PointerType(mod.Context().Int8Type(), 0)
 			for _, pkg := range lprogram.Sorted() {
 				pkgInit := mod.NamedFunction(pkg.Pkg.Path() + ".init")
@@ -673,6 +679,11 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			err := optimizeProgram(mod, config)
 			if err != nil {
 				return err
+			}
+			if strings.HasPrefix(config.Triple(), "wasm") {
+				if err := compiler.ValidateWasmFunctionParameters(mod); err != nil {
+					return err
+				}
 			}
 
 			// Make sure stack sizes are loaded from a separate section so they can be
@@ -1106,7 +1117,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		if err != nil {
 			return result, err
 		}
-	case "esp32", "esp32-img", "esp32c3", "esp32s3", "esp32c6", "esp8266":
+	case "esp32", "esp32-img", "esp32c3", "esp32s3", "esp32c6", "esp32h2", "esp8266":
 		// Special format for the ESP family of chips (parsed by the ROM
 		// bootloader).
 		result.Binary = filepath.Join(tmpdir, "main"+outext)
@@ -1268,6 +1279,37 @@ func optimizeProgram(mod llvm.Module, config *compileopts.Config) error {
 	return nil
 }
 
+// addInitAllDebugInfo gives runtime.initAll a subprogram so that code emitted
+// into it by interp or the inliner keeps its line information.
+func addInitAllDebugInfo(mod llvm.Module, fn llvm.Value, irbuilder llvm.Builder, program *ssa.Program) {
+	pos := program.Fset.Position(program.ImportedPackage("runtime").Members["initAll"].Pos())
+	dir, file := filepath.Split(pos.Filename)
+	dibuilder := llvm.NewDIBuilder(mod)
+	defer dibuilder.Destroy()
+	dibuilder.CreateCompileUnit(llvm.DICompileUnit{
+		Language:  0xb, // DW_LANG_C99 (0xc, off-by-one?)
+		File:      file,
+		Dir:       filepath.Clean(dir),
+		Producer:  "TinyGo",
+		Optimized: true,
+	})
+	difile := dibuilder.CreateFile(file, filepath.Clean(dir))
+	subprogram := dibuilder.CreateFunction(difile, llvm.DIFunction{
+		Name:         "runtime.initAll",
+		LinkageName:  "runtime.initAll",
+		File:         difile,
+		Line:         pos.Line,
+		Type:         dibuilder.CreateSubroutineType(llvm.DISubroutineType{File: difile}),
+		LocalToUnit:  true,
+		IsDefinition: true,
+		Flags:        llvm.FlagPrototyped,
+		Optimized:    true,
+	})
+	fn.SetSubprogram(subprogram)
+	irbuilder.SetCurrentDebugLocation(uint(pos.Line), 0, subprogram, llvm.Metadata{})
+	dibuilder.Finalize()
+}
+
 func makeGlobalsModule(ctx llvm.Context, globals map[string]map[string]string, machine llvm.TargetMachine) llvm.Module {
 	mod := ctx.NewModule("cmdline-globals")
 	targetData := machine.CreateTargetData()
@@ -1316,6 +1358,9 @@ func makeGlobalsModule(ctx llvm.Context, globals map[string]map[string]string, m
 			global := llvm.AddGlobal(mod, stringType, globalName)
 			global.SetInitializer(initializer)
 			global.SetAlignment(targetData.PrefTypeAlignment(stringType))
+			// Keep external linkage for module resolution. Hidden visibility permits internalization.
+			// See https://llvm.org/docs/LangRef.html#visibility-styles.
+			global.SetVisibility(llvm.HiddenVisibility)
 		}
 	}
 

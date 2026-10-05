@@ -166,7 +166,7 @@ func (mv *memoryView) markExternal(llvmValue llvm.Value, mark uint8) error {
 								}
 							}
 						}
-						if opcode == llvm.Br || opcode == llvm.Switch {
+						if isBranch(inst) || opcode == llvm.Switch {
 							// These don't affect memory. Skipped here because
 							// they also have a label as operand.
 							continue
@@ -1004,10 +1004,11 @@ func (v rawValue) toLLVMValue(llvmType llvm.Type, mem *memoryView) (llvm.Value, 
 	}
 }
 
-func (v *rawValue) set(llvmValue llvm.Value, r *runner) {
+// set returns false if the constant can only be computed at runtime.
+func (v *rawValue) set(llvmValue llvm.Value, r *runner) bool {
 	if llvmValue.IsNull() {
 		// A zero value is common so check that first.
-		return
+		return true
 	}
 	if !llvmValue.IsAGlobalValue().IsNil() {
 		ptrSize := r.pointerSize
@@ -1020,11 +1021,25 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) {
 		}
 	} else if !llvmValue.IsAConstantExpr().IsNil() {
 		switch llvmValue.Opcode() {
-		case llvm.IntToPtr, llvm.PtrToInt, llvm.BitCast:
-			// All these instructions effectively just reinterprets the bits
-			// (like a bitcast) while no bits change and keeping the same
-			// length, so just read its contents.
-			v.set(llvmValue.Operand(0), r)
+		case llvm.BitCast:
+			return v.set(llvmValue.Operand(0), r)
+		case llvm.IntToPtr, llvm.PtrToInt:
+			// These truncate or zero-extend when sizes differ.
+			// https://llvm.org/docs/LangRef.html#ptrtoint-to-instruction
+			operand := llvmValue.Operand(0)
+			src := newRawValue(uint32(r.targetData.TypeAllocSize(operand.Type())))
+			if !src.set(operand, r) {
+				return false
+			}
+			size := uint32(r.targetData.TypeAllocSize(llvmValue.Type()))
+			if src.len(r) != size && src.hasPointer() {
+				return false
+			}
+			if llvmValue.Type().TypeKind() == llvm.IntegerTypeKind && uint32(llvmValue.Type().IntTypeWidth()) != size*8 {
+				// Widths like i1 don't fill their bytes, so leave them for runtime.
+				return false
+			}
+			copy(v.buf[:size], src.buf)
 		case llvm.GetElementPtr:
 			ptr := llvmValue.Operand(0)
 			index := llvmValue.Operand(1)
@@ -1065,8 +1080,9 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) {
 			size := r.targetData.TypeAllocSize(llvmValue.Operand(0).Type())
 			lhs := newRawValue(uint32(size))
 			rhs := newRawValue(uint32(size))
-			lhs.set(llvmValue.Operand(0), r)
-			rhs.set(llvmValue.Operand(1), r)
+			if !lhs.set(llvmValue.Operand(0), r) || !rhs.set(llvmValue.Operand(1), r) {
+				return false
+			}
 			if r.interpretICmp(lhs, rhs, llvmValue.IntPredicate()) {
 				v.buf[0] = 1 // result is true
 			} else {
@@ -1118,7 +1134,9 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) {
 				field := rawValue{
 					buf: v.buf[offset:],
 				}
-				field.set(r.builder.CreateExtractValue(llvmValue, i, ""), r)
+				if !field.set(r.builder.CreateExtractValue(llvmValue, i, ""), r) {
+					return false
+				}
 			}
 		case llvm.ArrayTypeKind:
 			numElements := llvmType.ArrayLength()
@@ -1129,7 +1147,9 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) {
 				field := rawValue{
 					buf: v.buf[offset:],
 				}
-				field.set(r.builder.CreateExtractValue(llvmValue, i, ""), r)
+				if !field.set(r.builder.CreateExtractValue(llvmValue, i, ""), r) {
+					return false
+				}
 			}
 		case llvm.DoubleTypeKind:
 			f, _ := llvmValue.DoubleValue()
@@ -1151,6 +1171,7 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) {
 			panic("unknown constant")
 		}
 	}
+	return true
 }
 
 // hasPointer returns true if this raw value contains a pointer somewhere in the
@@ -1219,8 +1240,12 @@ func (r *runner) getValue(llvmValue llvm.Value) value {
 			if !llvmValue.IsAGlobalVariable().IsNil() {
 				obj.size = uint32(r.targetData.TypeAllocSize(llvmValue.GlobalValueType()))
 				if initializer := llvmValue.Initializer(); !initializer.IsNil() {
-					obj.buffer = r.getValue(initializer)
-					obj.constant = llvmValue.IsGlobalConstant()
+					// Treat the global as external if its initializer is only known at runtime.
+					buf := r.getValue(initializer)
+					if _, ok := buf.(localValue); !ok {
+						obj.buffer = buf
+						obj.constant = llvmValue.IsGlobalConstant()
+					}
 				}
 			} else if !llvmValue.IsAFunction().IsNil() {
 				// OK
@@ -1251,7 +1276,9 @@ func (r *runner) getValue(llvmValue llvm.Value) value {
 		}
 		size := r.targetData.TypeAllocSize(llvmValue.Type())
 		v := newRawValue(uint32(size))
-		v.set(llvmValue, r)
+		if !v.set(llvmValue, r) {
+			return localValue{llvmValue}
+		}
 		return v
 	} else if !llvmValue.IsAInstruction().IsNil() || !llvmValue.IsAArgument().IsNil() {
 		return localValue{llvmValue}
@@ -1278,13 +1305,14 @@ func (r *runner) readObjectLayout(layoutValue value) (uint64, *big.Int) {
 	// integer value, or can be nil.
 	ptr, err := layoutValue.asPointer(r)
 	if err == errIntegerAsPointer {
-		// It's an integer, which means it's a small object or unknown.
+		// It's an integer, which means it's a small object.
 		layout := layoutValue.Uint(r)
 		if layout == 0 {
-			// Nil pointer, which means the layout is unknown.
-			return 0, nil
+			panic("runtime.alloc called without a GC layout")
 		}
 		if layout%2 != 1 {
+			// Conservative layouts are reserved for stack storage and cannot
+			// reach interpreted heap allocations.
 			// Sanity check: the least significant bit must be set. This is how
 			// the runtime can separate pointers from integers.
 			panic("unexpected layout")
@@ -1331,11 +1359,6 @@ func (r *runner) readObjectLayout(layoutValue value) (uint64, *big.Int) {
 // have some additional repetition, for example in the buffer of a slice.
 func (r *runner) getLLVMTypeFromLayout(layoutValue value) llvm.Type {
 	objectSizeWords, bitmap := r.readObjectLayout(layoutValue)
-	if bitmap == nil {
-		// No information available.
-		return llvm.Type{}
-	}
-
 	if bitmap.BitLen() == 0 {
 		// There are no pointers in this object, so treat this as a raw byte
 		// buffer. This is important because objects without pointers may have

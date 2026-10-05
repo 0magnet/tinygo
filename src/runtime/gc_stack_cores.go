@@ -17,7 +17,7 @@ func gcMarkReachable() {
 	// If the other cores haven't started yet (for example, when a GC cycle
 	// happens during init()), we only need to scan the stack of the current
 	// core.
-	if !secondaryCoresStarted {
+	if secondaryCoresReady.Load() == 0 {
 		// Scan the stack(s) of the current core.
 		scanCurrentStack()
 		if !task.OnSystemStack() {
@@ -26,7 +26,7 @@ func gcMarkReachable() {
 		}
 
 		// Scan globals.
-		findGlobals(markRoots)
+		markGlobals()
 
 		// Nothing more to do: the other cores haven't started yet.
 		return
@@ -57,7 +57,7 @@ func gcMarkReachable() {
 	}
 
 	// Scan globals.
-	findGlobals(markRoots)
+	markGlobals()
 
 	// Signal each core in turn that they can scan the stack.
 	for i := uint32(0); i < numCPU; i++ {
@@ -98,7 +98,7 @@ func scanstack(sp uintptr) {
 
 // Resume the world after a call to gcMarkReachable.
 func gcResumeWorld() {
-	if !secondaryCoresStarted {
+	if secondaryCoresReady.Load() == 0 {
 		// Nothing to do: the world wasn't stopped in gcMarkReachable.
 		return
 	}

@@ -39,6 +39,12 @@ func TestTinyIndirectPointers(t *testing.T) {
 	}
 }
 
+func TestTinyInvalidValueString(t *testing.T) {
+	if got := (Value{}).String(); got != "<invalid Value>" {
+		t.Errorf("Value{}.String() = %q, want %q", got, "<invalid Value>")
+	}
+}
+
 func TestTinyMap(t *testing.T) {
 
 	m := make(map[string]int)
@@ -493,6 +499,13 @@ func TestTinyStruct(t *testing.T) {
 }
 
 func TestTinyZero(t *testing.T) {
+	for _, value := range []any{(*int)(nil), [16]byte{}, [64]byte{}} {
+		zero := Zero(TypeOf(value))
+		if IsRO(zero) {
+			t.Errorf("Zero(%v) is read-only", zero.Type())
+		}
+	}
+
 	s := "hello, world"
 	sptr := &s
 	v := ValueOf(&sptr).Elem()
@@ -994,6 +1007,20 @@ func TestTypeAssertPanic(t *testing.T) {
 	})
 }
 
+type tinyMakeChanElement struct {
+	ptr  *int
+	text string
+}
+
+var tinyMakeChanChurn []*int
+
+//go:noinline
+func fillTinyMakeChan(ch chan tinyMakeChanElement) {
+	value := new(int)
+	*value = 42
+	ch <- tinyMakeChanElement{ptr: value, text: "hello"}
+}
+
 func TestTinyMakeChan(t *testing.T) {
 	// Value.Send and Value.Recv are not implemented yet, so the channel is
 	// exercised through Interface(): that proves MakeChan returns a working
@@ -1024,6 +1051,22 @@ func TestTinyMakeChan(t *testing.T) {
 		}
 		if got, want := <-ch, 2; got != want {
 			t.Errorf("<-ch=%v, want %v", got, want)
+		}
+	})
+
+	t.Run("buffered pointers survive GC", func(t *testing.T) {
+		v := MakeChan(TypeOf(make(chan tinyMakeChanElement)), 1)
+		ch := v.Interface().(chan tinyMakeChanElement)
+		fillTinyMakeChan(ch)
+		runtime.GC()
+		tinyMakeChanChurn = make([]*int, 128)
+		for i := range tinyMakeChanChurn {
+			tinyMakeChanChurn[i] = new(int)
+		}
+
+		got := <-ch
+		if *got.ptr != 42 || got.text != "hello" {
+			t.Errorf("<-ch=%v, want {42 hello}", got)
 		}
 	})
 

@@ -1,6 +1,8 @@
 package transform
 
 import (
+	"strings"
+
 	"tinygo.org/x/go-llvm"
 )
 
@@ -12,6 +14,8 @@ const shiftExcludeArgMem = 2
 // MakeGCStackSlots converts all calls to runtime.trackPointer to explicit
 // stores to stack slots that are scannable by the GC.
 func MakeGCStackSlots(mod llvm.Module) bool {
+	hasGlobalRoots := makeGCGlobalRoots(mod)
+
 	// Check whether there are allocations at all.
 	alloc := mod.NamedFunction("runtime.alloc")
 	if alloc.IsNil() {
@@ -26,12 +30,12 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 			stackChainStart.SetInitializer(llvm.ConstNull(stackChainStart.GlobalValueType()))
 			stackChainStart.SetGlobalConstant(true)
 		}
-		return false
+		return hasGlobalRoots
 	}
 
 	trackPointer := mod.NamedFunction("runtime.trackPointer")
 	if trackPointer.IsNil() || trackPointer.FirstUse().IsNil() {
-		return false // nothing to do
+		return hasGlobalRoots
 	}
 
 	ctx := mod.Context()
@@ -107,7 +111,7 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 		for _, use := range getUses(trackPointer) {
 			use.EraseFromParentAsInstruction()
 		}
-		return false
+		return hasGlobalRoots
 	}
 	stackChainStart.SetLinkage(llvm.InternalLinkage)
 	stackChainStartType := stackChainStart.GlobalValueType()
@@ -154,12 +158,17 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 
 		// Determine what to do with each call.
 		var pointers []llvm.Value
+		rooted := make(map[llvm.Value]struct{}, len(calls))
+		var cyclicPHIs []llvm.Value
 		for _, call := range calls {
 			ptr := call.Operand(0)
 			call.EraseFromParentAsInstruction()
 
 			// Some trivial optimizations.
 			if ptr.IsAInstruction().IsNil() {
+				continue
+			}
+			if _, ok := rooted[ptr]; ok {
 				continue
 			}
 			switch ptr.InstructionOpcode() {
@@ -183,8 +192,14 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 					continue
 				}
 			case llvm.PHI:
-				// While the value may have already been tracked, it may be overwritten in a loop.
-				// Therefore, a second copy must be created to ensure that it is tracked over the entirety of its lifetime.
+				// A phi gets a slot of its own because its value can change,
+				// so tracking an input instead is not enough. A phi that can
+				// be re-evaluated has its slot overwritten on the way round
+				// and so only roots the value the current iteration selected,
+				// so remember it and give its inputs slots below.
+				if blockInCycle(ptr.InstructionParent()) {
+					cyclicPHIs = append(cyclicPHIs, ptr)
+				}
 			case llvm.ExtractValue, llvm.BitCast:
 				// These instructions do not create new values, but their
 				// original value may not be tracked. So keep tracking them for
@@ -205,7 +220,55 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 				// on the C stack which is scanned separately.
 				continue
 			}
+			rooted[ptr] = struct{}{}
 			pointers = append(pointers, ptr)
+		}
+
+		// Give every input of a tracked phi that can repeat a slot of its own.
+		// SimplifyCFG may have merged the trackPointer calls of two unrelated
+		// pointers into a single call on this phi, leaving whichever pointer
+		// the phi did not select unrooted while it is still live.
+		//
+		// Inputs are followed only through phis that can themselves repeat.
+		// A merge that runs at most once stores its slot once and never
+		// overwrites it, so that slot continues to root the selected value
+		// for the rest of the frame.
+		//
+		// Inputs are not screened by the non-zero-offset GEP rule the loop
+		// above applies, so an interior pointer whose base is already tracked
+		// can pick up a slot of its own. That is another slot rather than
+		// another root, so it is left alone for now.
+		if len(cyclicPHIs) != 0 {
+			expanded := make(map[llvm.Value]struct{}, len(cyclicPHIs))
+			worklist := append([]llvm.Value(nil), cyclicPHIs...)
+			for len(worklist) != 0 {
+				phi := worklist[len(worklist)-1]
+				worklist = worklist[:len(worklist)-1]
+				if _, ok := expanded[phi]; ok {
+					// Phis can be cyclic, so only expand each one once.
+					continue
+				}
+				expanded[phi] = struct{}{}
+				for i := 0; i < phi.IncomingCount(); i++ {
+					incoming := phi.IncomingValue(i)
+					if incoming.IsAInstruction().IsNil() {
+						// Constants and arguments cannot be given a slot here.
+						continue
+					}
+					if incoming.InstructionOpcode() == llvm.PHI && blockInCycle(incoming.InstructionParent()) {
+						worklist = append(worklist, incoming)
+					}
+					if stripped := stripPointerCasts(incoming); !stripped.IsAAllocaInst().IsNil() {
+						// Allocas live on the C stack, which is scanned separately.
+						continue
+					}
+					if _, ok := rooted[incoming]; ok {
+						continue
+					}
+					rooted[incoming] = struct{}{}
+					pointers = append(pointers, incoming)
+				}
+			}
 		}
 
 		if len(pointers) == 0 {
@@ -285,6 +348,174 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 	return true
 }
 
+func makeGCGlobalRoots(mod llvm.Module) bool {
+	rootCount := mod.NamedFunction("runtime.gcGlobalRootCount")
+	rootAt := mod.NamedFunction("runtime.gcGlobalRoot")
+	rootSize := mod.NamedFunction("runtime.gcGlobalRootSize")
+	rootValues := mod.NamedFunction("runtime.gcGlobalRootValues")
+	if rootCount.IsNil() || rootAt.IsNil() || rootSize.IsNil() ||
+		!rootCount.FirstBasicBlock().IsNil() ||
+		!rootAt.FirstBasicBlock().IsNil() ||
+		!rootSize.FirstBasicBlock().IsNil() {
+		return false
+	}
+	if !rootValues.IsNil() && !rootValues.FirstBasicBlock().IsNil() {
+		return false
+	}
+
+	ctx := mod.Context()
+	uintptrType := rootCount.GlobalValueType().ReturnType()
+	targetData := llvm.NewTargetData(mod.DataLayout())
+	defer targetData.Dispose()
+	var roots []gcGlobalRootRange
+	for global := mod.FirstGlobal(); !global.IsNil(); global = llvm.NextGlobal(global) {
+		if strings.HasPrefix(global.Name(), "llvm.") ||
+			global.IsGlobalConstant() ||
+			global.Initializer().IsNil() ||
+			!gcTypeHasPointers(global.GlobalValueType()) {
+			continue
+		}
+		roots = appendGCGlobalRootRanges(roots, global, global.GlobalValueType(), targetData, ctx.Int8Type(), uintptrType)
+	}
+
+	ptrType := rootAt.GlobalValueType().ReturnType()
+	rootType := ctx.StructType([]llvm.Type{ptrType, uintptrType}, false)
+	rootInitializers := make([]llvm.Value, len(roots))
+	for i, root := range roots {
+		rootInitializers[i] = llvm.ConstNamedStruct(rootType, []llvm.Value{
+			root.address,
+			llvm.ConstInt(uintptrType, root.size, false),
+		})
+	}
+	rootArrayType := llvm.ArrayType(rootType, len(roots))
+	rootArray := llvm.AddGlobal(mod, rootArrayType, "runtime.gcGlobalRoots")
+	rootArray.SetInitializer(llvm.ConstArray(rootType, rootInitializers))
+	rootArray.SetGlobalConstant(true)
+	rootArray.SetLinkage(llvm.InternalLinkage)
+
+	builder := ctx.NewBuilder()
+	defer builder.Dispose()
+
+	entry := ctx.AddBasicBlock(rootCount, "entry")
+	builder.SetInsertPointAtEnd(entry)
+	builder.CreateRet(llvm.ConstInt(rootCount.GlobalValueType().ReturnType(), uint64(len(roots)), false))
+
+	entry = ctx.AddBasicBlock(rootAt, "entry")
+	builder.SetInsertPointAtEnd(entry)
+	index := rootAt.FirstParam()
+	root := builder.CreateInBoundsGEP(rootArrayType, rootArray, []llvm.Value{
+		llvm.ConstInt(ctx.Int32Type(), 0, false),
+		index,
+	}, "")
+	addr := builder.CreateStructGEP(rootType, root, 0, "")
+	builder.CreateRet(builder.CreateLoad(ptrType, addr, ""))
+
+	entry = ctx.AddBasicBlock(rootSize, "entry")
+	builder.SetInsertPointAtEnd(entry)
+	index = rootSize.FirstParam()
+	root = builder.CreateInBoundsGEP(rootArrayType, rootArray, []llvm.Value{
+		llvm.ConstInt(ctx.Int32Type(), 0, false),
+		index,
+	}, "")
+	size := builder.CreateStructGEP(rootType, root, 1, "")
+	builder.CreateRet(builder.CreateLoad(uintptrType, size, ""))
+
+	if !rootValues.IsNil() {
+		pointerSize := uint64(targetData.PointerSize())
+		var rootValueCount uint64
+		for _, root := range roots {
+			rootValueCount += root.size / pointerSize
+		}
+		rootValueArray := llvm.AddGlobal(mod, llvm.ArrayType(uintptrType, int(rootValueCount)), "runtime.gcGlobalRootValueArray")
+		rootValueArray.SetInitializer(llvm.ConstNull(rootValueArray.GlobalValueType()))
+		rootValueArray.SetLinkage(llvm.InternalLinkage)
+
+		entry = ctx.AddBasicBlock(rootValues, "entry")
+		builder.SetInsertPointAtEnd(entry)
+		builder.CreateRet(rootValueArray)
+	}
+
+	return true
+}
+
+// gcGlobalRootRange is a contiguous range of pointer slots.
+// It never includes padding or non-pointer fields.
+type gcGlobalRootRange struct {
+	address llvm.Value
+	size    uint64
+}
+
+func appendGCGlobalRootRanges(roots []gcGlobalRootRange, global llvm.Value, typ llvm.Type, targetData llvm.TargetData, i8Type, uintptrType llvm.Type) []gcGlobalRootRange {
+	var offsets []uint64
+	offsets = appendGCGlobalRootOffsets(offsets, typ, targetData, 0)
+	if len(offsets) == 0 {
+		return roots
+	}
+
+	pointerSize := uint64(targetData.PointerSize())
+	rangeStart := offsets[0]
+	rangeEnd := rangeStart + pointerSize
+	for _, offset := range offsets[1:] {
+		if offset == rangeEnd {
+			rangeEnd += pointerSize
+			continue
+		}
+		roots = appendGCGlobalRootRange(roots, global, rangeStart, rangeEnd-rangeStart, i8Type, uintptrType)
+		rangeStart = offset
+		rangeEnd = offset + pointerSize
+	}
+	return appendGCGlobalRootRange(roots, global, rangeStart, rangeEnd-rangeStart, i8Type, uintptrType)
+}
+
+func appendGCGlobalRootRange(roots []gcGlobalRootRange, global llvm.Value, offset, size uint64, i8Type, uintptrType llvm.Type) []gcGlobalRootRange {
+	address := global
+	if offset != 0 {
+		address = llvm.ConstGEP(i8Type, global, []llvm.Value{
+			llvm.ConstInt(uintptrType, offset, false),
+		})
+	}
+	return append(roots, gcGlobalRootRange{address: address, size: size})
+}
+
+func appendGCGlobalRootOffsets(offsets []uint64, typ llvm.Type, targetData llvm.TargetData, baseOffset uint64) []uint64 {
+	switch typ.TypeKind() {
+	case llvm.PointerTypeKind:
+		return append(offsets, baseOffset)
+	case llvm.StructTypeKind:
+		for i, fieldType := range typ.StructElementTypes() {
+			if gcTypeHasPointers(fieldType) {
+				fieldOffset := targetData.ElementOffset(typ, i)
+				offsets = appendGCGlobalRootOffsets(offsets, fieldType, targetData, baseOffset+fieldOffset)
+			}
+		}
+	case llvm.ArrayTypeKind:
+		elemType := typ.ElementType()
+		if gcTypeHasPointers(elemType) {
+			elemSize := targetData.TypeAllocSize(elemType)
+			for i := 0; i < typ.ArrayLength(); i++ {
+				offsets = appendGCGlobalRootOffsets(offsets, elemType, targetData, baseOffset+uint64(i)*elemSize)
+			}
+		}
+	}
+	return offsets
+}
+
+func gcTypeHasPointers(typ llvm.Type) bool {
+	switch typ.TypeKind() {
+	case llvm.PointerTypeKind:
+		return true
+	case llvm.StructTypeKind:
+		for _, field := range typ.StructElementTypes() {
+			if gcTypeHasPointers(field) {
+				return true
+			}
+		}
+	case llvm.ArrayTypeKind:
+		return typ.ArrayLength() != 0 && gcTypeHasPointers(typ.ElementType())
+	}
+	return false
+}
+
 // markParentFunctions traverses all parent function calls (recursively) and
 // adds them to the set of marked functions. It only considers function calls:
 // any other uses of such a function is ignored.
@@ -305,4 +536,34 @@ func markParentFunctions(marked map[llvm.Value]struct{}, fn llvm.Value) {
 			}
 		}
 	}
+}
+
+// blockInCycle returns whether bb lies on a cycle, that is, whether it is
+// reachable from itself and so can execute more than once per call. This is
+// broader than being a loop header: a merge inside a loop body also qualifies,
+// and its slot is overwritten each iteration just the same.
+func blockInCycle(bb llvm.BasicBlock) bool {
+	// Walk forward from bb and look for an edge back into it.
+	seen := map[llvm.BasicBlock]struct{}{}
+	worklist := []llvm.BasicBlock{bb}
+	for len(worklist) != 0 {
+		cur := worklist[len(worklist)-1]
+		worklist = worklist[:len(worklist)-1]
+		term := cur.LastInstruction()
+		if term.IsNil() {
+			continue
+		}
+		for i := 0; i < term.SuccessorsCount(); i++ {
+			succ := term.Successor(i)
+			if succ == bb {
+				return true
+			}
+			if _, ok := seen[succ]; ok {
+				continue
+			}
+			seen[succ] = struct{}{}
+			worklist = append(worklist, succ)
+		}
+	}
+	return false
 }
