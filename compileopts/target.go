@@ -453,6 +453,7 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		}
 		spec.ExtraFiles = append(spec.ExtraFiles,
 			"src/internal/futex/futex_linux.c",
+			"src/os/exec_linux.c",
 			"src/internal/task/task_threads.c",
 			"src/runtime/runtime_unix.c",
 			"src/runtime/signal.c")
