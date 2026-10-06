@@ -936,8 +936,13 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 					"-cache_path_lto", filepath.Join(cacheDir, "thinlto"))
 			case "gnu":
 				// Options for the ELF linker.
+				ltoOpt := strconv.Itoa(speedLevel)
+				if v := os.Getenv("TINYGO_LTO_OPT"); v != "" {
+					ltoOpt = v
+					ldflags = append(ldflags, "--lto-CGO"+strconv.Itoa(speedLevel))
+				}
 				ldflags = append(ldflags,
-					"--lto-O"+strconv.Itoa(speedLevel),
+					"--lto-O"+ltoOpt,
 					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"),
 				)
 			default:
