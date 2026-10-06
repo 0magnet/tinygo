@@ -169,6 +169,7 @@ func tinygo_handle_fatal_signal(sig int32, addr uintptr) {
 	if panicStrategy() == tinygo.PanicStrategyTrap {
 		trap()
 	}
+	crashing = true
 
 	// Print signal including the faulting instruction.
 	if addr != 0 {
@@ -234,6 +235,9 @@ func syscall_runtime_envs() []string {
 func putchar(c byte) {
 	buf := [1]byte{c}
 	libc_write(1, unsafe.Pointer(&buf[0]), 1)
+	if crashing && crashFD >= 0 {
+		libc_write(crashFD, unsafe.Pointer(&buf[0]), 1)
+	}
 }
 
 func ticksToNanoseconds(ticks timeUnit) int64 {

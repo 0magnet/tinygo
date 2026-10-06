@@ -331,7 +331,20 @@ func (bi *BuildInfo) String() string {
 // crash message. It is empty, as upstream Go's is.
 type CrashOptions struct{}
 
-// SetCrashOutput is a stub. TinyGo writes a crash to stderr only.
+// crashFile keeps the file passed to SetCrashOutput open for the crash.
+var crashFile *os.File
+
+// SetCrashOutput makes a panic or fatal error also be written to f. Unlike Go
+// it uses f itself rather than a duplicate, so the caller must leave it open.
 func SetCrashOutput(f *os.File, opts CrashOptions) error {
+	fd := int32(-1)
+	if f != nil {
+		fd = int32(f.Fd())
+	}
+	crashFile = f
+	setCrashFD(fd)
 	return nil
 }
+
+// setCrashFD is implemented in the runtime.
+func setCrashFD(fd int32) int32
