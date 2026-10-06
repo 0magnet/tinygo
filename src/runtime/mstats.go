@@ -87,4 +87,40 @@ type MemStats struct {
 	//
 	// The leaking collector never collects, so it always reports 0.
 	NumGC uint32
+
+	// The fields below exist so code written against upstream Go compiles,
+	// prometheus/client_golang among it. TinyGo never fills them in.
+
+	// Lookups is the number of pointer lookups performed by the runtime.
+	Lookups uint64
+	// StackInuse is bytes in stack spans.
+	StackInuse uint64
+	// StackSys is bytes of stack memory obtained from the OS.
+	StackSys uint64
+	// MSpanInuse is bytes of allocated mspan structures.
+	MSpanInuse uint64
+	// MSpanSys is bytes of memory obtained from the OS for mspan structures.
+	MSpanSys uint64
+	// MCacheInuse is bytes of allocated mcache structures.
+	MCacheInuse uint64
+	// MCacheSys is bytes of memory obtained from the OS for mcache structures.
+	MCacheSys uint64
+	// BuckHashSys is bytes of memory in profiling bucket hash tables.
+	BuckHashSys uint64
+	// OtherSys is bytes of memory in miscellaneous off-heap runtime allocations.
+	OtherSys uint64
+	// NextGC is the target heap size of the next GC cycle.
+	NextGC uint64
+	// LastGC is the time the last garbage collection finished, in nanoseconds since 1970.
+	LastGC uint64
+	// PauseTotalNs is the cumulative nanoseconds in GC stop-the-world pauses.
+	PauseTotalNs uint64
+	// NumForcedGC is the number of GC cycles forced by the application.
+	NumForcedGC uint32
+	// GCCPUFraction is the fraction of this program's available CPU time used by the GC.
+	GCCPUFraction float64
+	// EnableGC reports that GC is enabled.
+	EnableGC bool
+	// DebugGC is unused.
+	DebugGC bool
 }
