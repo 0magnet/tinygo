@@ -71,7 +71,9 @@ func (p *Profile) WriteTo(w io.Writer, debug int) error {
 		return ErrUnimplemented
 	}
 	switch p.name {
-	case "goroutine", "threadcreate":
+	case "goroutine":
+		return writeGoroutines(w)
+	case "threadcreate":
 		_, err := fmt.Fprintf(w, "%s profile: total %d\n# stacks are not available in TinyGo builds\n", p.name, p.Count())
 		return err
 	case "heap", "allocs":
