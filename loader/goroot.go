@@ -45,7 +45,7 @@ func GetCachedGoroot(config *compileopts.Config) (string, error) {
 	}
 
 	// Find the overrides needed for the goroot.
-	overrides := pathsToOverride(config.GoMinorVersion, needsSyscallPackage(config.BuildTags()))
+	overrides := pathsToOverride(config.GoMinorVersion, needsSyscallPackage(config.BuildTags()), needsThinTLS(config.BuildTags(), config.GOOS()))
 
 	// Resolve the merge links within the goroot.
 	merge, err := listGorootMergeLinks(goroot, tinygoroot, overrides)
@@ -214,6 +214,14 @@ func listGorootMergeLinks(goroot, tinygoroot string, overrides map[string]bool) 
 	return merges, nil
 }
 
+// needsThinTLS returns whether crypto/tls should be TinyGo's thin netdev wrapper.
+// That is the embedded and WASI targets. js gets Go's crypto/tls, as the host does:
+// a browser program has no netdev TLS offload, and quic-go and the TLS servers it
+// links need the real package.
+func needsThinTLS(buildTags []string, goos string) bool {
+	return needsSyscallPackage(buildTags) && goos != "js"
+}
+
 // needsSyscallPackage returns whether the syscall package should be overridden
 // with the TinyGo version. This is the case on some targets.
 func needsSyscallPackage(buildTags []string) bool {
@@ -227,7 +235,7 @@ func needsSyscallPackage(buildTags []string) bool {
 
 // The boolean indicates whether to merge the subdirs. True means merge, false
 // means use the TinyGo version.
-func pathsToOverride(goMinor int, needsSyscallPackage bool) map[string]bool {
+func pathsToOverride(goMinor int, needsSyscallPackage, thinTLS bool) map[string]bool {
 	paths := map[string]bool{
 		"":                            true,
 		"crypto/":                     true,
@@ -292,7 +300,7 @@ func pathsToOverride(goMinor int, needsSyscallPackage bool) map[string]bool {
 	// Go's full software crypto/tls instead — leaving crypto/tls out of the
 	// overrides map makes the goroot link Go's implementation. needsSyscallPackage
 	// is true exactly for the embedded/wasm targets.
-	if needsSyscallPackage {
+	if thinTLS {
 		paths["crypto/tls/"] = false
 	}
 
