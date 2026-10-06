@@ -7,6 +7,7 @@ package debug
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -324,4 +325,13 @@ func (bi *BuildInfo) String() string {
 	}
 
 	return buf.String()
+}
+
+// CrashOptions provides options that control the formatting of the fatal
+// crash message. It is empty, as upstream Go's is.
+type CrashOptions struct{}
+
+// SetCrashOutput is a stub. TinyGo writes a crash to stderr only.
+func SetCrashOutput(f *os.File, opts CrashOptions) error {
+	return nil
 }
