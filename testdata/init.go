@@ -1,5 +1,7 @@
 package main
 
+import "unsafe"
+
 func init() {
 	println("init")
 }
@@ -20,6 +22,7 @@ func main() {
 	println(uint8SliceDst[0])
 	println(intSliceSrc[0])
 	println(intSliceDst[0])
+	println("ptradd:", ptrAdd == uintptr(unsafe.Pointer(&ptrArr[1])))
 }
 
 type (
@@ -120,3 +123,7 @@ func init() {
 	type inside struct{}
 	_, _ = any(inside{}).(interface{ DoesNotExist() })
 }
+
+// A pointer converted to uintptr plus an offset, folded into a constant.
+var ptrArr [4]int64
+var ptrAdd = uintptr(unsafe.Pointer(&ptrArr)) + 8
