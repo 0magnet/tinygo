@@ -584,30 +584,55 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			// anything, it only links the bitcode files together.
 			ctx := llvm.NewContext()
 			mod = ctx.NewModule("main")
+			// Resolve duplicate function definitions before linking.
+			// This can happen when a newer Go version adds a function
+			// body in a standard library package that was previously
+			// just a declaration provided by //go:linkname from the
+			// runtime. In that case, keep the first (runtime) definition
+			// by weakening the later one's linkage so the LLVM linker
+			// discards it in favor of the strong one, whichever order the
+			// two meet in below.
+			defined := make(map[string]struct{})
+			mods := make([]llvm.Module, 0, len(packageJobs))
 			for _, pkgJob := range packageJobs {
 				pkgMod, err := ctx.ParseBitcodeFile(pkgJob.result)
 				if err != nil {
 					return fmt.Errorf("failed to load bitcode file: %w", err)
 				}
-				// Resolve duplicate function definitions before linking.
-				// This can happen when a newer Go version adds a function
-				// body in a standard library package that was previously
-				// just a declaration provided by //go:linkname from the
-				// runtime. In that case, keep the existing (runtime)
-				// definition by weakening the new one's linkage so the
-				// LLVM linker discards it in favor of the existing one.
 				for fn := pkgMod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
 					if fn.IsDeclaration() {
 						continue
 					}
-					existing := mod.NamedFunction(fn.Name())
-					if existing.IsNil() || existing.IsDeclaration() {
+					name := fn.Name()
+					if _, ok := defined[name]; ok {
+						fn.SetLinkage(llvm.LinkOnceODRLinkage)
 						continue
 					}
-					fn.SetLinkage(llvm.LinkOnceODRLinkage)
+					defined[name] = struct{}{}
 				}
-				err = llvm.LinkModules(mod, pkgMod)
-				if err != nil {
+				mods = append(mods, pkgMod)
+			}
+			// Link pairwise. Linking every package into one growing module
+			// walks that module once per package, which on a program of
+			// over a thousand packages took longer than everything else
+			// together. Halving the list each round keeps every module
+			// involved in only a logarithmic number of links.
+			for len(mods) > 1 {
+				next := make([]llvm.Module, 0, (len(mods)+1)/2)
+				for i := 0; i < len(mods); i += 2 {
+					if i+1 == len(mods) {
+						next = append(next, mods[i])
+						break
+					}
+					if err := llvm.LinkModules(mods[i], mods[i+1]); err != nil {
+						return fmt.Errorf("failed to link module: %w", err)
+					}
+					next = append(next, mods[i])
+				}
+				mods = next
+			}
+			if len(mods) == 1 {
+				if err := llvm.LinkModules(mod, mods[0]); err != nil {
 					return fmt.Errorf("failed to link module: %w", err)
 				}
 			}
