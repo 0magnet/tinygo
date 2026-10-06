@@ -456,6 +456,9 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 			"src/internal/task/task_threads.c",
 			"src/runtime/runtime_unix.c",
 			"src/runtime/signal.c")
+		if options.GOARCH == "amd64" || options.GOARCH == "386" {
+			spec.ExtraFiles = append(spec.ExtraFiles, "src/runtime/cpuid_x86.c")
+		}
 	case "windows":
 		spec.GC = "boehm"
 		spec.Scheduler = "tasks"
