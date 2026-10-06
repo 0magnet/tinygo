@@ -27,6 +27,7 @@ void tinygo_signal_ignore(uint32_t sig) {
 
 void tinygo_signal_disable(uint32_t sig) {
     struct sigaction act = { 0 };
-    act.sa_handler = SIG_DFL;
+    // SIGPIPE goes back to ignored, which is its state at start.
+    act.sa_handler = sig == SIGPIPE ? SIG_IGN : SIG_DFL;
     sigaction(sig, &act, NULL);
 }
