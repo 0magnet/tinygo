@@ -296,6 +296,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	// Create the *ssa.Program. This does not yet build the entire SSA of the
 	// program so it's pretty fast and doesn't need to be parallelized.
 	program := lprogram.LoadSSA()
+	phaseMem("after-LoadSSA")
 	buildProgram := sync.OnceFunc(program.Build)
 
 	// Add jobs to compile each package.
@@ -582,6 +583,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		run: func(*compileJob) error {
 			// Load and link all the bitcode files. This does not yet optimize
 			// anything, it only links the bitcode files together.
+			phaseMem("program-job-start")
 			ctx := llvm.NewContext()
 			mod = ctx.NewModule("main")
 			// Resolve duplicate function definitions before linking.
@@ -645,6 +647,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			// https://github.com/tinygo-org/tinygo/issues/4810
 			globalsMod := makeGlobalsModule(ctx, globalValues, machine)
 			llvm.LinkModules(mod, globalsMod)
+			phaseMem("after-link")
 
 			// Create runtime.initAll function that calls the runtime
 			// initializer of each package.
@@ -701,7 +704,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 			// Run all optimization passes, which are much more effective now
 			// that the optimizer can see the whole program at once.
+			phaseMem("before-optimize")
 			err := optimizeProgram(mod, config)
+			phaseMem("after-optimize")
 			if err != nil {
 				return err
 			}
