@@ -32,6 +32,9 @@ type state struct {
 
 	// Semaphore to pause/resume the thread atomically.
 	pauseSem Semaphore
+
+	// startFn is the function the goroutine was started with, for profiles.
+	startFn uintptr
 }
 
 // Goroutine counter, starting at 0 for the main goroutine.
@@ -109,6 +112,7 @@ func start(fn uintptr, args unsafe.Pointer, stackSize uintptr) {
 	t := &Task{}
 	inheritSynctest(t)
 	t.state.id = atomic.AddUintptr(&goroutineID, 1)
+	t.state.startFn = fn
 	if verbose {
 		println("*** start:  ", t.state.id, "from", Current().state.id)
 	}
@@ -374,4 +378,19 @@ func tinygo_task_current() unsafe.Pointer
 
 func NumCPU() int {
 	return int(numCPU)
+}
+
+// GoroutineStartPCs fills buf with the start function of every live goroutine,
+// 0 for the main one, and returns how many there are.
+func GoroutineStartPCs(buf []uintptr) int {
+	activeTaskLock.Lock()
+	n := 0
+	for t := activeTasks; t != nil; t = t.state.QueueNext {
+		if n < len(buf) {
+			buf[n] = t.state.startFn
+		}
+		n++
+	}
+	activeTaskLock.Unlock()
+	return n
 }
