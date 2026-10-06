@@ -26,6 +26,9 @@ var BoehmGC = Library{
 			"-DIGNORE_DYNAMIC_LOADING", // we don't support dynamic loading at the moment
 			"-DNO_GETCONTEXT",          // musl doesn't support getcontext()
 			"-DGC_DISABLE_INCREMENTAL", // don't mess with SIGSEGV and such
+			// Each goroutine stack is pushed as one root under the threads
+			// scheduler, and GC_push_all aborts rather than grow the mark stack.
+			"-DINITIAL_MARK_STACK_SIZE=(64*HBLKSIZE)",
 
 			// Use a minimal environment.
 			"-DNO_MSGBOX_ON_ERROR", // don't call MessageBoxA on Windows
