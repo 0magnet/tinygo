@@ -36,35 +36,11 @@ type ProcAttr struct {
 // ErrProcessDone indicates a Process has finished.
 var ErrProcessDone = errors.New("os: process already finished")
 
-type ProcessState struct {
-}
-
-func (p *ProcessState) String() string {
-	return "" // TODO
-}
-func (p *ProcessState) Success() bool {
-	return false // TODO
-}
-
-// Sys returns system-dependent exit information about
-// the process. Convert it to the appropriate underlying
-// type, such as syscall.WaitStatus on Unix, to access its contents.
-func (p *ProcessState) Sys() interface{} {
-	return nil // TODO
-}
-
-func (p *ProcessState) Exited() bool {
-	return false // TODO
-}
-
-// ExitCode returns the exit code of the exited process, or -1
-// if the process hasn't exited or was terminated by a signal.
-func (p *ProcessState) ExitCode() int {
-	return -1 // TODO
-}
+var errProcessReleased = errors.New("os: process already released")
 
 type Process struct {
 	Pid int
+	h   *processHandle
 }
 
 // StartProcess starts a new process with the program, arguments and attributes specified by name, argv and attr.
@@ -73,19 +49,23 @@ func StartProcess(name string, argv []string, attr *ProcAttr) (*Process, error) 
 	return startProcess(name, argv, attr)
 }
 
+// Wait waits for the Process to exit, and then returns a ProcessState
+// describing its status and an error, if any.
 func (p *Process) Wait() (*ProcessState, error) {
 	if p.Pid == -1 {
 		return nil, syscall.EINVAL
 	}
-	return nil, ErrNotImplemented
+	return p.wait()
 }
 
+// Kill causes the Process to exit immediately.
 func (p *Process) Kill() error {
-	return ErrNotImplemented
+	return p.Signal(Kill)
 }
 
+// Signal sends a signal to the Process.
 func (p *Process) Signal(sig Signal) error {
-	return ErrNotImplemented
+	return p.signal(sig)
 }
 
 func Ignore(sig ...Signal) {
