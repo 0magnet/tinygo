@@ -71,7 +71,8 @@ func (r *runner) dispose() {
 
 // Run evaluates runtime.initAll function as much as possible at compile time.
 // Set debug to true if it should print output while running.
-func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bool) error {
+func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bool) (err error) {
+	defer renderReturned(&err)
 	r := newRunner(mod, timeout, maxLoopIterations, debug)
 	defer r.dispose()
 
@@ -214,7 +215,8 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 
 // RunFunc evaluates a single package initializer at compile time.
 // Set debug to true if it should print output while running.
-func RunFunc(fn llvm.Value, timeout time.Duration, maxLoopIterations int, debug bool) error {
+func RunFunc(fn llvm.Value, timeout time.Duration, maxLoopIterations int, debug bool) (err error) {
+	defer renderReturned(&err)
 	// Create and initialize *runner object.
 	mod := fn.GlobalParent()
 	r := newRunner(mod, timeout, maxLoopIterations, debug)

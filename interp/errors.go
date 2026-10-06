@@ -37,6 +37,7 @@ func isRecoverableError(err error) bool {
 type ErrorLine struct {
 	Pos  token.Position
 	Inst string
+	inst llvm.Value
 }
 
 // Error encapsulates compile-time interpretation errors with an associated
@@ -47,6 +48,21 @@ type Error struct {
 	Pos        token.Position
 	Err        error
 	Traceback  []ErrorLine
+	inst       llvm.Value
+}
+
+// render fills in Inst and the traceback. Printing an LLVM value walks the
+// whole module, so it is left until an error leaves the interpreter.
+func (e *Error) render() {
+	if e.Inst == "" && !e.inst.IsNil() {
+		e.Inst = e.inst.String()
+	}
+	for i := range e.Traceback {
+		line := &e.Traceback[i]
+		if line.Inst == "" && !line.inst.IsNil() {
+			line.Inst = line.inst.String()
+		}
+	}
 }
 
 // Error returns the string of the first error in the list of errors.
@@ -61,10 +77,10 @@ func (r *runner) errorAt(inst instruction, err error) *Error {
 	pos := getPosition(inst.llvmInst)
 	return &Error{
 		ImportPath: r.pkgName,
-		Inst:       inst.llvmInst.String(),
 		Pos:        pos,
 		Err:        err,
-		Traceback:  []ErrorLine{{pos, inst.llvmInst.String()}},
+		Traceback:  []ErrorLine{{Pos: pos, inst: inst.llvmInst}},
+		inst:       inst.llvmInst,
 	}
 }
 
@@ -93,5 +109,13 @@ func getPosition(inst llvm.Value) token.Position {
 		Filename: filepath.Join(file.FileDirectory(), file.FileFilename()),
 		Line:     int(loc.LocationLine()),
 		Column:   int(loc.LocationColumn()),
+	}
+}
+
+// renderReturned renders an *Error in *err while its module is still alive.
+func renderReturned(err *error) {
+	var e *Error
+	if errors.As(*err, &e) {
+		e.render()
 	}
 }
