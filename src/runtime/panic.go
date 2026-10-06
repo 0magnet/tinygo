@@ -90,6 +90,7 @@ func panicOrGoexit(message interface{}, panicking panicState) {
 		// Exit the goroutine instead of printing a panic message.
 		goexit()
 	}
+	crashing = true
 	printstring("panic: ")
 	printitf(message)
 	printnl()
@@ -114,6 +115,7 @@ func runtimeFatal(msg string) {
 	if panicStrategy() == tinygo.PanicStrategyTrap {
 		trap()
 	}
+	crashing = true
 	printstring("fatal error: ")
 	printstring(msg)
 	printnl()
@@ -130,6 +132,7 @@ func runtimePanicAt(addr unsafe.Pointer, err Error) {
 	if startPanicUnwind(err, panicTrue) {
 		return
 	}
+	crashing = true
 	printstring("panic: ")
 	printstring(err.Error())
 	if hasReturnAddr {
@@ -294,4 +297,18 @@ func blockingPanic() {
 //go:linkname fips_fatal crypto/internal/fips140.fatal
 func fips_fatal(msg string) {
 	runtimeFatal(msg)
+}
+
+// crashFD is the extra descriptor a crash is written to, set by
+// debug.SetCrashOutput. crashing is set once a crash starts printing.
+var (
+	crashFD  int32 = -1
+	crashing bool
+)
+
+//go:linkname debug_setCrashFD runtime/debug.setCrashFD
+func debug_setCrashFD(fd int32) int32 {
+	old := crashFD
+	crashFD = fd
+	return old
 }
