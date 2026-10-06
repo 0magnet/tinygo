@@ -39,6 +39,7 @@ func isRecoverableError(err error) bool {
 type ErrorLine struct {
 	Pos  token.Position
 	Inst string
+	inst llvm.Value
 }
 
 // Error encapsulates compile-time interpretation errors with an associated
@@ -49,6 +50,23 @@ type Error struct {
 	Pos        token.Position
 	Err        error
 	Traceback  []ErrorLine
+	inst       llvm.Value
+}
+
+// Render fills in Inst and the traceback instructions. Printing an LLVM value
+// walks the whole module, and most of these errors are never shown: they only
+// tell the interpreter to leave an instruction for runtime. So the text waits
+// until something is about to display it.
+func (e *Error) Render() {
+	if e.Inst == "" && !e.inst.IsNil() {
+		e.Inst = e.inst.String()
+	}
+	for i := range e.Traceback {
+		line := &e.Traceback[i]
+		if line.Inst == "" && !line.inst.IsNil() {
+			line.Inst = line.inst.String()
+		}
+	}
 }
 
 // Error returns the string of the first error in the list of errors.
@@ -63,10 +81,10 @@ func (r *runner) errorAt(inst instruction, err error) *Error {
 	pos := getPosition(inst.llvmInst)
 	return &Error{
 		ImportPath: r.pkgName,
-		Inst:       inst.llvmInst.String(),
 		Pos:        pos,
 		Err:        err,
-		Traceback:  []ErrorLine{{pos, inst.llvmInst.String()}},
+		Traceback:  []ErrorLine{{Pos: pos, inst: inst.llvmInst}},
+		inst:       inst.llvmInst,
 	}
 }
 
