@@ -93,7 +93,10 @@ func writeMemStats(w io.Writer, name string) error {
 		name, s.Alloc, s.TotalAlloc, s.Sys, s.Mallocs, s.Frees,
 		s.HeapAlloc, s.HeapSys, s.HeapIdle, s.HeapInuse, s.HeapReleased,
 		s.NumGC, runtime.NumGoroutine())
-	return err
+	if err != nil {
+		return err
+	}
+	return writeHeapSites(w)
 }
 
 func Profiles() []*Profile {

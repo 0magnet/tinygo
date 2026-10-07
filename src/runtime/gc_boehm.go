@@ -123,6 +123,9 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 			)
 		}
 	}
+	if ptr != nil {
+		memProfRecord(ptr, size, uintptr(returnAddress(0)))
+	}
 	gcResumeWorld()
 	gcLock.Unlock()
 	if ptr == nil {

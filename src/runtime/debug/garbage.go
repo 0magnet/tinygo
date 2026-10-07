@@ -3,6 +3,7 @@ package debug
 
 import (
 	"time"
+	_ "unsafe"
 )
 
 type GCStats struct {
@@ -17,8 +18,14 @@ type GCStats struct {
 func ReadGCStats(stats *GCStats) {
 }
 
+// FreeOSMemory forces a collection and returns as much memory to the
+// operating system as the garbage collector can.
 func FreeOSMemory() {
+	freeOSMemory()
 }
+
+//go:linkname freeOSMemory runtime.freeOSMemory
+func freeOSMemory()
 
 func SetMaxThreads(threads int) int {
 	return threads
