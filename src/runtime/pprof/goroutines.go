@@ -2,6 +2,7 @@ package pprof
 
 import (
 	"bufio"
+	"bytes"
 	"debug/elf"
 	"fmt"
 	"internal/task"
@@ -46,7 +47,9 @@ func writeGoroutines(w io.Writer) error {
 	return nil
 }
 
-// symbolize names addresses from the executable's ELF symbol table.
+// symbolize names addresses from the executable's ELF symbol table. It streams
+// the table and keeps only the symbols that cover pcs, because loading every
+// symbol of a large binary costs tens of megabytes per profile.
 func symbolize(pcs []uintptr) map[uintptr]string {
 	out := map[uintptr]string{}
 	exe, err := os.Executable()
@@ -58,27 +61,66 @@ func symbolize(pcs []uintptr) map[uintptr]string {
 		return out
 	}
 	defer f.Close()
-	syms, err := f.Symbols()
-	if err != nil {
+	symtab := f.SectionByType(elf.SHT_SYMTAB)
+	if symtab == nil || int(symtab.Link) >= len(f.Sections) {
 		return out
 	}
+	strtab := f.Sections[symtab.Link]
 	bias := uint64(0)
 	if f.Type == elf.ET_DYN {
 		bias = loadBias(exe)
 	}
-	funcs := syms[:0]
-	for _, s := range syms {
-		if elf.ST_TYPE(s.Info) == elf.STT_FUNC && s.Value != 0 {
-			funcs = append(funcs, s)
+	addrs := make([]uint64, len(pcs))
+	for i, pc := range pcs {
+		addrs[i] = uint64(pc) - bias
+	}
+	sort.Slice(addrs, func(i, j int) bool { return addrs[i] < addrs[j] })
+	nameOff := make(map[uint64]uint32, len(addrs))
+
+	size := elf.Sym64Size
+	if f.Class == elf.ELFCLASS32 {
+		size = elf.Sym32Size
+	}
+	r := bufio.NewReaderSize(symtab.Open(), 64<<10)
+	ent := make([]byte, size)
+	for {
+		if _, err := io.ReadFull(r, ent); err != nil {
+			break
+		}
+		var name uint32
+		var info byte
+		var value, sz uint64
+		if f.Class == elf.ELFCLASS32 {
+			name = f.ByteOrder.Uint32(ent[0:])
+			value = uint64(f.ByteOrder.Uint32(ent[4:]))
+			sz = uint64(f.ByteOrder.Uint32(ent[8:]))
+			info = ent[12]
+		} else {
+			name = f.ByteOrder.Uint32(ent[0:])
+			info = ent[4]
+			value = f.ByteOrder.Uint64(ent[8:])
+			sz = f.ByteOrder.Uint64(ent[16:])
+		}
+		if elf.ST_TYPE(info) != elf.STT_FUNC || value == 0 || sz == 0 {
+			continue
+		}
+		i := sort.Search(len(addrs), func(i int) bool { return addrs[i] >= value })
+		for ; i < len(addrs) && addrs[i] < value+sz; i++ {
+			nameOff[addrs[i]] = name
 		}
 	}
-	sort.Slice(funcs, func(i, j int) bool { return funcs[i].Value < funcs[j].Value })
+	buf := make([]byte, 512)
 	for _, pc := range pcs {
-		a := uint64(pc) - bias
-		i := sort.Search(len(funcs), func(i int) bool { return funcs[i].Value > a }) - 1
-		if i >= 0 && (funcs[i].Size == 0 || a < funcs[i].Value+funcs[i].Size) {
-			out[pc] = funcs[i].Name
+		off, ok := nameOff[uint64(pc)-bias]
+		if !ok {
+			continue
 		}
+		n, _ := strtab.ReadAt(buf, int64(off))
+		name := buf[:n]
+		if j := bytes.IndexByte(name, 0); j >= 0 {
+			name = name[:j]
+		}
+		out[pc] = string(name)
 	}
 	return out
 }
