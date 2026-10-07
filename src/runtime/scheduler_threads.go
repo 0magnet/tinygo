@@ -231,6 +231,13 @@ func freeTimerNode(tn *timerNode) {
 	timerNodeFreeN++
 }
 
+// releaseTimerNode keeps a node that Stop took off the queue.
+func releaseTimerNode(tn *timerNode) {
+	timerQueueLock.Lock()
+	freeTimerNode(tn)
+	timerQueueLock.Unlock()
+}
+
 // newTimerNode returns a zeroed node, reusing a freed one when it can.
 func newTimerNode() *timerNode {
 	timerQueueLock.Lock()

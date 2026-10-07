@@ -68,12 +68,18 @@ func stopTimer(tim *timeTimer) bool {
 	}
 	tim.timer.lock.Lock()
 	var removed bool
+	var n *timerNode
 	if tim.timer.synctest != nil {
 		removed = tim.timer.synctest.removeTimer(&tim.timer) != nil
 	} else {
-		removed = removeTimer(&tim.timer) != nil
+		n = removeTimer(&tim.timer)
+		removed = n != nil
 	}
 	tim.timer.lock.Unlock()
+	if n != nil {
+		// Off the queue and not firing, so nothing else refers to n.
+		releaseTimerNode(n)
+	}
 	return removed
 }
 
