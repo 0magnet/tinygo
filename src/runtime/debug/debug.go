@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	_ "unsafe"
 )
 
 // SetMaxStack sets the maximum amount of memory that can be used by a single
@@ -257,10 +258,14 @@ type Module struct {
 	Replace *Module // replaced by this module
 }
 
-// Not implemented.
+// SetGCPercent sets the collection target where the garbage collector
+// supports it. It returns the previous setting.
 func SetGCPercent(n int) int {
-	return n
+	return int(setGCPercent(int32(n)))
 }
+
+//go:linkname setGCPercent runtime.setGCPercent
+func setGCPercent(int32) int32
 
 // Start of stolen from big go. TODO: import/reuse without copy pasta.
 
