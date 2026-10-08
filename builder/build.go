@@ -1330,6 +1330,11 @@ func optimizeProgram(mod llvm.Module, config *compileopts.Config) error {
 	if err != nil {
 		return err
 	}
+	if config.Scheduler() == "asyncify" {
+		// Asyncify instruments a function as a whole and wasm-opt's local
+		// passes grow faster than linearly with its size, so keep initAll small.
+		keepInitCallsOutOfLine(mod)
+	}
 	if config.VerifyIR() {
 		// Only verify if we really need it.
 		// The IR has already been verified before writing the bitcode to disk
@@ -1995,4 +2000,24 @@ func gitVCSStamp(dir, modPath string) (version, settings string, gitErr error) {
 	sb.WriteString("build\tvcs.time=" + commitTime.Format(time.RFC3339Nano) + "\n")
 	sb.WriteString("build\tvcs.modified=" + strconv.FormatBool(modified) + "\n")
 	return version, sb.String(), nil
+}
+
+// keepInitCallsOutOfLine marks every function called from runtime.initAll as
+// noinline, so that the package initializers stay separate functions.
+func keepInitCallsOutOfLine(mod llvm.Module) {
+	initAll := mod.NamedFunction("runtime.initAll")
+	if initAll.IsNil() {
+		return
+	}
+	noinline := mod.Context().CreateEnumAttribute(llvm.AttributeKindID("noinline"), 0)
+	for bb := initAll.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
+		for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+			if inst.IsACallInst().IsNil() {
+				continue
+			}
+			if callee := inst.CalledValue().IsAFunction(); !callee.IsNil() && !callee.IsDeclaration() {
+				callee.AddFunctionAttr(noinline)
+			}
+		}
+	}
 }
