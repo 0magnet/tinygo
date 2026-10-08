@@ -19,17 +19,11 @@ define void @runtime.initAll() unnamed_addr {
 entry:
   call fastcc void @baz.init(ptr undef)
   call fastcc void @foo.init(ptr undef)
-  %val = load i64, ptr @foo.knownAtRuntime, align 8
-  store i64 %val, ptr @bar.knownAtRuntime, align 8
-  call void @externalCall(i64 3)
-  store atomic i32 1, ptr @x.atomicNum seq_cst, align 4
-  %x = load atomic i32, ptr @x.atomicNum seq_cst, align 4
-  store i32 %x, ptr @x.atomicNum, align 4
-  %y = load volatile i32, ptr @x.volatileNum, align 4
-  store volatile i32 %y, ptr @x.volatileNum, align 4
+  call fastcc void @"bar.init#interp"(ptr undef)
+  call fastcc void @"main.init#interp"(ptr undef)
+  call fastcc void @"x.init#interp"(ptr undef)
   call fastcc void @y.init(ptr undef)
-  call fastcc void @z.set(ptr @z.bloom, ptr @z.bloom)
-  call fastcc void @z.setArr(ptr @z.arr, i64 32, ptr @z.bloom)
+  call fastcc void @"z.init#interp"(ptr undef)
   ret void
 }
 
@@ -78,5 +72,35 @@ define internal fastcc void @z.set(ptr %ptr, ptr %context) unnamed_addr {
   %old = load i64, ptr %context, align 8
   %new = or i64 %old, %bit
   store i64 %new, ptr %context, align 8
+  ret void
+}
+
+define internal fastcc void @"bar.init#interp"(ptr %0) unnamed_addr {
+entry:
+  %val = load i64, ptr @foo.knownAtRuntime, align 8
+  store i64 %val, ptr @bar.knownAtRuntime, align 8
+  ret void
+}
+
+define internal fastcc void @"main.init#interp"(ptr %0) unnamed_addr {
+entry:
+  call void @externalCall(i64 3)
+  ret void
+}
+
+define internal fastcc void @"x.init#interp"(ptr %0) unnamed_addr {
+entry:
+  store atomic i32 1, ptr @x.atomicNum seq_cst, align 4
+  %x = load atomic i32, ptr @x.atomicNum seq_cst, align 4
+  store i32 %x, ptr @x.atomicNum, align 4
+  %y = load volatile i32, ptr @x.volatileNum, align 4
+  store volatile i32 %y, ptr @x.volatileNum, align 4
+  ret void
+}
+
+define internal fastcc void @"z.init#interp"(ptr %0) unnamed_addr {
+entry:
+  call fastcc void @z.set(ptr @z.bloom, ptr @z.bloom)
+  call fastcc void @z.setArr(ptr @z.arr, i64 32, ptr @z.bloom)
   ret void
 }
