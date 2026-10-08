@@ -1316,6 +1316,7 @@ func optimizeProgram(mod llvm.Module, config *compileopts.Config) error {
 		// Asyncify instruments a function as a whole and wasm-opt's local
 		// passes grow faster than linearly with its size, so keep initAll small.
 		keepInitCallsOutOfLine(mod)
+		keepLargeFunctionsOutOfLine(mod, largeFunctionSize)
 	}
 	if config.VerifyIR() {
 		// Only verify if we really need it.
@@ -1997,6 +1998,32 @@ func keepInitCallsOutOfLine(mod llvm.Module) {
 			if callee := inst.CalledValue().IsAFunction(); !callee.IsNil() && !callee.IsDeclaration() {
 				callee.AddFunctionAttr(noinline)
 			}
+		}
+	}
+}
+
+// largeFunctionSize is the instruction count above which a function is not
+// inlined under asyncify. Each inlined copy is instrumented again, and the
+// single call site bonus otherwise inlines callees of any size.
+const largeFunctionSize = 2000
+
+// keepLargeFunctionsOutOfLine marks functions with more than limit
+// instructions as noinline.
+func keepLargeFunctionsOutOfLine(mod llvm.Module, limit int) {
+	noinline := mod.Context().CreateEnumAttribute(llvm.AttributeKindID("noinline"), 0)
+	alwaysinline := llvm.AttributeKindID("alwaysinline")
+	for fn := mod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
+		if fn.IsDeclaration() || !fn.GetEnumFunctionAttribute(alwaysinline).IsNil() {
+			continue
+		}
+		n := 0
+		for bb := fn.FirstBasicBlock(); !bb.IsNil() && n <= limit; bb = llvm.NextBasicBlock(bb) {
+			for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+				n++
+			}
+		}
+		if n > limit {
+			fn.AddFunctionAttr(noinline)
 		}
 	}
 }
