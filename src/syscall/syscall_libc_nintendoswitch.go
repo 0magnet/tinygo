@@ -92,3 +92,21 @@ func Chmod(path string, mode uint32) (err error) {
 //
 //export open
 func libc_open(pathname *byte, flags int32, mode uint32) int32
+
+func Chown(path string, uid, gid int) (err error) {
+	data := cstring(path)
+	fail := int(libc_chown(&data[0], uid, gid))
+	if fail < 0 {
+		err = getErrno()
+	}
+	return
+}
+
+func Lchown(path string, uid, gid int) (err error) {
+	data := cstring(path)
+	fail := int(libc_lchown(&data[0], uid, gid))
+	if fail < 0 {
+		err = getErrno()
+	}
+	return
+}
