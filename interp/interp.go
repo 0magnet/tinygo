@@ -116,6 +116,7 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		initCalls = append(initCalls, inst)
 	}
 
+	var moved [][2]llvm.Value // package init, residual function
 	// Run initializers for each package. Once the package initializer is
 	// finished, the call to the package initializer can be removed.
 	for _, call := range initCalls {
@@ -133,8 +134,21 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		// AES/secp256k1 key expansion — reverts to a runtime call without
 		// starving the remaining packages of precomputation time.
 		r.start = time.Now()
+		// Emit what must run at runtime into a function of its own. Kept in
+		// initAll, the leftovers of every package form one huge function.
+		residual := llvm.AddFunction(mod, fn.Name()+"#interp", fn.GlobalValueType())
+		residual.SetLinkage(llvm.InternalLinkage)
+		r.builder.SetInsertPointAtEnd(mod.Context().AddBasicBlock(residual, "entry"))
+		subprogram := fn.Subprogram()
+		if !subprogram.IsNil() {
+			r.builder.SetCurrentDebugLocation(subprogram.SubprogramLine(), 0, subprogram, llvm.Metadata{})
+		}
 		_, mem, callErr := r.run(r.getFunction(fn), nil, nil, "    ")
 		call.EraseFromParentAsInstruction()
+		r.builder.SetInsertPointBefore(dummy)
+		if subprogram := initAll.Subprogram(); !subprogram.IsNil() {
+			r.builder.SetCurrentDebugLocation(subprogram.SubprogramLine(), 0, subprogram, llvm.Metadata{})
+		}
 		if callErr != nil {
 			if isRecoverableError(callErr.Err) {
 				if r.debug {
@@ -143,6 +157,7 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 				// Remove instructions that were created as part of interpreting
 				// the package.
 				mem.revert()
+				residual.EraseFromParentAsFunction()
 				// Create a call to the package initializer (which was
 				// previously deleted).
 				i8undef := llvm.Undef(r.dataPtrType)
@@ -160,8 +175,30 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		for index, obj := range mem.objects {
 			r.objects[index] = obj
 		}
+		if residual.EntryBasicBlock().FirstInstruction().IsNil() {
+			residual.EraseFromParentAsFunction()
+			continue
+		}
+		b := mod.Context().NewBuilder()
+		b.SetInsertPointAtEnd(residual.EntryBasicBlock())
+		b.CreateRetVoid()
+		b.Dispose()
+		r.builder.CreateCall(residual.GlobalValueType(), residual, []llvm.Value{llvm.Undef(r.dataPtrType)}, "")
+		if !subprogram.IsNil() {
+			moved = append(moved, [2]llvm.Value{fn, residual})
+		}
 	}
 	r.pkgName = ""
+
+	// A subprogram may belong to one function only. The package initializers
+	// whose call was removed are no longer used, so hand theirs over.
+	for _, m := range moved {
+		if m[0].FirstUse().IsNil() {
+			subprogram := m[0].Subprogram()
+			m[0].EraseFromParentAsFunction()
+			m[1].SetSubprogram(subprogram)
+		}
+	}
 
 	// Update all global variables in the LLVM module.
 	mem := memoryView{r: r}
