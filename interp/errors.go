@@ -53,11 +53,9 @@ type Error struct {
 	inst       llvm.Value
 }
 
-// Render fills in Inst and the traceback instructions. Printing an LLVM value
-// walks the whole module, and most of these errors are never shown: they only
-// tell the interpreter to leave an instruction for runtime. So the text waits
-// until something is about to display it.
-func (e *Error) Render() {
+// render fills in Inst and the traceback. Printing an LLVM value walks the
+// whole module, so it is left until an error leaves the interpreter.
+func (e *Error) render() {
 	if e.Inst == "" && !e.inst.IsNil() {
 		e.Inst = e.inst.String()
 	}
@@ -113,5 +111,13 @@ func getPosition(inst llvm.Value) token.Position {
 		Filename: filepath.Join(file.FileDirectory(), file.FileFilename()),
 		Line:     int(loc.LocationLine()),
 		Column:   int(loc.LocationColumn()),
+	}
+}
+
+// renderReturned renders an *Error in *err while its module is still alive.
+func renderReturned(err *error) {
+	var e *Error
+	if errors.As(*err, &e) {
+		e.render()
 	}
 }

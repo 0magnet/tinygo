@@ -80,7 +80,6 @@ func createPackageDiagnostic(err error) PackageDiagnostic {
 		}
 	case *interp.Error:
 		pkgDiag.ImportPath = err.ImportPath
-		err.Render()
 		w := &bytes.Buffer{}
 		fmt.Fprintln(w, err.Error())
 		if len(err.Inst) != 0 {
