@@ -1,6 +1,7 @@
 package reflectlite
 
 import (
+	"internal/gclayout"
 	"math"
 	"unsafe"
 )
@@ -657,6 +658,9 @@ func (v Value) Complex() complex128 {
 }
 
 func (v Value) String() string {
+	if !v.IsValid() {
+		return "<invalid Value>"
+	}
 	switch v.Kind() {
 	case String:
 		// A string value is always bigger than a pointer as it is made of a
@@ -706,7 +710,9 @@ func (v Value) Slice(i, j int) Value {
 
 		hdr.len = j - i
 		hdr.cap = hdr.cap - i
-		hdr.data = unsafe.Add(hdr.data, i*elemSize)
+		if hdr.cap > 0 {
+			hdr.data = unsafe.Add(hdr.data, i*elemSize)
+		}
 
 		return Value{
 			typecode: v.typecode,
@@ -727,7 +733,10 @@ func (v Value) Slice(i, j int) Value {
 		var hdr sliceHeader
 		hdr.len = j - i
 		hdr.cap = length - i
-		hdr.data = unsafe.Add(buf, i*elemSize)
+		hdr.data = buf
+		if hdr.cap > 0 {
+			hdr.data = unsafe.Add(buf, i*elemSize)
+		}
 
 		sliceType := (*arrayType)(unsafe.Pointer(v.typecode.underlying())).slicePtr
 		return Value{
@@ -756,16 +765,17 @@ func (v Value) Slice3(i, j, k int) Value {
 	case Slice:
 		hdr := *(*sliceHeader)(v.value)
 		i, j, k := uintptr(i), uintptr(j), uintptr(k)
-
-		if j < i || k < j || hdr.len < k {
-			slicePanic()
+		if j < i || k < j || hdr.cap < k {
+			panic("reflect.Value.Slice3: slice index out of bounds")
 		}
 
 		elemSize := v.typecode.underlying().elem().Size()
 
 		hdr.len = j - i
 		hdr.cap = k - i
-		hdr.data = unsafe.Add(hdr.data, i*elemSize)
+		if k > i {
+			hdr.data = unsafe.Add(hdr.data, i*elemSize)
+		}
 
 		return Value{
 			typecode: v.typecode,
@@ -778,7 +788,7 @@ func (v Value) Slice3(i, j, k int) Value {
 		buf, length := buflen(v)
 		i, j, k := uintptr(i), uintptr(j), uintptr(k)
 		if j < i || k < j || length < k {
-			slicePanic()
+			panic("reflect.Value.Slice3: slice index out of bounds")
 		}
 
 		elemSize := v.typecode.underlying().elem().Size()
@@ -786,7 +796,10 @@ func (v Value) Slice3(i, j, k int) Value {
 		var hdr sliceHeader
 		hdr.len = j - i
 		hdr.cap = k - i
-		hdr.data = unsafe.Add(buf, i*elemSize)
+		hdr.data = buf
+		if k > i {
+			hdr.data = unsafe.Add(buf, i*elemSize)
+		}
 
 		sliceType := (*arrayType)(unsafe.Pointer(v.typecode.underlying())).slicePtr
 		return Value{
@@ -796,7 +809,7 @@ func (v Value) Slice3(i, j, k int) Value {
 		}
 	}
 
-	panic("unimplemented: (reflect.Value).Slice3()")
+	panic(&ValueError{Method: "reflect.Value.Slice3", Kind: v.Kind()})
 }
 
 //go:linkname maplen runtime.hashmapLen
@@ -1194,6 +1207,9 @@ func (v Value) MapIndex(key Value) Value {
 //go:linkname hashmapNewIterator runtime.hashmapNewIterator
 func hashmapNewIterator() unsafe.Pointer
 
+//go:linkname hashmapResetIterator runtime.hashmapResetIterator
+func hashmapResetIterator(it unsafe.Pointer) unsafe.Pointer
+
 //go:linkname hashmapNext runtime.hashmapNext
 func hashmapNext(m unsafe.Pointer, it unsafe.Pointer, key, value unsafe.Pointer) bool
 
@@ -1209,50 +1225,104 @@ type MapIter struct {
 	key Value
 	val Value
 
-	valid bool
+	started bool
+	valid   bool
 }
 
 func (it *MapIter) Key() Value {
+	if !it.started {
+		panic("reflect: MapIter.Key called before Next")
+	}
 	if !it.valid {
-		panic("reflect.MapIter.Key called on invalid iterator")
+		panic("reflect: MapIter.Key called on exhausted iterator")
 	}
 
-	return it.key.Elem()
+	key := it.key.Elem()
+	key.flags |= it.m.flags & valueFlagRO
+	return key
 }
 
 func (v Value) SetIterKey(iter *MapIter) {
-	v.Set(iter.Key())
+	if !iter.started {
+		panic("reflect: Value.SetIterKey called before Next")
+	}
+	if !iter.valid {
+		panic("reflect: Value.SetIterKey called on exhausted iterator")
+	}
+	if !v.isIndirect() {
+		panic("reflect.Value.SetIterKey using unaddressable value")
+	}
+	if v.isRO() || iter.m.isRO() {
+		panic("reflect.Value.SetIterKey using value obtained using unexported field")
+	}
+	key := iter.key.Elem()
+	if !key.typecode.AssignableTo(v.typecode) {
+		panic("reflect.Value.SetIterKey: value of type " + key.typecode.String() + " is not assignable to type " + v.typecode.String())
+	}
+	v.Set(key)
 }
 
 func (it *MapIter) Value() Value {
+	if !it.started {
+		panic("reflect: MapIter.Value called before Next")
+	}
 	if !it.valid {
-		panic("reflect.MapIter.Value called on invalid iterator")
+		panic("reflect: MapIter.Value called on exhausted iterator")
 	}
 
-	return it.val.Elem()
+	value := it.val.Elem()
+	value.flags |= it.m.flags & valueFlagRO
+	return value
 }
 
 func (v Value) SetIterValue(iter *MapIter) {
-	v.Set(iter.Value())
+	if !iter.started {
+		panic("reflect: Value.SetIterValue called before Next")
+	}
+	if !iter.valid {
+		panic("reflect: Value.SetIterValue called on exhausted iterator")
+	}
+	if !v.isIndirect() {
+		panic("reflect.Value.SetIterValue using unaddressable value")
+	}
+	if v.isRO() || iter.m.isRO() {
+		panic("reflect.Value.SetIterValue using value obtained using unexported field")
+	}
+	value := iter.val.Elem()
+	if !value.typecode.AssignableTo(v.typecode) {
+		panic("reflect.Value.SetIterValue: value of type " + value.typecode.String() + " is not assignable to type " + v.typecode.String())
+	}
+	v.Set(value)
 }
 
 func (it *MapIter) Next() bool {
+	if !it.m.IsValid() {
+		panic("reflect: MapIter.Next called on an iterator that does not have an associated map Value")
+	}
+	if it.started && !it.valid {
+		panic("reflect: MapIter.Next called on exhausted iterator")
+	}
 	it.key = New(it.m.typecode.Key())
 	it.val = New(it.m.typecode.Elem())
 
+	it.started = true
 	it.valid = hashmapNext(it.m.pointer(), it.it, it.key.value, it.val.value)
 	return it.valid
 }
 
 func (iter *MapIter) Reset(v Value) {
-	if v.Kind() != Map {
+	if v.IsValid() && v.Kind() != Map {
 		panic(&ValueError{Method: "MapRange", Kind: v.Kind()})
 	}
 
-	*iter = MapIter{
-		m:  v,
-		it: hashmapNewIterator(),
+	if v.IsValid() || iter.it != nil {
+		iter.it = hashmapResetIterator(iter.it)
 	}
+	iter.m = v
+	iter.key = Value{}
+	iter.val = Value{}
+	iter.started = false
+	iter.valid = false
 }
 
 func (v Value) Set(x Value) {
@@ -1390,7 +1460,16 @@ func (v Value) SetBytes(x []byte) {
 }
 
 func (v Value) SetCap(n int) {
-	panic("unimplemented: (reflect.Value).SetCap()")
+	if v.typecode.Kind() != Slice {
+		panic(&ValueError{Method: "reflect.Value.SetCap", Kind: v.Kind()})
+	}
+	v.checkAddressable()
+	v.checkRO()
+	hdr := (*sliceHeader)(v.value)
+	if int(uintptr(n)) != n || uintptr(n) < hdr.len || uintptr(n) > hdr.cap {
+		panic("reflect.Value.SetCap: slice capacity out of range")
+	}
+	hdr.cap = uintptr(n)
 }
 
 func (v Value) SetLen(n int) {
@@ -1644,7 +1723,7 @@ func makeInt(flags valueFlags, bits uint64, t *RawType) Value {
 
 	ptr := unsafe.Pointer(&v.value)
 	if size > unsafe.Sizeof(uintptr(0)) {
-		ptr = alloc(size, nil)
+		ptr = alloc(size, gclayout.NoPtrs.AsPtr())
 		v.value = ptr
 	}
 
@@ -1671,7 +1750,7 @@ func makeFloat(flags valueFlags, f float64, t *RawType) Value {
 
 	ptr := unsafe.Pointer(&v.value)
 	if size > unsafe.Sizeof(uintptr(0)) {
-		ptr = alloc(size, nil)
+		ptr = alloc(size, gclayout.NoPtrs.AsPtr())
 		v.value = ptr
 	}
 
@@ -1703,7 +1782,7 @@ func makeComplex(flags valueFlags, f complex128, t *RawType) Value {
 
 	ptr := unsafe.Pointer(&v.value)
 	if size > unsafe.Sizeof(uintptr(0)) {
-		ptr = alloc(size, nil)
+		ptr = alloc(size, gclayout.NoPtrs.AsPtr())
 		v.value = ptr
 	}
 
@@ -1820,7 +1899,7 @@ func Zero(typ Type) Value {
 		return Value{
 			typecode: typ.(*RawType),
 			value:    nil,
-			flags:    valueFlagExported | valueFlagRO,
+			flags:    valueFlagExported,
 		}
 	}
 
@@ -1828,14 +1907,14 @@ func Zero(typ Type) Value {
 		return Value{
 			typecode: typ.(*RawType),
 			value:    unsafe.Pointer(zerobuffer),
-			flags:    valueFlagExported | valueFlagRO,
+			flags:    valueFlagExported,
 		}
 	}
 
 	return Value{
 		typecode: typ.(*RawType),
-		value:    alloc(size, nil),
-		flags:    valueFlagExported | valueFlagRO,
+		value:    alloc(size, typ.(*RawType).gcLayout()),
+		flags:    valueFlagExported,
 	}
 }
 
@@ -1844,7 +1923,7 @@ func Zero(typ Type) Value {
 func New(typ Type) Value {
 	return Value{
 		typecode: pointerTo(typ.(*RawType)),
-		value:    alloc(typ.Size(), nil),
+		value:    alloc(typ.Size(), typ.(*RawType).gcLayout()),
 		flags:    valueFlagExported,
 	}
 }
@@ -2177,7 +2256,28 @@ func (v Value) FieldByIndex(index []int) Value {
 
 // FieldByIndexErr returns the nested field corresponding to index.
 func (v Value) FieldByIndexErr(index []int) (Value, error) {
-	return Value{}, &ValueError{Method: "FieldByIndexErr"}
+	if len(index) == 1 {
+		return v.Field(index[0]), nil
+	}
+	if v.Kind() != Struct {
+		panic(&ValueError{"FieldByIndexErr", v.Kind()})
+	}
+	for i, x := range index {
+		if i > 0 && v.Kind() == Pointer && v.typecode.elem().Kind() == Struct {
+			if v.IsNil() {
+				return Value{}, fieldByIndexError("reflect: indirection through nil pointer to embedded struct field " + v.typecode.elem().Name())
+			}
+			v = v.Elem()
+		}
+		v = v.Field(x)
+	}
+	return v, nil
+}
+
+type fieldByIndexError string
+
+func (e fieldByIndexError) Error() string {
+	return string(e)
 }
 
 func (v Value) FieldByName(name string) Value {
@@ -2203,13 +2303,13 @@ func (v Value) FieldByNameFunc(match func(string) bool) Value {
 }
 
 //go:linkname hashmapMake runtime.hashmapMake
-func hashmapMake(keySize, valueSize uintptr, sizeHint uintptr, alg uint8) unsafe.Pointer
+func hashmapMake(keySize, valueSize uintptr, sizeHint uintptr, typeInfo unsafe.Pointer, alg uint8) unsafe.Pointer
 
 //go:linkname hashmapMakeReflect runtime.hashmapMakeReflect
-func hashmapMakeReflect(keySize, valueSize, sizeHint uintptr, keyType unsafe.Pointer) unsafe.Pointer
+func hashmapMakeReflect(keySize, valueSize, sizeHint uintptr, typeInfo, keyType unsafe.Pointer) unsafe.Pointer
 
 //go:linkname chanMake runtime.chanMake
-func chanMake(elementSize uintptr, bufSize uintptr) unsafe.Pointer
+func chanMake(elementSize uintptr, bufSize uintptr, elementLayout unsafe.Pointer) unsafe.Pointer
 
 // MakeMapWithSize creates a new map with the specified type and initial space
 // for approximately n elements.
@@ -2231,18 +2331,19 @@ func MakeMapWithSize(typ Type, n int) Value {
 
 	key := typ.Key().(*RawType)
 	val := typ.Elem().(*RawType)
+	typeInfo := typ.(*RawType).hashmapTypeInfo()
 
 	var m unsafe.Pointer
 
 	if key.Kind() == String {
-		m = hashmapMake(key.Size(), val.Size(), uintptr(n), hashmapAlgorithmString)
+		m = hashmapMake(key.Size(), val.Size(), uintptr(n), typeInfo, hashmapAlgorithmString)
 	} else if key.isBinary() {
-		m = hashmapMake(key.Size(), val.Size(), uintptr(n), hashmapAlgorithmBinary)
+		m = hashmapMake(key.Size(), val.Size(), uintptr(n), typeInfo, hashmapAlgorithmBinary)
 	} else {
 		// Composite key type (struct with strings, floats, etc.).
 		// Use runtime-generated hash/equal closures that walk the
 		// type structure, matching the compiler-generated functions.
-		m = hashmapMakeReflect(key.Size(), val.Size(), uintptr(n), unsafe.Pointer(key))
+		m = hashmapMakeReflect(key.Size(), val.Size(), uintptr(n), typeInfo, unsafe.Pointer(key))
 	}
 
 	return Value{
@@ -2269,7 +2370,7 @@ func MakeChan(typ Type, size int) Value {
 		panic("reflect.MakeChan: unidirectional channel type")
 	}
 	elem := typ.Elem().(*RawType)
-	ch := chanMake(elem.Size(), uintptr(size))
+	ch := chanMake(elem.Size(), uintptr(size), elem.gcLayout())
 	return Value{
 		typecode: typ.(*RawType),
 		value:    ch,
@@ -2298,5 +2399,9 @@ func (v Value) Recv() (x Value, ok bool) {
 }
 
 func NewAt(typ Type, p unsafe.Pointer) Value {
-	panic("unimplemented: reflect.New()")
+	return Value{
+		typecode: pointerTo(typ.(*RawType)),
+		value:    p,
+		flags:    valueFlagExported,
+	}
 }

@@ -23,6 +23,8 @@ func TestInterp(t *testing.T) {
 		"alloc",
 		"slicedata",
 		"aggregate",
+		"fastrand",
+		"ptrtoint",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -35,8 +37,8 @@ func runTest(t *testing.T, pathPrefix string) {
 	// Read the input IR.
 	ctx := llvm.NewContext()
 	defer ctx.Dispose()
+	ensureTestCacheFreshness(t, pathPrefix+".ll")
 	buf, err := llvm.NewMemoryBufferFromFile(pathPrefix + ".ll")
-	os.Stat(pathPrefix + ".ll") // make sure this file is tracked by `go test` caching
 	if err != nil {
 		t.Fatalf("could not read file %s: %v", pathPrefix+".ll", err)
 	}
@@ -159,6 +161,7 @@ func filterIrrelevantIRLines(lines []string) []string {
 // hour.
 func TestInterpLargeArray(t *testing.T) {
 	t.Parallel()
+	ensureTestCacheFreshness(t, "testdata/largearray.ll")
 	ctx := llvm.NewContext()
 	defer ctx.Dispose()
 	buf, err := llvm.NewMemoryBufferFromFile("testdata/largearray.ll")
@@ -190,5 +193,14 @@ func TestInterpLargeArray(t *testing.T) {
 	}
 	if !init.Operand(1).IsNull() {
 		t.Errorf("second plane is not zero")
+	}
+}
+
+// ensureTestCacheFreshness registers path as an input of the running test.
+// see https://github.com/tinygo-org/tinygo/issues/5780.
+func ensureTestCacheFreshness(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("could not stat test fixture %s: %v", path, err)
 	}
 }

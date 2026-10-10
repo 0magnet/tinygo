@@ -25,6 +25,20 @@ import (
 // src/internal/reflectlite/type.go.
 const numMethodHasMethodSet = 0x8000
 
+func reflectTypeName(typ *types.Named) string {
+	name := typ.Obj().Name()
+	if typ.TypeArgs().Len() == 0 {
+		return name
+	}
+	qualified := types.TypeString(typ, func(pkg *types.Package) string {
+		return pkg.Name()
+	})
+	if pkg := typ.Obj().Pkg(); pkg != nil {
+		return strings.TrimPrefix(qualified, pkg.Name()+".")
+	}
+	return qualified
+}
+
 // Type kinds for basic types.
 // They must match the constants for the Kind type in src/reflect/type.go.
 var basicTypes = [...]uint8{
@@ -236,7 +250,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Named:
-			name := typ.Obj().Name()
+			name := reflectTypeName(typ)
 			var pkgname string
 			if pkg := typ.Obj().Pkg(); pkg != nil {
 				pkgname = pkg.Name()
@@ -284,6 +298,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "elementType", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "length", types.Typ[types.Uintptr]),
 				types.NewVar(token.NoPos, nil, "sliceOf", types.Typ[types.UnsafePointer]),
+				types.NewVar(token.NoPos, nil, "layout", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Map:
 			typeFieldTypes = append(typeFieldTypes,
@@ -291,6 +306,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "elementType", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "keyType", types.Typ[types.UnsafePointer]),
+				types.NewVar(token.NoPos, nil, "hashmapTypeInfo", types.Typ[types.UnsafePointer]),
 			)
 		case *types.Struct:
 			typeFieldTypes = append(typeFieldTypes,
@@ -299,6 +315,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				types.NewVar(token.NoPos, nil, "pkgpath", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "size", types.Typ[types.Uint32]),
 				types.NewVar(token.NoPos, nil, "numFields", types.Typ[types.Uint16]),
+				types.NewVar(token.NoPos, nil, "layout", types.Typ[types.UnsafePointer]),
 				types.NewVar(token.NoPos, nil, "fields", types.NewArray(c.getRuntimeType("structField"), int64(typ.NumFields()))),
 			)
 			if len(methods) > 0 {
@@ -340,7 +357,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 			metabyte |= 1 << 6
 		}
 
-		if hashmapIsBinaryKey(typ) {
+		if isBinaryComparable(typ) {
 			metabyte |= 1 << 7
 		}
 
@@ -348,7 +365,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 		case *types.Basic:
 			typeFields = []llvm.Value{c.getTypeCode(types.NewPointer(typ))}
 		case *types.Named:
-			name := typ.Obj().Name()
+			name := reflectTypeName(typ)
 			var pkgpath string
 			var pkgname string
 			if pkg := typ.Obj().Pkg(); pkg != nil {
@@ -418,6 +435,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				c.getTypeCode(typ.Elem()),                              // elementType
 				llvm.ConstInt(c.uintptrType, uint64(typ.Len()), false), // length
 				c.getTypeCode(types.NewSlice(typ.Elem())),              // slicePtr
+				c.createObjectLayout(c.getLLVMType(typ), token.NoPos),  // layout
 			}
 		case *types.Map:
 			typeFields = []llvm.Value{
@@ -425,6 +443,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				c.getTypeCode(types.NewPointer(typ)),       // ptrTo
 				c.getTypeCode(typ.Elem()),                  // elem
 				c.getTypeCode(typ.Key()),                   // key
+				c.getHashmapTypeInfo(typ, token.NoPos),     // hashmapTypeInfo
 			}
 		case *types.Struct:
 			var pkgpath string
@@ -450,6 +469,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				pkgPathPtr,
 				llvm.ConstInt(c.ctx.Int32Type(), uint64(size), false),            // size
 				llvm.ConstInt(c.ctx.Int16Type(), uint64(typ.NumFields()), false), // numFields
+				c.createObjectLayout(llvmStructType, token.NoPos),                // layout
 			}
 			structFieldType := c.getLLVMRuntimeType("structField")
 
@@ -510,7 +530,7 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 			typeFields = []llvm.Value{c.getTypeCode(types.NewPointer(typ))}
 			// TODO: params, return values, etc
 		}
-		// Prepend metadata byte.
+		// Prepend the common RawType field.
 		typeFields = append([]llvm.Value{
 			llvm.ConstInt(c.ctx.Int8Type(), uint64(metabyte), false),
 		}, typeFields...)
@@ -723,15 +743,20 @@ func (c *compilerContext) getTypeCodeName(t types.Type) (name string, isLocal bo
 		elems := make([]string, t.NumFields())
 		isLocal := false
 		for i := 0; i < t.NumFields(); i++ {
+			field := t.Field(i)
 			embedded := ""
-			if t.Field(i).Embedded() {
+			if field.Embedded() {
 				embedded = "#"
 			}
-			s, local := c.getTypeCodeName(t.Field(i).Type())
+			s, local := c.getTypeCodeName(field.Type())
 			if local {
 				isLocal = true
 			}
-			elems[i] = embedded + t.Field(i).Name() + ":" + s
+			name := field.Name()
+			if !field.Exported() && field.Pkg() != nil {
+				name = field.Pkg().Path() + "." + name
+			}
+			elems[i] = embedded + name + ":" + s
 			if t.Tag(i) != "" {
 				elems[i] += "`" + t.Tag(i) + "`"
 			}
@@ -1163,11 +1188,13 @@ func (b *builder) getInterfaceAssertBlock() llvm.BasicBlock {
 	block := b.ctx.AddBasicBlock(b.llvmFn, "typeassert.throw")
 	b.interfaceAssertBlock = block
 	b.SetInsertPointAtEnd(block)
+	b.inFaultBlock = true
 	if b.hasDeferFrame() {
 		b.createFaultCheckpoint()
 	}
-	b.createRuntimeCall("interfaceTypeAssert", []llvm.Value{llvm.ConstInt(b.ctx.Int1Type(), 0, false)}, "")
-	b.CreateUnreachable()
+	b.createRuntimeInvoke("interfaceTypeAssert", []llvm.Value{llvm.ConstInt(b.ctx.Int1Type(), 0, false)}, "")
+	b.createUnwindReturnOrUnreachable()
+	b.inFaultBlock = false
 	b.SetInsertPointAtEnd(savedBlock)
 	return block
 }
@@ -1298,11 +1325,62 @@ func (c *compilerContext) getInterfaceInvokeWrapper(fn *ssa.Function, llvmFnType
 		return wrapper
 	}
 
+	exported := c.getFunctionInfo(fn).exported
+	abi := c.getFunctionABI(fn.Signature, exported)
+	if exported {
+		internalABI := c.getFunctionABI(fn.Signature, false)
+		var abiError string
+		if internalABI.indirectResult {
+			abiError = fmt.Sprintf("exported method %s with a large aggregate result cannot be called through an interface", fn.RelString(nil))
+		}
+		if abiError == "" {
+			for _, param := range internalABI.params[1:] {
+				if param.indirect {
+					abiError = fmt.Sprintf("exported method %s with an aggregate parameter passed indirectly by the internal ABI cannot be called through an interface", fn.RelString(nil))
+					break
+				}
+			}
+		}
+		if abiError != "" {
+			resultType := internalABI.resultType
+			var paramTypes []llvm.Type
+			if internalABI.indirectResult {
+				paramTypes = append(paramTypes, c.dataPtrType)
+				resultType = c.ctx.VoidType()
+			}
+			paramTypes = append(paramTypes, c.dataPtrType)
+			for _, param := range internalABI.params[1:] {
+				if param.indirect {
+					paramTypes = append(paramTypes, c.dataPtrType)
+					continue
+				}
+				for _, info := range c.expandDirectFormalParamType(param.llvmType, "", nil) {
+					paramTypes = append(paramTypes, info.llvmType)
+				}
+			}
+			paramTypes = append(paramTypes, c.dataPtrType)
+			wrapper = llvm.AddFunction(c.mod, wrapperName, llvm.FunctionType(resultType, paramTypes, false))
+			c.addStandardDeclaredAttributes(wrapper)
+			if c.Debug {
+				pos := c.program.Fset.Position(fn.Pos())
+				c.attachDebugInfoDeclarationRaw(fn, wrapper, "$invoke", pos.Filename, pos.Line)
+			}
+			wrapper.AddFunctionAttr(c.ctx.CreateStringAttribute("tinygo-interface-abi-error", abiError))
+			return wrapper
+		}
+	}
+
 	// Get the expanded receiver type.
-	receiverType := c.getLLVMType(fn.Signature.Recv().Type())
+	receiverType := abi.params[0].llvmType
 	var expandedReceiverType []llvm.Type
-	receiverIndirect := c.isIndirectAggregate(receiverType)
-	for _, info := range c.expandFormalParamType(receiverType, "", nil) {
+	receiverIndirect := abi.params[0].indirect
+	var receiverInfos []paramInfo
+	if receiverIndirect {
+		receiverInfos = []paramInfo{{llvmType: c.dataPtrType}}
+	} else {
+		receiverInfos = c.expandDirectFormalParamType(receiverType, "", nil)
+	}
+	for _, info := range receiverInfos {
 		expandedReceiverType = append(expandedReceiverType, info.llvmType)
 	}
 
@@ -1317,7 +1395,7 @@ func (c *compilerContext) getInterfaceInvokeWrapper(fn *ssa.Function, llvmFnType
 
 	// create wrapper function
 	resultOffset := 0
-	if _, indirect := c.hasIndirectResult(fn.Signature); indirect {
+	if abi.indirectResult {
 		resultOffset = 1
 	}
 	paramTypes := append([]llvm.Type{}, llvmFnType.ParamTypes()[:resultOffset]...)

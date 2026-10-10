@@ -50,6 +50,7 @@ type Config struct {
 	RelocationModel string
 	SizeLevel       int
 	TinyGoVersion   string // for llvm.ident
+	TrimPath        bool
 
 	// Various compiler options that determine how code is generated.
 	Scheduler          string
@@ -60,6 +61,7 @@ type Config struct {
 	Debug              bool // Whether to emit debug information in the LLVM module.
 	Nobounds           bool // Whether to skip bounds checks
 	PanicStrategy      string
+	PanicUnwind        string
 }
 
 // compilerContext contains function-independent data that should still be
@@ -87,7 +89,14 @@ type compilerContext struct {
 	program          *ssa.Program
 	diagnostics      []error
 	functionInfos    map[*ssa.Function]functionInfo
+	callProperties   map[*ssa.Function]functionCallProperties
+	asyncifyCatchers map[llvm.Type]llvm.Value
+	directCatchers   map[llvm.Value]llvm.Value
+	indirectCatchers map[llvm.Type]llvm.Value
+	asyncifyReplays  map[llvm.Type]llvm.Value
+	functionABIs     map[functionABIKey]functionABI
 	astComments      map[string]*ast.CommentGroup
+	cgoImportDynamic map[string]string // //go:cgo_import_dynamic local name -> remote symbol
 	embedGlobals     map[string][]*loader.EmbedFile
 	pkg              *types.Package
 	loaderPkg        *loader.Package // current package being compiled (for AST access)
@@ -100,14 +109,21 @@ type compilerContext struct {
 // importantly with a newly created LLVM context and module.
 func newCompilerContext(moduleName string, machine llvm.TargetMachine, config *Config, dumpSSA bool) *compilerContext {
 	c := &compilerContext{
-		Config:        config,
-		DumpSSA:       dumpSSA,
-		difiles:       make(map[string]llvm.Metadata),
-		ditypes:       make(map[types.Type]llvm.Metadata),
-		machine:       machine,
-		targetData:    machine.CreateTargetData(),
-		functionInfos: map[*ssa.Function]functionInfo{},
-		astComments:   map[string]*ast.CommentGroup{},
+		Config:           config,
+		DumpSSA:          dumpSSA,
+		difiles:          make(map[string]llvm.Metadata),
+		ditypes:          make(map[types.Type]llvm.Metadata),
+		machine:          machine,
+		targetData:       machine.CreateTargetData(),
+		functionInfos:    map[*ssa.Function]functionInfo{},
+		callProperties:   map[*ssa.Function]functionCallProperties{},
+		asyncifyCatchers: map[llvm.Type]llvm.Value{},
+		directCatchers:   map[llvm.Value]llvm.Value{},
+		indirectCatchers: map[llvm.Type]llvm.Value{},
+		asyncifyReplays:  map[llvm.Type]llvm.Value{},
+		functionABIs:     map[functionABIKey]functionABI{},
+		astComments:      map[string]*ast.CommentGroup{},
+		cgoImportDynamic: map[string]string{},
 	}
 
 	c.ctx = llvm.NewContext()
@@ -150,36 +166,41 @@ func (c *compilerContext) dispose() {
 type builder struct {
 	*compilerContext
 	llvm.Builder
-	fn                *ssa.Function
-	llvmFnType        llvm.Type
-	llvmFn            llvm.Value
-	info              functionInfo
-	locals            map[ssa.Value]llvm.Value // local variables
-	indirectValues    map[ssa.Value]llvm.Value
-	indirectReturn    llvm.Value
-	blockInfo         []blockInfo
-	currentBlock      *ssa.BasicBlock
-	currentBlockInfo  *blockInfo
-	tarjanStack       []uint
-	tarjanIndex       uint
-	phis              []phiNode
-	deferPtr          llvm.Value
-	deferFrame        llvm.Value
-	stackChainAlloca  llvm.Value
-	landingpad        llvm.BasicBlock
-	difunc            llvm.Metadata
-	dilocals          map[*types.Var]llvm.Metadata
-	initInlinedAt     llvm.Metadata            // fake inlinedAt position
-	initPseudoFuncs   map[string]llvm.Metadata // fake "inlined" functions for proper init debug locations
-	allDeferFuncs     []any
-	deferFuncs        map[*ssa.Function]int
-	deferInvokeFuncs  map[string]int
-	deferClosureFuncs map[*ssa.Function]int
-	deferExprFuncs    map[ssa.Value]int
-	selectRecvBuf     map[*ssa.Select]llvm.Value
-	deferBuiltinFuncs map[ssa.Value]deferBuiltin
-	runDefersBlock    []llvm.BasicBlock
-	afterDefersBlock  []llvm.BasicBlock
+	fn                 *ssa.Function
+	llvmFnType         llvm.Type
+	llvmFn             llvm.Value
+	info               functionInfo
+	locals             map[ssa.Value]llvm.Value // local variables
+	indirectValues     map[ssa.Value]llvm.Value
+	indirectReturn     llvm.Value
+	blockInfo          []blockInfo
+	currentBlock       *ssa.BasicBlock
+	currentBlockInfo   *blockInfo
+	tarjanStack        []uint
+	tarjanIndex        uint
+	phis               []phiNode
+	deferPtr           llvm.Value
+	deferFrame         llvm.Value
+	stackChainAlloca   llvm.Value
+	landingpad         llvm.BasicBlock
+	unwindReturn       llvm.BasicBlock
+	asyncifyCatchIndex int
+	difunc             llvm.Metadata
+	dilocals           map[*types.Var]llvm.Metadata
+	initInlinedAt      llvm.Metadata            // fake inlinedAt position
+	initPseudoFuncs    map[string]llvm.Metadata // fake "inlined" functions for proper init debug locations
+	allDeferFuncs      []any
+	deferFuncs         map[*ssa.Function]int
+	deferInvokeFuncs   map[string]int
+	deferClosureFuncs  map[*ssa.Function]int
+	deferExprFuncs     map[ssa.Value]int
+	selectRecvBuf      map[*ssa.Select]llvm.Value
+	deferBuiltinFuncs  map[ssa.Value]deferBuiltin
+	runningDefers      bool
+	loweringBody       bool
+	inFaultBlock       bool
+	runDefersBlock     []llvm.BasicBlock
+	afterDefersBlock   []llvm.BasicBlock
 
 	runtimeAssertBlocks  map[string]llvm.BasicBlock
 	interfaceAssertBlock llvm.BasicBlock
@@ -789,7 +810,7 @@ func (b *builder) getLocalVariable(variable *types.Var) llvm.Metadata {
 	return dilocal
 }
 
-// attachDebugInfo adds debug info to a function declaration. It returns the
+// attachDebugInfo adds debug info to a function. It returns the
 // DISubprogram metadata node.
 func (c *compilerContext) attachDebugInfo(f *ssa.Function) llvm.Metadata {
 	pos := c.program.Fset.Position(f.Syntax().Pos())
@@ -797,10 +818,18 @@ func (c *compilerContext) attachDebugInfo(f *ssa.Function) llvm.Metadata {
 	return c.attachDebugInfoRaw(f, fn, "", pos.Filename, pos.Line)
 }
 
-// attachDebugInfo adds debug info to a function declaration. It returns the
+// attachDebugInfoRaw adds debug info to a function. It returns the
 // DISubprogram metadata node. This method allows some more control over how
 // debug info is added to the function.
 func (c *compilerContext) attachDebugInfoRaw(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int) llvm.Metadata {
+	return c.attachDebugInfoRawWithDefinition(f, llvmFn, suffix, filename, line, true)
+}
+
+func (c *compilerContext) attachDebugInfoDeclarationRaw(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int) llvm.Metadata {
+	return c.attachDebugInfoRawWithDefinition(f, llvmFn, suffix, filename, line, false)
+}
+
+func (c *compilerContext) attachDebugInfoRawWithDefinition(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int, isDefinition bool) llvm.Metadata {
 	// Debug info for this function.
 	params := getParams(f.Signature)
 	diparams := make([]llvm.Metadata, 0, len(params))
@@ -819,7 +848,7 @@ func (c *compilerContext) attachDebugInfoRaw(f *ssa.Function, llvmFn llvm.Value,
 		Line:         line,
 		Type:         diFuncType,
 		LocalToUnit:  true,
-		IsDefinition: true,
+		IsDefinition: isDefinition,
 		ScopeLine:    0,
 		Flags:        llvm.FlagPrototyped,
 		Optimized:    true,
@@ -833,7 +862,8 @@ func (c *compilerContext) attachDebugInfoRaw(f *ssa.Function, llvmFn llvm.Value,
 // one.
 func (c *compilerContext) getDIFile(filename string) llvm.Metadata {
 	if _, ok := c.difiles[filename]; !ok {
-		dir, file := filepath.Split(filename)
+		recordedPath := c.loaderPkg.RecordedPath(filename)
+		dir, file := filepath.Split(recordedPath)
 		if dir != "" {
 			dir = dir[:len(dir)-1]
 		}
@@ -855,7 +885,7 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 	sort.Slice(members, func(i, j int) bool {
 		iPos := pkg.Members[members[i]].Pos()
 		jPos := pkg.Members[members[j]].Pos()
-		if i == j {
+		if iPos == jPos {
 			// Cannot sort by pos, so do it by name.
 			return members[i] < members[j]
 		}
@@ -1236,6 +1266,11 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		} else if b.fn.Syntax() != nil {
 			// Create debug info file if needed.
 			b.difunc = b.attachDebugInfo(b.fn)
+		} else if b.fn.Pos().IsValid() {
+			// Synthetic wrappers such as $bound and $thunk have no syntax but share the
+			// position of the wrapped method. See https://pkg.go.dev/golang.org/x/tools/go/ssa#Function
+			pos := b.program.Fset.Position(b.fn.Pos())
+			b.difunc = b.attachDebugInfoRaw(b.fn, b.llvmFn, "", pos.Filename, pos.Line)
 		}
 		b.setDebugLocation(b.fn.Pos())
 	}
@@ -1284,27 +1319,23 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 	}
 
 	// Load function parameters
+	abi := b.getFunctionABI(b.fn.Signature, b.info.exported)
 	llvmParamIndex := 0
-	if _, indirectResult := b.hasIndirectResult(b.fn.Signature); indirectResult && !b.info.exported {
+	if abi.indirectResult {
 		b.indirectReturn = b.llvmFn.Param(llvmParamIndex)
 		b.indirectReturn.SetName("return")
 		llvmParamIndex++
 	}
-	for _, param := range b.fn.Params {
-		llvmType := b.getLLVMType(param.Type())
-		if b.isIndirectParam(llvmType, b.info.exported) {
+	for i, param := range b.fn.Params {
+		llvmType := abi.params[i].llvmType
+		if abi.params[i].indirect {
 			llvmParam := b.llvmFn.Param(llvmParamIndex)
 			llvmParam.SetName(param.Name())
 			b.indirectValues[param] = llvmParam
 			llvmParamIndex++
 			continue
 		}
-		var paramInfos []paramInfo
-		if b.info.exported {
-			paramInfos = b.expandDirectFormalParamType(llvmType, param.Name(), param.Type())
-		} else {
-			paramInfos = b.expandFormalParamType(llvmType, param.Name(), param.Type())
-		}
+		paramInfos := b.expandDirectFormalParamType(llvmType, param.Name(), param.Type())
 		fields := make([]llvm.Value, 0, 1)
 		for _, info := range paramInfos {
 			param := b.llvmFn.Param(llvmParamIndex)
@@ -1379,6 +1410,7 @@ func (b *builder) createFunction() {
 	b.createFunctionStart(false)
 
 	// Fill blocks with instructions.
+	b.loweringBody = true
 	for _, block := range b.fn.DomPreorder() {
 		if b.DumpSSA {
 			fmt.Printf("%d: %s:\n", block.Index, block.Comment)
@@ -1424,6 +1456,7 @@ func (b *builder) createFunction() {
 			b.CreateRetVoid()
 		}
 	}
+	b.loweringBody = false
 
 	// The rundefers instruction needs to be created after all defer
 	// instructions have been created. Otherwise it won't handle all defer
@@ -1441,14 +1474,20 @@ func (b *builder) createFunction() {
 	}
 
 	// Resolve phi nodes
+	phiBuilder := b.ctx.NewBuilder()
+	originalBuilder := b.Builder
+	b.Builder = phiBuilder
 	for _, phi := range b.phis {
 		block := phi.ssa.Block()
 		for i, edge := range phi.ssa.Edges {
-			llvmVal := b.getCallArgument(edge, false)
 			llvmBlock := b.blockInfo[block.Preds[i].Index].exit
+			b.SetInsertPointBefore(llvmBlock.LastInstruction())
+			llvmVal := b.getCallArgument(edge, b.isIndirectAggregate(b.getLLVMType(edge.Type())))
 			phi.llvm.AddIncoming([]llvm.Value{llvmVal}, []llvm.BasicBlock{llvmBlock})
 		}
 	}
+	b.Builder = originalBuilder
+	phiBuilder.Dispose()
 
 	if b.NeedsStackObjects {
 		// Track phi nodes.
@@ -1572,10 +1611,13 @@ func (b *builder) createInstruction(instr ssa.Instruction) {
 	case *ssa.Panic:
 		value := b.getValue(instr.X, getPos(instr))
 		b.createRuntimeInvoke("_panic", []llvm.Value{value}, "")
-		b.CreateUnreachable()
+		b.createUnwindReturnOrUnreachable()
 	case *ssa.Return:
 		if b.hasDeferFrame() {
 			b.createRuntimeCall("destroyDeferFrame", []llvm.Value{b.deferFrame}, "")
+			if b.usesReturnUnwind() {
+				b.createUnwindCheck(false)
+			}
 		}
 		b.createReturn(instr.Results, getPos(instr))
 	case *ssa.RunDefers:
@@ -1676,9 +1718,79 @@ func (b *builder) getValuePointer(value ssa.Value) llvm.Value {
 	return ptr
 }
 
-func (b *builder) getCallArgument(value ssa.Value, exported bool) llvm.Value {
-	paramType := b.getLLVMType(value.Type())
-	if b.isIndirectParam(paramType, exported) {
+func isMemequalArrayComparison(expr *ssa.BinOp) bool {
+	typ, ok := expr.X.Type().Underlying().(*types.Array)
+	return ok &&
+		typ.Len() > hashArrayUnrollLimit &&
+		isBinaryComparable(typ.Elem()) &&
+		(expr.Op == token.EQL || expr.Op == token.NEQ)
+}
+
+func canUseDereferencePointer(unop *ssa.UnOp) bool {
+	if !isDereference(unop) {
+		return false
+	}
+	comparison := adjacentComparison(unop, isDereference)
+	return comparison != nil && isMemequalArrayComparison(comparison)
+}
+
+func isDereference(value ssa.Value) bool {
+	unop, ok := value.(*ssa.UnOp)
+	return ok && unop.Op == token.MUL
+}
+
+// adjacentComparison returns the only binary operation that uses instr, if
+// only debug refs and other operands accepted by operandOK run in between.
+func adjacentComparison(instr ssa.Instruction, operandOK func(ssa.Value) bool) *ssa.BinOp {
+	value, ok := instr.(ssa.Value)
+	if !ok {
+		return nil
+	}
+	referrers := value.Referrers()
+	if referrers == nil {
+		return nil
+	}
+	var comparison *ssa.BinOp
+	for _, referrer := range *referrers {
+		switch referrer := referrer.(type) {
+		case *ssa.DebugRef:
+		case *ssa.BinOp:
+			if comparison != nil {
+				return nil
+			}
+			comparison = referrer
+		default:
+			return nil
+		}
+	}
+	if comparison == nil || instr.Block() != comparison.Block() {
+		return nil
+	}
+
+	found := false
+	for _, instruction := range instr.Block().Instrs {
+		if !found {
+			found = instruction == instr
+			continue
+		}
+		if instruction == comparison {
+			return comparison
+		}
+		switch instruction := instruction.(type) {
+		case *ssa.DebugRef:
+		case ssa.Value:
+			if comparison.X != instruction && comparison.Y != instruction || !operandOK(instruction) {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+func (b *builder) getCallArgument(value ssa.Value, indirect bool) llvm.Value {
+	if indirect {
 		return b.getValuePointer(value)
 	}
 	return b.getValue(value, getPos(value))
@@ -2323,21 +2435,24 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 		b.createNilCheck(instr.Value, callee, "fpcall")
 	}
 
-	var params []llvm.Value
-	for _, param := range instr.Args {
-		params = append(params, b.getCallArgument(param, exported))
+	abi := b.getFunctionABI(instr.Signature(), exported)
+	paramOffset := 0
+	if instr.IsInvoke() {
+		abi = b.getInterfaceFunctionABI(instr.Signature())
+		paramOffset = 1
 	}
+	params := b.getCallArguments(instr.Args, abi.params[paramOffset:])
 	if instr.IsInvoke() {
 		params = append([]llvm.Value{invokeReceiver}, params...)
 		params = append(params, invokeTypecode)
 	}
 
 	if !exported {
-		if resultType, indirectResult := b.hasIndirectResult(instr.Signature()); indirectResult {
-			result := b.createIndirectStorage(resultType, "call.result")
+		if abi.indirectResult {
+			result := b.createIndirectStorage(abi.resultType, "call.result")
 			params = append([]llvm.Value{result}, params...)
 			params = append(params, context)
-			b.createInvoke(calleeType, callee, params, "")
+			b.createInvoke(calleeType, callee, params, "", instr)
 			return result, nil
 		}
 		// This function takes a context parameter.
@@ -2345,7 +2460,7 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 		params = append(params, context)
 	}
 
-	return b.createInvoke(calleeType, callee, params, ""), nil
+	return b.createInvoke(calleeType, callee, params, "", instr), nil
 }
 
 // getValue returns the LLVM value of a constant, function value, global, or
@@ -2413,6 +2528,24 @@ func (c *compilerContext) maxSliceSize(elementType llvm.Type) uint64 {
 	return maxSize
 }
 
+// goHeapAddressBits matches heapAddrBits for Go's common 64-bit targets.
+// See https://github.com/golang/go/blob/2ff5743d9fd52fac166225e75df0c2c1edf82abb/src/runtime/malloc.go#L207-L220.
+const goHeapAddressBits = 48
+
+// maxSliceAllocationSize determines the maximum length of an allocated slice.
+func (c *compilerContext) maxSliceAllocationSize(elementType llvm.Type) uint64 {
+	maxSize := c.maxSliceSize(elementType)
+	if c.uintptrType.IntTypeWidth() <= goHeapAddressBits {
+		return maxSize
+	}
+
+	elementSize := c.targetData.TypeAllocSize(elementType)
+	if elementSize == 0 {
+		return maxSize
+	}
+	return min(maxSize, (uint64(1)<<goHeapAddressBits)/elementSize)
+}
+
 // createExpr translates a Go SSA expression to LLVM IR. This can be zero, one,
 // or multiple LLVM IR instructions and/or runtime calls.
 func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
@@ -2446,6 +2579,17 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 			return buf, nil
 		}
 	case *ssa.BinOp:
+		if isMemequalArrayComparison(expr) {
+			typ := expr.X.Type().Underlying().(*types.Array)
+			x := b.getValuePointer(expr.X)
+			y := b.getValuePointer(expr.Y)
+			size := llvm.ConstInt(b.uintptrType, b.targetData.TypeAllocSize(b.getLLVMType(typ)), false)
+			result := b.createRuntimeCall("memequal", []llvm.Value{x, y, size}, "arraycmp")
+			if expr.Op == token.NEQ {
+				result = b.CreateNot(result, "")
+			}
+			return result, nil
+		}
 		x := b.getValue(expr.X, getPos(expr))
 		y := b.getValue(expr.Y, getPos(expr))
 		return b.createBinOp(expr.Op, expr.X.Type(), expr.Y.Type(), x, y, expr.Pos())
@@ -2496,6 +2640,12 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 		panic("const is not an expression")
 	case *ssa.Convert:
 		x := b.getValue(expr.X, getPos(expr))
+		if isByteSliceToStringComparison(expr) {
+			str := llvm.Undef(b.getLLVMRuntimeType("_string"))
+			str = b.CreateInsertValue(str, b.CreateExtractValue(x, 0, ""), 0, "")
+			str = b.CreateInsertValue(str, b.CreateExtractValue(x, 1, ""), 1, "")
+			return str, nil
+		}
 		return b.createConvert(expr.X.Type(), expr.Type(), x, expr.Pos())
 	case *ssa.Extract:
 		if _, ok := expr.Tuple.(*ssa.Select); ok {
@@ -2672,7 +2822,8 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 		// Bounds checking.
 		lenType := expr.Len.Type().Underlying().(*types.Basic)
 		capType := expr.Cap.Type().Underlying().(*types.Basic)
-		maxSizeValue := llvm.ConstInt(b.uintptrType, maxSize, false)
+		maxAllocationSize := b.maxSliceAllocationSize(llvmElemType)
+		maxSizeValue := llvm.ConstInt(b.uintptrType, maxAllocationSize, false)
 		b.createSliceBoundsCheck(maxSizeValue, sliceLen, sliceCap, sliceCap, lenType, capType, capType)
 
 		// Allocate the backing array.
@@ -2715,7 +2866,7 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 			return b.createMapIteratorNext(rangeVal, llvmRangeVal, it), nil
 		}
 	case *ssa.Phi:
-		phiType := b.storedParamType(b.getLLVMType(expr.Type()), false)
+		phiType := b.storedParamType(b.getLLVMType(expr.Type()))
 		phi := b.CreatePHI(phiType, "")
 		b.phis = append(b.phis, phiNode{expr, phi})
 		return phi, nil
@@ -2905,6 +3056,42 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 	default:
 		return llvm.Value{}, b.makeError(expr.Pos(), "todo: unknown expression: "+expr.String())
 	}
+}
+
+func isByteSliceToStringComparison(expr *ssa.Convert) bool {
+	if !isByteSliceToStringConvert(expr) {
+		return false
+	}
+	comparison := adjacentComparison(expr, isByteSliceToStringConvert)
+	return comparison != nil &&
+		isComparisonOp(comparison.Op) &&
+		isByteSliceToStringConvert(comparison.X) &&
+		isByteSliceToStringConvert(comparison.Y)
+}
+
+func isComparisonOp(op token.Token) bool {
+	switch op {
+	case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+		return true
+	}
+	return false
+}
+
+func isByteSliceToStringConvert(value ssa.Value) bool {
+	expr, ok := value.(*ssa.Convert)
+	if !ok {
+		return false
+	}
+	target, ok := expr.Type().Underlying().(*types.Basic)
+	if !ok || target.Info()&types.IsString == 0 {
+		return false
+	}
+	source, ok := expr.X.Type().Underlying().(*types.Slice)
+	if !ok {
+		return false
+	}
+	element, ok := source.Elem().Underlying().(*types.Basic)
+	return ok && element.Kind() == types.Byte
 }
 
 // createBinOp creates a LLVM binary operation (add, sub, mul, etc) for a Go
@@ -3231,7 +3418,7 @@ func (b *builder) createBinOp(op token.Token, typ, ytyp types.Type, x, y llvm.Va
 				result = b.CreateICmp(llvm.IntEQ, typecodeX, typecodeY, "")
 			} else {
 				// Fall back to a full interface comparison.
-				result = b.createRuntimeCall("interfaceEqual", []llvm.Value{x, y}, "")
+				result = b.createRuntimeInvoke("interfaceEqual", []llvm.Value{x, y}, "")
 			}
 			if op == token.NEQ {
 				result = b.CreateNot(result, "")
@@ -3272,15 +3459,27 @@ func (b *builder) createBinOp(op token.Token, typ, ytyp types.Type, x, y llvm.Va
 		//     Array values are comparable if values of the array element type
 		//     are comparable. Two array values are equal if their corresponding
 		//     elements are equal.
-		result := llvm.ConstInt(b.ctx.Int1Type(), 1, true)
-		for i := 0; i < int(typ.Len()); i++ {
-			xField := b.CreateExtractValue(x, i, "")
-			yField := b.CreateExtractValue(y, i, "")
-			fieldEqual, err := b.createBinOp(token.EQL, typ.Elem(), typ.Elem(), xField, yField, pos)
-			if err != nil {
-				return llvm.Value{}, err
+		var result llvm.Value
+		if typ.Len() > hashArrayUnrollLimit && isBinaryComparable(typ.Elem()) {
+			xPtr, xSize := b.createTemporaryAlloca(x.Type(), "arraycmp.x")
+			yPtr, ySize := b.createTemporaryAlloca(y.Type(), "arraycmp.y")
+			b.CreateStore(x, xPtr)
+			b.CreateStore(y, yPtr)
+			size := llvm.ConstInt(b.uintptrType, b.targetData.TypeAllocSize(x.Type()), false)
+			result = b.createRuntimeCall("memequal", []llvm.Value{xPtr, yPtr, size}, "arraycmp")
+			b.emitLifetimeEnd(xPtr, xSize)
+			b.emitLifetimeEnd(yPtr, ySize)
+		} else {
+			result = llvm.ConstInt(b.ctx.Int1Type(), 1, true)
+			for i := 0; i < int(typ.Len()); i++ {
+				xField := b.CreateExtractValue(x, i, "")
+				yField := b.CreateExtractValue(y, i, "")
+				fieldEqual, err := b.createBinOp(token.EQL, typ.Elem(), typ.Elem(), xField, yField, pos)
+				if err != nil {
+					return llvm.Value{}, err
+				}
+				result = b.CreateAnd(result, fieldEqual, "")
 			}
-			result = b.CreateAnd(result, fieldEqual, "")
 		}
 		switch op {
 		case token.EQL: // ==
@@ -3496,7 +3695,7 @@ func (b *builder) createConvert(typeFrom, typeTo types.Type, value llvm.Value, p
 				}
 				return b.createRuntimeCall("stringFromUnicode", []llvm.Value{value}, ""), nil
 			case *types.Slice:
-				switch typeFrom.Elem().(*types.Basic).Kind() {
+				switch typeFrom.Elem().Underlying().(*types.Basic).Kind() {
 				case types.Byte:
 					return b.createRuntimeCall("stringFromBytes", []llvm.Value{value}, ""), nil
 				case types.Rune:
@@ -3670,6 +3869,11 @@ func (b *builder) createConvert(typeFrom, typeTo types.Type, value llvm.Value, p
 // which can all be directly lowered to IR. However, there is also the channel
 // receive operator which is handled in the runtime directly.
 func (b *builder) createUnOp(unop *ssa.UnOp) (llvm.Value, error) {
+	if unop.Op == token.MUL {
+		if value := b.createDarwinCgoImportDynamicLoad(unop); !value.IsNil() {
+			return value, nil
+		}
+	}
 	x := b.getValue(unop.X, getPos(unop))
 	switch unop.Op {
 	case token.NOT: // !x
@@ -3719,6 +3923,9 @@ func (b *builder) createUnOp(unop *ssa.UnOp) (llvm.Value, error) {
 			return fn, nil
 		} else {
 			b.createNilCheck(unop.X, x, "deref")
+			if canUseDereferencePointer(unop) {
+				return x, nil
+			}
 			return b.loadFromStorage(x, unop.Type(), ""), nil
 		}
 	case token.XOR: // ^x, toggle all bits in integer

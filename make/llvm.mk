@@ -78,13 +78,18 @@ endif
 # Pinned in llvm-version.txt. Branch tinygo_22.x of tinygo-org/llvm-project.
 LLVM_REVISION = $(shell cat llvm-version.txt)
 
-$(LLVM_PROJECTDIR)/llvm:
-	git init $(LLVM_PROJECTDIR)
+llvm-source: ## Get or update LLVM sources
+	@if [ ! -e "$(LLVM_PROJECTDIR)/.git" ]; then \
+	  git init $(LLVM_PROJECTDIR); \
+	fi
 	cd $(LLVM_PROJECTDIR) && \
-	  git remote add origin https://github.com/tinygo-org/llvm-project && \
-	  git fetch --depth=1 origin $(LLVM_REVISION) && \
-	  git checkout FETCH_HEAD
-llvm-source: $(LLVM_PROJECTDIR)/llvm ## Get LLVM sources
+	  if ! git cat-file -e "$(LLVM_REVISION)^{commit}" 2>/dev/null; then \
+	    if ! git remote get-url origin >/dev/null 2>&1; then \
+	      git remote add origin https://github.com/tinygo-org/llvm-project; \
+	    fi && \
+	    git fetch --depth=1 origin $(LLVM_REVISION); \
+	  fi && \
+	  git checkout $(LLVM_REVISION)
 
 # Configure LLVM.
 TINYGO_SOURCE_DIR=$(shell pwd)
@@ -100,6 +105,6 @@ ifneq ($(USE_SYSTEM_BINARYEN),1)
 binaryen: build/wasm-opt$(EXE)
 build/wasm-opt$(EXE):
 	mkdir -p build
-	cd lib/binaryen && cmake -G Ninja . -DBUILD_STATIC_LIB=ON -DBUILD_TESTS=OFF -DENABLE_WERROR=OFF $(BINARYEN_OPTION) && ninja bin/wasm-opt$(EXE)
+	cd lib/binaryen && cmake -G Ninja . -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=OFF -DENABLE_WERROR=OFF $(BINARYEN_OPTION) && ninja bin/wasm-opt$(EXE)
 	cp lib/binaryen/bin/wasm-opt$(EXE) build/wasm-opt$(EXE)
 endif

@@ -166,6 +166,11 @@ type RawType struct {
 	meta uint8 // metadata byte, contains kind and flags (see constants above)
 }
 
+type basicType struct {
+	RawType
+	ptrTo *RawType
+}
+
 // All types that have an element type: named, chan, slice, array, map (but not
 // pointer because it doesn't have ptrTo).
 type elemType struct {
@@ -200,6 +205,7 @@ type arrayType struct {
 	elem      *RawType
 	arrayLen  uintptr
 	slicePtr  *RawType
+	layout    unsafe.Pointer
 }
 
 type mapType struct {
@@ -208,6 +214,7 @@ type mapType struct {
 	ptrTo     *RawType
 	elem      *RawType
 	key       *RawType
+	typeInfo  unsafe.Pointer
 }
 
 // namedType is the type descriptor for named types. The numMethod field uses
@@ -243,6 +250,7 @@ type structType struct {
 	pkgpath   *byte
 	size      uint32
 	numField  uint16
+	layout    unsafe.Pointer
 	fields    [1]structField // the remaining fields are all of type structField
 	// methods methodSet follows after fields, only when numMethod & numMethodHasMethodSet != 0
 }
@@ -278,6 +286,14 @@ func (t *RawType) isNamed() bool {
 	return t.meta&flagNamed != 0
 }
 
+func (t *RawType) isNamedForAssign() bool {
+	if t.isNamed() {
+		return true
+	}
+	kind := t.Kind()
+	return kind >= Bool && kind <= String || kind == UnsafePointer
+}
+
 func TypeOf(i interface{}) Type {
 	if i == nil {
 		return nil
@@ -298,6 +314,8 @@ func pointerTo(t *RawType) *RawType {
 	}
 
 	switch t.Kind() {
+	case Bool, Int, Int8, Int16, Int32, Int64, Uint, Uint8, Uint16, Uint32, Uint64, Uintptr, Complex64, Complex128, Float32, Float64, String, UnsafePointer:
+		return (*basicType)(unsafe.Pointer(t)).ptrTo
 	case Pointer:
 		if tag := t.ptrtag(); tag < 3 {
 			return (*RawType)(unsafe.Add(unsafe.Pointer(t), 1))
@@ -306,6 +324,8 @@ func pointerTo(t *RawType) *RawType {
 		// TODO(dgryski): This is blocking https://github.com/tinygo-org/tinygo/issues/3131
 		// We need to be able to create types that match existing types to prevent typecode equality.
 		panic("reflect: cannot make *****T type")
+	case Interface, Func:
+		return (*interfaceType)(unsafe.Pointer(t)).ptrTo
 	case Struct:
 		return (*structType)(unsafe.Pointer(t)).ptrTo
 	default:
@@ -413,6 +433,9 @@ func (t *RawType) elem() *RawType {
 	}
 
 	underlying := t.underlying()
+	if underlying.ptrtag() != 0 {
+		return underlying.elem()
+	}
 	switch underlying.Kind() {
 	case Pointer:
 		return (*ptrType)(unsafe.Pointer(underlying)).elem
@@ -521,27 +544,28 @@ func (t *RawType) rawFieldByNameFunc(match func(string) bool) (rawStructField, [
 		index []int
 	}
 
-	queue := make([]fieldWalker, 0, 4)
-	queue = append(queue, fieldWalker{t, nil})
+	current := make([]fieldWalker, 0, 4)
+	next := []fieldWalker{{t: t}}
+	var nextCount map[*RawType]int
+	visited := make(map[*RawType]bool)
 
-	for len(queue) > 0 {
-		type result struct {
-			r     rawStructField
-			index []int
-		}
+	for len(next) > 0 {
+		current, next = next, current[:0]
+		count := nextCount
+		nextCount = nil
+		var result rawStructField
+		var resultIndex []int
+		found := false
 
-		var found []result
-		var nextlevel []fieldWalker
-
-		// For all the structs at this level..
-		for _, ll := range queue {
-			// Iterate over all the fields looking for the matching name
-			// Also calculate field offset.
-
-			descriptor := (*structType)(unsafe.Pointer(ll.t.underlying()))
-			field := &descriptor.fields[0]
+		for _, scan := range current {
+			if visited[scan.t] {
+				continue
+			}
+			visited[scan.t] = true
+			descriptor := (*structType)(unsafe.Pointer(scan.t.underlying()))
 
 			for i := uint16(0); i < descriptor.numField; i++ {
+				field := (*structField)(unsafe.Add(unsafe.Pointer(&descriptor.fields[0]), uintptr(i)*unsafe.Sizeof(structField{})))
 				data := field.data
 
 				// Read some flags of this field, like whether the field is an embedded
@@ -555,46 +579,44 @@ func (t *RawType) rawFieldByNameFunc(match func(string) bool) (rawStructField, [
 				name := readStringZ(data)
 				data = unsafe.Add(data, len(name))
 				if match(name) {
-					found = append(found, result{
-						rawStructFieldFromPointer(descriptor, field.fieldType, data, flagsByte, name, offset),
-						append(ll.index[:len(ll.index):len(ll.index)], int(i)),
-					})
+					if count[scan.t] > 1 || found {
+						return rawStructField{}, nil, false
+					}
+					result = rawStructFieldFromPointer(descriptor, field.fieldType, data, flagsByte, name, offset)
+					resultIndex = append(scan.index[:len(scan.index):len(scan.index)], int(i))
+					found = true
+					continue
 				}
 
 				structOrPtrToStruct := field.fieldType.Kind() == Struct || (field.fieldType.Kind() == Pointer && field.fieldType.elem().Kind() == Struct)
-				if flagsByte&structFieldFlagIsEmbedded == structFieldFlagIsEmbedded && structOrPtrToStruct {
-					embedded := field.fieldType
-					if embedded.Kind() == Pointer {
-						embedded = embedded.elem()
-					}
-
-					nextlevel = append(nextlevel, fieldWalker{
-						t:     embedded,
-						index: append(ll.index[:len(ll.index):len(ll.index)], int(i)),
-					})
+				if found || flagsByte&structFieldFlagIsEmbedded == 0 || !structOrPtrToStruct {
+					continue
 				}
-
-				// update offset/field pointer if there *is* a next field
-				if i < descriptor.numField-1 {
-					// Increment pointer to the next field.
-					field = (*structField)(unsafe.Add(unsafe.Pointer(field), unsafe.Sizeof(structField{})))
+				embedded := field.fieldType
+				if embedded.Kind() == Pointer {
+					embedded = embedded.elem()
 				}
+				if nextCount[embedded] > 0 {
+					nextCount[embedded] = 2
+					continue
+				}
+				if nextCount == nil {
+					nextCount = make(map[*RawType]int)
+				}
+				nextCount[embedded] = 1
+				if count[scan.t] > 1 {
+					nextCount[embedded] = 2
+				}
+				next = append(next, fieldWalker{
+					t:     embedded,
+					index: append(scan.index[:len(scan.index):len(scan.index)], int(i)),
+				})
 			}
 		}
 
-		// found multiple hits at this level
-		if len(found) > 1 {
-			return rawStructField{}, nil, false
+		if found {
+			return result, resultIndex, true
 		}
-
-		// found the field we were looking for
-		if len(found) == 1 {
-			r := found[0]
-			return r.r, r.index, true
-		}
-
-		// else len(found) == 0, move on to the next level
-		queue = append(queue[:0], nextlevel...)
 	}
 
 	// didn't find it
@@ -729,6 +751,7 @@ func (t *RawType) Align() int {
 }
 
 func (r *RawType) gcLayout() unsafe.Pointer {
+	r = r.underlying()
 	kind := r.Kind()
 
 	if kind < String {
@@ -736,16 +759,26 @@ func (r *RawType) gcLayout() unsafe.Pointer {
 	}
 
 	switch kind {
-	case Pointer, UnsafePointer, Chan, Map:
-		return gclayout.Pointer.AsPtr()
 	case String:
 		return gclayout.String.AsPtr()
+	case UnsafePointer, Chan, Pointer, Map:
+		return gclayout.Pointer.AsPtr()
+	case Interface, Func:
+		return gclayout.PointerPair.AsPtr()
 	case Slice:
 		return gclayout.Slice.AsPtr()
+	case Array:
+		return (*arrayType)(unsafe.Pointer(r)).layout
+	case Struct:
+		return (*structType)(unsafe.Pointer(r)).layout
+	default:
+		panic("reflect: invalid GC layout kind")
 	}
+}
 
-	// Unknown (for now); let the conservative pointer scanning handle it
-	return nil
+func (r *RawType) hashmapTypeInfo() unsafe.Pointer {
+	r = r.underlying()
+	return (*mapType)(unsafe.Pointer(r)).typeInfo
 }
 
 // FieldAlign returns the alignment if this type is used in a struct field. It
@@ -860,8 +893,8 @@ func (t *RawType) AssignableTo(u Type) bool {
 		return typeImplementsMethodSet(unsafe.Pointer(t), unsafe.Pointer(&u_itf.methods))
 	}
 
-	t_named := t.isNamed()
-	u_named := u_raw.isNamed()
+	t_named := t.isNamedForAssign()
+	u_named := u_raw.isNamedForAssign()
 	if t_named && u_named {
 		return false
 	}

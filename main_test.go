@@ -7,14 +7,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"debug/dwarf"
+	"debug/elf"
+	"debug/pe"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -48,6 +54,265 @@ var supportedLinuxArches = map[string]string{
 
 var sema = make(chan struct{}, runtime.NumCPU())
 
+func TestTrimPath(t *testing.T) {
+	t.Setenv("CGO_CFLAGS", "-iquoteinclude -includestdint.h -imacros relative.h")
+	root := t.TempDir()
+	var binaries [][]byte
+	options := optionsFromTarget(*testTarget, sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"a", "b"} {
+		dir := filepath.Join(root, name)
+		if err := os.CopyFS(dir, os.DirFS(filepath.Join(TESTDATA, "trimpath"))); err != nil {
+			t.Fatal(err)
+		}
+
+		outpath := filepath.Join(root, name+".out")
+		cache := filepath.Join(root, "cache-"+name)
+		cmd := trimPathCommand(t, dir, "build", "-trimpath", "-p=4", "-o", outpath, ".")
+		cmd.Env = append(cmd.Env, "XDG_CACHE_HOME="+cache, "HOME="+cache, "LocalAppData="+cache)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build failed: %v\n%s", err, output)
+		}
+		binary, err := os.ReadFile(outpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, localPath := range []string{root, goenv.Get("GOROOT"), goenv.Get("TINYGOROOT"), goenv.Get("GOCACHE")} {
+			if bytes.Contains(binary, []byte(localPath)) || bytes.Contains(binary, []byte(filepath.ToSlash(localPath))) {
+				t.Errorf("trimmed binary contains local path %q", localPath)
+			}
+		}
+		binaries = append(binaries, binary)
+	}
+
+	if !bytes.Equal(binaries[0], binaries[1]) {
+		t.Error("trimmed binaries built in different directories are not identical")
+	}
+	if config.GOOS() != "darwin" {
+		files := trimPathDWARFFiles(t, filepath.Join(root, "a.out"), config.GOOS())
+		headerPath := "/_/example.com/dependency@v1.2.3/include/shared.h"
+		if config.GOOS() == "windows" {
+			headerPath = "//_/_/example.com/dependency@v1.2.3/include/shared.h"
+		}
+		for _, want := range []string{
+			"example.com/trimpath/main.go",
+			"example.com/dependency@v1.2.3/subpackage/dependency.go",
+			headerPath,
+		} {
+			if !slices.Contains(files, want) {
+				t.Errorf("missing DWARF path %q in %v", want, files)
+			}
+		}
+		for _, file := range files {
+			if strings.Contains(file, filepath.ToSlash(root)) || strings.Count(file, "example.com/") > 1 {
+				t.Errorf("invalid DWARF path %q", file)
+			}
+		}
+	}
+
+	dir := filepath.Join(root, "a")
+	for _, trim := range []bool{false, true} {
+		outpath := filepath.Join(root, "nodebug.out")
+		args := []string{"build", "-no-debug", "-o", outpath}
+		if trim {
+			args = append(args, "-trimpath")
+		}
+		cmd := trimPathCommand(t, dir, append(args, ".")...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build failed: %v\n%s", err, output)
+		}
+		binary, err := os.ReadFile(outpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		containsPath := bytes.Contains(binary, []byte(dir)) || bytes.Contains(binary, []byte(filepath.ToSlash(dir)))
+		if containsPath == trim {
+			t.Errorf("trimpath=%v: contains local __FILE__ path=%v", trim, containsPath)
+		}
+	}
+}
+
+func TestTrimPathStackSizes(t *testing.T) {
+	dir := t.TempDir()
+	source := `package main
+func main() {
+	done := make(chan int)
+	go func() { done <- 42 }()
+	println(<-done)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, trim := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trimpath=%v", trim), func(t *testing.T) {
+			outpath := filepath.Join(dir, "main.elf")
+			args := []string{"build", "-target=pico2", "-o", outpath}
+			if trim {
+				args = append(args, "-trimpath")
+			}
+			cmd := trimPathCommand(t, dir, append(args, "main.go")...)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("build failed: %v\n%s", err, output)
+			}
+			file, err := elf.Open(outpath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if section := file.Section(".tinygo_stacksizes"); section == nil || section.Size == 0 {
+				t.Fatal("missing automatic stack-size data")
+			}
+			binary, err := os.ReadFile(outpath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(binary, []byte("task_stack.go")) {
+				t.Fatal("missing stack-size source file")
+			}
+			sourceDir := filepath.Join(goenv.Get("TINYGOROOT"), "src")
+			containsPath := bytes.Contains(binary, []byte(sourceDir)) || bytes.Contains(binary, []byte(filepath.ToSlash(sourceDir)))
+			if containsPath == trim {
+				t.Errorf("trimpath=%v: contains local runtime source directory=%v", trim, containsPath)
+			}
+		})
+	}
+}
+
+func trimPathCommand(t *testing.T, dir string, args ...string) *exec.Cmd {
+	t.Helper()
+	options := optionsFromTarget(*testTarget, sema)
+	if options.Target != "" {
+		args = slices.Insert(args, 1, "-target="+options.Target)
+	}
+	cmd := exec.Command(os.Args[0], append([]string{"test-main"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"TINYGOROOT="+goenv.Get("TINYGOROOT"),
+		"GOPATH="+goenv.Get("GOPATH"),
+		"GOOS="+options.GOOS,
+		"GOARCH="+options.GOARCH,
+		"GOARM="+options.GOARM,
+	)
+	return cmd
+}
+
+func trimPathDWARFFiles(t *testing.T, filename, goos string) []string {
+	t.Helper()
+	f, err := os.Open(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var data *dwarf.Data
+	switch goos {
+	case "windows":
+		file, parseErr := pe.NewFile(f)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		data, err = file.DWARF()
+	case "wasip1", "wasip2", "js":
+		file, parseErr := wasm.Parse(f)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		data, err = file.DWARF()
+	default:
+		file, parseErr := elf.NewFile(f)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		data, err = file.DWARF()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	reader := data.Reader()
+	for {
+		entry, err := reader.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry == nil {
+			break
+		}
+		if entry.Tag != dwarf.TagCompileUnit {
+			continue
+		}
+		lines, err := data.LineReader(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lines == nil {
+			continue
+		}
+		var line dwarf.LineEntry
+		for {
+			if err := lines.Next(&line); err != nil {
+				if err != io.EOF {
+					t.Fatal(err)
+				}
+				break
+			}
+		}
+		for _, file := range lines.Files() {
+			if file != nil {
+				files = append(files, strings.ReplaceAll(file.Name, "\\", "/"))
+			}
+		}
+	}
+	return files
+}
+
+func TestTrimPathTestPackages(t *testing.T) {
+	options := optionsFromTarget(*testTarget, sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.GOOS() == "darwin" {
+		t.Skip("Mach-O executables keep DWARF in separate object files")
+	}
+	for _, externalOnly := range []bool{false, true} {
+		dir := t.TempDir()
+		files := map[string]string{
+			"go.mod":           "module example.com/pkg_test\n\ngo 1.23\n",
+			"external_test.go": "package pkg_test\nimport \"testing\"\nfunc TestPath(t *testing.T) { t.Log(\"path\") }\n",
+		}
+		if !externalOnly {
+			files["pkg.go"] = "package pkg\nvar Value = 1\n"
+		}
+		for name, data := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		outpath := filepath.Join(dir, "test.out")
+		cmd := trimPathCommand(t, dir, "test", "-trimpath", "-c", "-o", outpath, ".")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("test build failed: %v\n%s", err, output)
+		}
+		got := trimPathDWARFFiles(t, outpath, config.GOOS())
+		if !slices.Contains(got, "example.com/pkg_test/external_test.go") {
+			t.Errorf("externalOnly=%v: incorrect test paths: %v", externalOnly, got)
+		}
+		if !slices.Contains(got, "_testmain.go") {
+			t.Errorf("externalOnly=%v: missing generated test main path", externalOnly)
+		}
+		for _, file := range got {
+			if filepath.IsAbs(filepath.FromSlash(file)) && !strings.HasPrefix(file, "/_/") && !strings.HasPrefix(file, "//_/_/") {
+				t.Errorf("externalOnly=%v: untrimmed test path %q", externalOnly, file)
+			}
+		}
+	}
+}
+
 func TestBuild(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +320,7 @@ func TestBuild(t *testing.T) {
 		"alias.go",
 		"atomic.go",
 		"binop.go",
+		"buildinfo.go",
 		"calls.go",
 		"cgo/",
 		"channel.go",
@@ -81,6 +347,7 @@ func TestBuild(t *testing.T) {
 		"print.go",
 		"reflect.go",
 		"signal.go",
+		"signalnotify.go",
 		"slice.go",
 		"sort.go",
 		"stdlib.go",
@@ -114,7 +381,13 @@ func TestBuild(t *testing.T) {
 		// This makes it possible to run one specific test (instead of all),
 		// which is especially useful to quickly check whether some changes
 		// affect a particular target architecture.
-		runPlatTests(optionsFromTarget(*testTarget, sema), tests, t)
+		options := optionsFromTarget(*testTarget, sema)
+		runPlatTests(options, tests, t)
+		if *testTarget == "wasip1" {
+			t.Run("cgo-realloc", func(t *testing.T) {
+				runTest("cgo-realloc/", options, t, nil, nil)
+			})
+		}
 		return
 	}
 
@@ -122,6 +395,10 @@ func TestBuild(t *testing.T) {
 		t.Parallel()
 		hostOptions := optionsFromTarget("", sema)
 		runPlatTests(hostOptions, tests, t)
+		t.Run("testing.go-verbose", func(t *testing.T) {
+			t.Parallel()
+			runTest("testing-verbose.go", hostOptions, t, nil, nil)
+		})
 
 		// scheduler.threads needs threadID, which exists only on Linux and Darwin.
 		// scheduler.none does not link on Windows.
@@ -160,6 +437,80 @@ func TestBuild(t *testing.T) {
 			opts := optionsFromTarget("", sema)
 			opts.Opt = "0"
 			runTestWithConfig("print.go", t, opts, nil, nil)
+		})
+
+		t.Run("opt=0-gc=boehm", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("", sema)
+			opts.Opt = "0"
+			opts.GC = "boehm"
+			runTestWithConfig("gc-boehm-opt0.go", t, opts, nil, nil)
+		})
+
+		// Regression test: at -opt=0 the compiler does not always remove a
+		// local escaping through a pointer cast, so printitf used to
+		// allocate on the panic path. printitf is //go:noheap, so a
+		// regression here makes the build fail with a linker error.
+		t.Run("opt=0-printitf-cortex-m-qemu", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("cortex-m-qemu", sema)
+			opts.Opt = "0"
+			config, err := builder.NewConfig(&opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = Build("testdata/panic-value.go", t.TempDir()+"/panic-value", config)
+			if err != nil {
+				w := &bytes.Buffer{}
+				diagnostics.CreateDiagnostics(err).WriteTo(w, "")
+				t.Fatal(w.String())
+			}
+		})
+
+		// Regression test: at -opt=0 the compiler does not always remove a
+		// local escaping through Queue.Push, so runGC used to allocate while
+		// marking the runqueue. runGC is //go:noheap, so a regression here
+		// makes the build fail with a linker error instead of silently
+		// hanging like it used to.
+		t.Run("opt=0-gc-cortex-m-qemu", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("cortex-m-qemu", sema)
+			opts.Opt = "0"
+			emuCheck(t, opts)
+			runTestWithConfig("gc.go", t, opts, nil, nil)
+		})
+
+		t.Run("gc=none-runtime-panic", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("cortex-m-qemu", sema)
+			opts.GC = "none"
+			opts.Scheduler = "none"
+			config, err := builder.NewConfig(&opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = Build("testdata/trivialpanic.go", t.TempDir()+"/trivialpanic", config)
+			if err != nil {
+				w := &bytes.Buffer{}
+				diagnostics.CreateDiagnostics(err).WriteTo(w, "")
+				t.Fatal(w.String())
+			}
+		})
+
+		t.Run("scheduler=none-uefi", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("uefi-amd64", sema)
+			opts.Scheduler = "none"
+			config, err := builder.NewConfig(&opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = Build("testdata/trivialpanic.go", t.TempDir()+"/trivialpanic", config)
+			if err != nil {
+				w := &bytes.Buffer{}
+				diagnostics.CreateDiagnostics(err).WriteTo(w, "")
+				t.Fatal(w.String())
+			}
 		})
 
 		t.Run("ldflags", func(t *testing.T) {
@@ -213,17 +564,24 @@ func TestBuild(t *testing.T) {
 			t.Parallel()
 
 			runPlatTests(optionsFromTarget("wasm", sema), tests, t)
+			runGCLivenessTest(optionsFromTarget("wasm", sema), t)
 			// Test with -gc=boehm.
 			t.Run("gc.go-boehm", func(t *testing.T) {
 				t.Parallel()
 				optionsBoehm := optionsFromTarget("wasm", sema)
 				optionsBoehm.GC = "boehm"
 				runTest("gc.go", optionsBoehm, t, nil, nil)
+				runTest("gc-boehm.go", optionsBoehm, t, nil, nil)
 			})
 		})
 		t.Run("WASIp1", func(t *testing.T) {
 			t.Parallel()
-			runPlatTests(optionsFromTarget("wasip1", sema), tests, t)
+			options := optionsFromTarget("wasip1", sema)
+			runPlatTests(options, tests, t)
+			runGCLivenessTest(options, t)
+			t.Run("cgo-realloc", func(t *testing.T) {
+				runTest("cgo-realloc/", options, t, nil, nil)
+			})
 
 			// Test with -gc=boehm.
 			t.Run("gc.go-boehm", func(t *testing.T) {
@@ -231,11 +589,13 @@ func TestBuild(t *testing.T) {
 				optionsBoehm := optionsFromTarget("wasip1", sema)
 				optionsBoehm.GC = "boehm"
 				runTest("gc.go", optionsBoehm, t, nil, nil)
+				runTest("gc-boehm.go", optionsBoehm, t, nil, nil)
 			})
 		})
 		t.Run("WASIp2", func(t *testing.T) {
 			t.Parallel()
 			runPlatTests(optionsFromTarget("wasip2", sema), tests, t)
+			runGCLivenessTest(optionsFromTarget("wasip2", sema), t)
 		})
 	}
 
@@ -295,7 +655,12 @@ func TestESP32QEMU(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^esp32\s`).Match(machines) {
 		t.Skip("qemu-system-xtensa does not support the ESP32 machine")
 	}
-	runTest("print.go", options, t, nil, nil)
+	for _, name := range []string{"print.go", "recover.go"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			runTest(name, options, t, nil, nil)
+		})
+	}
 }
 
 func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
@@ -366,7 +731,7 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				// Does not pass due to high mark false positive rate.
 				continue
 
-			case "json.go", "stdlib.go", "testing.go":
+			case "buildinfo.go", "json.go", "stdlib.go", "testing.go":
 				// Too big for AVR. Doesn't fit in flash/RAM.
 				continue
 
@@ -390,7 +755,14 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				continue
 			}
 		}
-		if isWebAssembly || isBaremetal || options.GOOS == "windows" {
+		if options.GOOS == "windows" {
+			switch name {
+			case "signal.go", "signalnotify.go":
+				// os/signal does not link on Windows.
+				continue
+			}
+		}
+		if isWebAssembly || isBaremetal {
 			switch name {
 			case "signal.go":
 				// Signals only work on POSIX-like systems.
@@ -420,7 +792,6 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				continue
 			}
 		}
-
 		name := name // redefine to avoid race condition
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -461,11 +832,17 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			runTest("rand.go", options, t, nil, nil)
 		})
 	}
-	if !isWebAssembly {
-		// The recover() builtin isn't supported yet on WebAssembly and Windows.
-		t.Run("recover.go", func(t *testing.T) {
+	t.Run("recover.go", func(t *testing.T) {
+		t.Parallel()
+		runTest("recover.go", options, t, nil, nil)
+	})
+	if isWebAssembly {
+		t.Run("recover-explicit.go", func(t *testing.T) {
 			t.Parallel()
-			runTest("recover.go", options, t, nil, nil)
+			options := compileopts.Options(options)
+			options.Scheduler = "none"
+			options.PanicUnwind = "explicit"
+			runTest("recover-explicit.go", options, t, nil, nil)
 		})
 	}
 }
@@ -533,6 +910,16 @@ func optionsFromOSARCH(osarch string, sema chan struct{}) compileopts.Options {
 	return options
 }
 
+// runGCLivenessTest runs testdata/gc-liveness-repro.go. Only targets with
+// stack objects can lose a GC root the way it reproduces, so it is registered
+// per wasm target instead of being part of the shared test list.
+func runGCLivenessTest(options compileopts.Options, t *testing.T) {
+	t.Run("gc-liveness-repro.go", func(t *testing.T) {
+		t.Parallel()
+		runTest("gc-liveness-repro.go", options, t, nil, nil)
+	})
+}
+
 func runTest(name string, options compileopts.Options, t *testing.T, cmdArgs, environmentVars []string) {
 	t.Helper()
 	runTestWithConfig(name, t, options, cmdArgs, environmentVars)
@@ -595,7 +982,7 @@ func runTestWithConfig(name string, t *testing.T, options compileopts.Options, c
 	if config.EmulatorName() == "qemu-system-xtensa" {
 		actual = cleanESP32QEMUOutput(actual)
 	}
-	if name == "testing.go" {
+	if name == "testing.go" || name == "testing-verbose.go" {
 		// Strip actual time.
 		re := regexp.MustCompile(`\([0-9]\.[0-9][0-9]s\)`)
 		actual = re.ReplaceAllLiteral(actual, []byte{'(', '0', '.', '0', '0', 's', ')'})
@@ -666,7 +1053,7 @@ func TestWebAssembly(t *testing.T) {
 	for _, tc := range []testCase{
 		// Test whether there really are no imports when using -panic=trap. This
 		// tests the bugfix for https://github.com/tinygo-org/tinygo/issues/4161.
-		{name: "panic-default", target: "wasip1", imports: []string{"wasi_snapshot_preview1.fd_write", "wasi_snapshot_preview1.random_get"}},
+		{name: "panic-default", target: "wasip1", imports: []string{"wasi_snapshot_preview1.fd_write", "wasi_snapshot_preview1.proc_exit", "wasi_snapshot_preview1.random_get"}},
 		{name: "panic-trap", target: "wasm-unknown", panicStrategy: "trap", imports: []string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1112,6 +1499,88 @@ func TestGoexitCrash(t *testing.T) {
 			}
 		})
 	}
+
+	for _, tc := range []struct {
+		name          string
+		arg           string
+		panicStrategy string
+		want          string
+	}{
+		{"wasip1-deadlock", "deadlock", "", "fatal error: all goroutines are asleep - deadlock!"},
+		{"wasip1-goexit-panic-trap", "defer", "trap", "defer ran"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			options := optionsFromTarget("wasip1", sema)
+			options.PanicStrategy = tc.panicStrategy
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := builder.Build("testdata/goexit.go", ".wasm", t.TempDir(), config)
+			if err != nil {
+				t.Fatal("failed to build binary:", err)
+			}
+			data, err := os.ReadFile(result.Binary)
+			if err != nil {
+				t.Fatal("failed to read binary:", err)
+			}
+
+			output := &bytes.Buffer{}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
+			defer r.Close(ctx)
+			wasi_snapshot_preview1.MustInstantiate(ctx, r)
+			moduleConfig := wazero.NewModuleConfig().
+				WithArgs(result.Binary, tc.arg).
+				WithStdout(output).
+				WithStderr(output)
+			_, err = r.InstantiateWithConfig(ctx, data, moduleConfig)
+			if err == nil {
+				t.Fatal("program unexpectedly exited successfully")
+			}
+			if !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("output does not contain %q:\n%s", tc.want, output.String())
+			}
+		})
+	}
+}
+
+func TestWASIPanicTraceback(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping test in short mode")
+	}
+
+	options := optionsFromTarget("wasip1", sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := builder.Build("testdata/panic-traceback.go", ".wasm", t.TempDir(), config)
+	if err != nil {
+		t.Fatal("failed to build binary:", err)
+	}
+	data, err := os.ReadFile(result.Binary)
+	if err != nil {
+		t.Fatal("failed to read binary:", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
+	defer r.Close(ctx)
+	wasi_snapshot_preview1.MustInstantiate(ctx, r)
+	_, err = r.InstantiateWithConfig(ctx, data, wazero.NewModuleConfig())
+	if err == nil {
+		t.Fatal("program unexpectedly exited successfully")
+	}
+	if !strings.Contains(err.Error(), "main.panicHere") {
+		t.Fatalf("panic traceback does not contain main.panicHere:\n%s", err)
+	}
 }
 
 func TestRuntimeFatal(t *testing.T) {
@@ -1140,6 +1609,27 @@ func TestRuntimeFatal(t *testing.T) {
 	if strings.Contains(output.String(), "recovered:") {
 		t.Fatalf("fatal runtime error was recovered:\n%s", output.String())
 	}
+}
+
+// Test that the program can read stdin when the caller supplies it.
+func TestStdin(t *testing.T) {
+	t.Parallel()
+
+	options := optionsFromTarget("", sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := &bytes.Buffer{}
+	_, err = buildAndRun(TESTDATA+"/stdin.go", config, output, nil, nil, time.Minute, func(cmd *exec.Cmd, result builder.BuildResult) error {
+		cmd.Stdin = strings.NewReader("hello\nworld\n")
+		return cmd.Run()
+	})
+	if err != nil {
+		t.Error("failed to run:", err)
+	}
+	checkOutput(t, TESTDATA+"/stdin.txt", output.Bytes())
 }
 
 func TestTest(t *testing.T) {
@@ -1346,9 +1836,54 @@ func TestMain(m *testing.M) {
 				os.Exit(1)
 			}
 			os.Exit(0)
+		case "test-main":
+			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+			main()
+			os.Exit(0)
 		}
 	}
 
 	// Run normal tests.
 	os.Exit(m.Run())
+}
+
+func TestInitAllDWARF(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != "linux" {
+		t.Skip("test reads ELF DWARF")
+	}
+
+	options := optionsFromTarget("", sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := builder.Build("testdata/init.go", "", t.TempDir(), config)
+	if err != nil {
+		t.Fatal("failed to build binary:", err)
+	}
+	f, err := elf.Open(result.Binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	d, err := f.DWARF()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := d.Reader()
+	for {
+		entry, err := r.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry == nil {
+			t.Fatal("no DWARF subprogram for runtime.initAll")
+		}
+		if entry.Tag == dwarf.TagSubprogram && entry.Val(dwarf.AttrName) == "runtime.initAll" {
+			return
+		}
+	}
 }

@@ -42,13 +42,13 @@ define void @testUnknownAlign() {
 }
 
 define void @testEscapingCall() {
-  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr null)
+  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   %val = call ptr @escapeIntPtr(ptr %alloc)
   ret void
 }
 
 define void @testEscapingCall2() {
-  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr null)
+  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   %val = call ptr @escapeIntPtrSometimes(ptr %alloc, ptr %alloc)
   ret void
 }
@@ -61,7 +61,7 @@ define void @testNonEscapingCall() {
 }
 
 define ptr @testEscapingReturn() {
-  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr null)
+  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
   ret ptr %alloc
 }
 
@@ -83,6 +83,27 @@ end:                                              ; preds = %loop
 define void @testZeroSizedAlloc() {
   %ptr = call ptr @noescapeIntPtr(ptr @runtime.zeroSizedAlloc)
   ret void
+}
+
+define { ptr, ptr } @testEscapingReturnedAggregate() {
+  %alloc = call align 4 ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  %result = call { i32, { ptr, ptr } } @wrapInAggregate(ptr %alloc)
+  %err = extractvalue { i32, { ptr, ptr } } %result, 1
+  ret { ptr, ptr } %err
+}
+
+define i32 @testNonEscapingReturnedAggregate() {
+  %stackalloc = alloca [4 x i8], align 4
+  store [4 x i8] zeroinitializer, ptr %stackalloc, align 4
+  %result = call { i32, { ptr, ptr } } @wrapInAggregate(ptr %stackalloc)
+  %n = extractvalue { i32, { ptr, ptr } } %result, 0
+  ret i32 %n
+}
+
+define { i32, { ptr, ptr } } @wrapInAggregate(ptr %p) {
+  %itf = insertvalue { ptr, ptr } { ptr null, ptr undef }, ptr %p, 1
+  %result = insertvalue { i32, { ptr, ptr } } { i32 1, { ptr, ptr } undef }, { ptr, ptr } %itf, 1
+  ret { i32, { ptr, ptr } } %result
 }
 
 declare ptr @escapeIntPtr(ptr)

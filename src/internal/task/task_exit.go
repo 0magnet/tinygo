@@ -17,13 +17,33 @@ func addLiveTask(t *Task) {
 	atomic.AddUint32(&liveTasks, 1)
 }
 
-// Exit exits the current task because runtime.Goexit was called.
-func Exit() {
-	exit(true)
+func NumGoroutine() int {
+	return int(atomic.LoadUint32(&liveTasks))
 }
 
-func exit(goexit bool) {
+// Goexit exits the current task because runtime.Goexit was called.
+func Goexit() {
+	exit(true, nil)
+}
+
+// Exit exits the current task after its entry function returns.
+func Exit() {
+	exit(false, nil)
+}
+
+func CoroExit(next *Task) {
+	exit(false, next)
+}
+
+func exit(goexit bool, next *Task) {
 	t := Current()
+	if hasReleasableStack {
+		t.Exited = true
+	}
+	if next != nil {
+		synctestTaskWake(next)
+	}
+	exitSynctest(t)
 	remaining := atomic.AddUint32(&liveTasks, ^uint32(0))
 	if t == mainTask {
 		if goexit {
@@ -34,6 +54,9 @@ func exit(goexit bool) {
 		}
 	} else if atomic.LoadUint32(&mainExitedByGoexit) != 0 && remaining == 0 {
 		runtimeFatal("all goroutines are asleep - deadlock!")
+	}
+	if next != nil {
+		scheduleTaskNoWake(next)
 	}
 
 	// TODO: explicitly free the stack after switching back to the scheduler.

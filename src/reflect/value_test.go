@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestTinyIndirectPointers(t *testing.T) {
@@ -36,6 +37,58 @@ func TestTinyIndirectPointers(t *testing.T) {
 
 	if v1.Elem().Index(0).Uint() != 0xaa {
 		t.Errorf("bad indirect array index via reflect")
+	}
+}
+
+func TestTinyInvalidValueString(t *testing.T) {
+	if got := (Value{}).String(); got != "<invalid Value>" {
+		t.Errorf("Value{}.String() = %q, want %q", got, "<invalid Value>")
+	}
+}
+
+func TestNewAt(t *testing.T) {
+	value := 42
+	v := NewAt(TypeOf(value), unsafe.Pointer(&value))
+	if got, want := v.Type(), TypeOf((*int)(nil)); got != want {
+		t.Fatalf("NewAt type = %v, want %v", got, want)
+	}
+	if got := v.Interface().(*int); got != &value {
+		t.Fatalf("NewAt pointer = %p, want %p", got, &value)
+	}
+	v.Elem().SetInt(23)
+	if value != 23 {
+		t.Fatalf("NewAt value = %d, want 23", value)
+	}
+	if !v.Elem().CanAddr() || !v.Elem().CanSet() {
+		t.Fatal("NewAt element is not addressable and settable")
+	}
+	if got := v.Elem().Addr().Interface(); got != v.Interface() {
+		t.Fatalf("address of NewAt element = %v, want %v", got, v.Interface())
+	}
+
+	type composite struct {
+		Value   int
+		Pointer *int
+	}
+	pointed := 1
+	compositeValue := composite{Value: 42, Pointer: &pointed}
+	compositePointer := NewAt(TypeOf(compositeValue), unsafe.Pointer(&compositeValue))
+	compositePointer.Elem().Field(0).SetInt(23)
+	if compositeValue.Value != 23 {
+		t.Fatalf("NewAt struct field = %d, want 23", compositeValue.Value)
+	}
+	other := 2
+	compositePointer.Elem().Field(1).Set(ValueOf(&other))
+	if compositeValue.Pointer != &other {
+		t.Fatalf("NewAt pointer field = %p, want %p", compositeValue.Pointer, &other)
+	}
+
+	nilValue := NewAt(TypeOf(value), nil)
+	if !nilValue.IsNil() {
+		t.Fatal("NewAt with nil pointer is not nil")
+	}
+	if nilValue.Elem().IsValid() {
+		t.Fatal("Elem of NewAt with nil pointer is valid")
 	}
 }
 
@@ -360,6 +413,98 @@ func TestTinySlice(t *testing.T) {
 	}
 }
 
+func TestTinySlice3(t *testing.T) {
+	slice := make([]int, 3, 6)
+	for i := range cap(slice) {
+		slice[:cap(slice)][i] = i
+	}
+
+	value := ValueOf(slice)
+	sliced := value.Slice3(4, 5, 6).Interface().([]int)
+	if len(sliced) != 1 || cap(sliced) != 2 || sliced[0] != 4 {
+		t.Fatalf("Slice3(4, 5, 6) = %v with cap %d, want [4] with cap 2", sliced, cap(sliced))
+	}
+
+	first := value.Slice3(2, 4, 6)
+	empty := first.Slice3(4, 4, 4)
+	if got, want := empty.UnsafePointer(), first.UnsafePointer(); got != want {
+		t.Fatalf("empty Slice3 pointer = %p, want %p", got, want)
+	}
+
+	array := [4]int{1, 2, 3, 4}
+	arraySlice := ValueOf(&array).Elem().Slice3(1, 2, 3).Interface().([]int)
+	if len(arraySlice) != 1 || cap(arraySlice) != 2 || arraySlice[0] != 2 {
+		t.Fatalf("array Slice3(1, 2, 3) = %v with cap %d, want [2] with cap 2", arraySlice, cap(arraySlice))
+	}
+
+	checkPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s did not panic", name)
+			}
+		}()
+		fn()
+	}
+	checkPanic("Slice3 with reversed indexes", func() {
+		value.Slice3(2, 1, 3)
+	})
+	checkPanic("Slice3 with negative index", func() {
+		value.Slice3(-1, 1, 2)
+	})
+	checkPanic("Slice3 beyond capacity", func() {
+		value.Slice3(0, 3, 7)
+	})
+	checkPanic("Slice3 on unaddressable array", func() {
+		ValueOf(array).Slice3(0, 1, 2)
+	})
+	checkPanic("Slice3 on unsupported kind", func() {
+		ValueOf("abc").Slice3(0, 1, 2)
+	})
+}
+
+func TestTinySetCap(t *testing.T) {
+	slice := make([]int, 3, 6)
+	settable := ValueOf(&slice).Elem()
+	settable.SetCap(5)
+	if len(slice) != 3 || cap(slice) != 5 {
+		t.Fatalf("after SetCap(5), len, cap = %d, %d, want 3, 5", len(slice), cap(slice))
+	}
+	settable.SetLen(5)
+	settable.SetCap(5)
+
+	checkPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s did not panic", name)
+			}
+		}()
+		fn()
+	}
+	checkPanic("SetCap below length", func() {
+		settable.SetCap(4)
+	})
+	checkPanic("SetCap above capacity", func() {
+		settable.SetCap(6)
+	})
+	checkPanic("SetCap with negative capacity", func() {
+		settable.SetCap(-1)
+	})
+	checkPanic("SetCap on non-slice", func() {
+		ValueOf(new(string)).Elem().SetCap(0)
+	})
+	checkPanic("SetCap on unaddressable slice", func() {
+		ValueOf(slice).SetCap(5)
+	})
+	checkPanic("SetCap on read-only slice", func() {
+		value := ValueOf(&struct {
+			slice []int
+		}{slice}).Elem().Field(0)
+		value.SetCap(5)
+	})
+}
+
 func TestTinyBytes(t *testing.T) {
 	s := []byte("abcde")
 	refs := ValueOf(s)
@@ -493,6 +638,13 @@ func TestTinyStruct(t *testing.T) {
 }
 
 func TestTinyZero(t *testing.T) {
+	for _, value := range []any{(*int)(nil), [16]byte{}, [64]byte{}} {
+		zero := Zero(TypeOf(value))
+		if IsRO(zero) {
+			t.Errorf("Zero(%v) is read-only", zero.Type())
+		}
+	}
+
 	s := "hello, world"
 	sptr := &s
 	v := ValueOf(&sptr).Elem()
@@ -994,6 +1146,20 @@ func TestTypeAssertPanic(t *testing.T) {
 	})
 }
 
+type tinyMakeChanElement struct {
+	ptr  *int
+	text string
+}
+
+var tinyMakeChanChurn []*int
+
+//go:noinline
+func fillTinyMakeChan(ch chan tinyMakeChanElement) {
+	value := new(int)
+	*value = 42
+	ch <- tinyMakeChanElement{ptr: value, text: "hello"}
+}
+
 func TestTinyMakeChan(t *testing.T) {
 	// Value.Send and Value.Recv are not implemented yet, so the channel is
 	// exercised through Interface(): that proves MakeChan returns a working
@@ -1024,6 +1190,22 @@ func TestTinyMakeChan(t *testing.T) {
 		}
 		if got, want := <-ch, 2; got != want {
 			t.Errorf("<-ch=%v, want %v", got, want)
+		}
+	})
+
+	t.Run("buffered pointers survive GC", func(t *testing.T) {
+		v := MakeChan(TypeOf(make(chan tinyMakeChanElement)), 1)
+		ch := v.Interface().(chan tinyMakeChanElement)
+		fillTinyMakeChan(ch)
+		runtime.GC()
+		tinyMakeChanChurn = make([]*int, 128)
+		for i := range tinyMakeChanChurn {
+			tinyMakeChanChurn[i] = new(int)
+		}
+
+		got := <-ch
+		if *got.ptr != 42 || got.text != "hello" {
+			t.Errorf("<-ch=%v, want {42 hello}", got)
 		}
 	})
 

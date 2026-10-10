@@ -22,14 +22,20 @@ func scanCurrentStack() {}
 
 func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer
 
-func realloc(ptr unsafe.Pointer, size uintptr) unsafe.Pointer
-
 func free(ptr unsafe.Pointer) {
 	// Nothing to free when nothing gets allocated.
 }
 
+//go:noinline
+func freeTaskStack(ptr uintptr) {
+}
+
 func GC() {
 	// Unimplemented.
+}
+
+func mallocs() uint64 {
+	return 0
 }
 
 func markRoots(start, end uintptr) {

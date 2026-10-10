@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tinygo-org/tinygo/compileopts"
+	"github.com/tinygo-org/tinygo/goenv"
 )
 
 var sema = make(chan struct{}, runtime.NumCPU())
@@ -21,6 +23,30 @@ var flagUpdate = flag.Bool("update", false, "update builder package tests")
 type sizeTest struct {
 	target string
 	path   string
+	opt    string
+}
+
+func TestTrimPathPackageSize(t *testing.T) {
+	root := goenv.Get("TINYGOROOT")
+	packages := map[string]string{
+		filepath.FromSlash("example.com/main"):                         "main",
+		filepath.FromSlash("example.com/dependency@v1.2.3/subpackage"): "example.com/dependency/subpackage",
+		filepath.Join(root, "src", "runtime"):                          "runtime",
+	}
+	for _, tc := range []struct{ path, pkg, file string }{
+		{"example.com/main/main.go", "main", "main.go"},
+		{"/_/example.com/main/main.c", "main", "main.c"},
+		{"//_/_/example.com/main/main.c", "main", "main.c"},
+		{"/_/example.com/dependency@v1.2.3/subpackage/dependency.c", "example.com/dependency/subpackage", "dependency.c"},
+		{"/_/github.com/tinygo-org/tinygo/src/runtime/runtime_unix.c", "runtime", "runtime_unix.c"},
+		{"/_/github.com/tinygo-org/tinygo/lib/musl/src/stdio/puts.c", "C musl", filepath.FromSlash("src/stdio/puts.c")},
+		{"//_/_/github.com/tinygo-org/tinygo/lib/bdwgc/alloc.c", "C bdwgc", "alloc.c"},
+	} {
+		pkg, file := findPackagePath(filepath.FromSlash(tc.path), packages)
+		if pkg != tc.pkg || file != tc.file {
+			t.Errorf("findPackagePath(%q) = %q, %q; want %q, %q", tc.path, pkg, file, tc.pkg, tc.file)
+		}
+	}
 }
 
 // Test whether code and data size is as expected for the given targets.
@@ -45,9 +71,14 @@ func TestBinarySize(t *testing.T) {
 	// This is a small number of very diverse targets that we want to test.
 	tests := []sizeTest{
 		// microcontrollers
-		{"hifive1b", "examples/echo"},
-		{"microbit", "examples/serial"},
-		{"wioterminal", "examples/pininterrupt"},
+		{target: "hifive1b", path: "examples/echo", opt: "z"},
+		{target: "microbit", path: "examples/serial", opt: "z"},
+		{target: "wioterminal", path: "examples/pininterrupt", opt: "z"},
+
+		{target: "cortex-m-qemu", path: "./testdata/size-corpus", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-corpus", opt: "2"},
+		{target: "riscv-qemu", path: "./testdata/size-corpus", opt: "z"},
+		{target: "riscv-qemu", path: "./testdata/size-corpus", opt: "2"},
 
 		// TODO: also check wasm. Right now this is difficult, because
 		// wasm binaries are run through wasm-opt and therefore the
@@ -98,7 +129,7 @@ func measureBinarySizes(t *testing.T, tests []sizeTest) []*programSize {
 		result := <-results
 		if result.err != nil {
 			tc := tests[result.index]
-			t.Errorf("%s/%s: %v", tc.target, tc.path, result.err)
+			t.Errorf("%s/%s opt=%s: %v", tc.target, tc.path, tc.opt, result.err)
 			failed = true
 		}
 		sizes[result.index] = result.size
@@ -110,7 +141,7 @@ func measureBinarySizes(t *testing.T, tests []sizeTest) []*programSize {
 }
 
 func measureBinarySize(tc sizeTest, tmpdir string) (*programSize, error) {
-	result, err := buildBinaryInDir(tc.target, tc.path, tmpdir)
+	result, err := buildBinaryInDir(tc.target, tc.path, tc.opt, tmpdir, false)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +155,7 @@ func measureBinarySize(tc sizeTest, tmpdir string) (*programSize, error) {
 func formatSizeTable(tests []sizeTest, sizes []*programSize) string {
 	targetWidth := len("target")
 	packageWidth := len("package")
+	optWidth := len("opt")
 	codeWidth := len("code")
 	rodataWidth := len("rodata")
 	dataWidth := len("data")
@@ -131,6 +163,7 @@ func formatSizeTable(tests []sizeTest, sizes []*programSize) string {
 	for i, tc := range tests {
 		targetWidth = max(targetWidth, len(tc.target))
 		packageWidth = max(packageWidth, len(tc.path))
+		optWidth = max(optWidth, len(tc.opt))
 		codeWidth = max(codeWidth, len(strconv.FormatUint(sizes[i].Code, 10)))
 		rodataWidth = max(rodataWidth, len(strconv.FormatUint(sizes[i].ROData, 10)))
 		dataWidth = max(dataWidth, len(strconv.FormatUint(sizes[i].Data, 10)))
@@ -138,13 +171,13 @@ func formatSizeTable(tests []sizeTest, sizes []*programSize) string {
 	}
 
 	var output strings.Builder
-	fmt.Fprintf(&output, "%-*s %-*s %*s %*s %*s %*s\n",
-		targetWidth, "target", packageWidth, "package",
+	fmt.Fprintf(&output, "%-*s %-*s %-*s %*s %*s %*s %*s\n",
+		targetWidth, "target", packageWidth, "package", optWidth, "opt",
 		codeWidth, "code", rodataWidth, "rodata", dataWidth, "data", bssWidth, "bss")
 	for i, tc := range tests {
 		size := sizes[i]
-		fmt.Fprintf(&output, "%-*s %-*s %*d %*d %*d %*d\n",
-			targetWidth, tc.target, packageWidth, tc.path,
+		fmt.Fprintf(&output, "%-*s %-*s %-*s %*d %*d %*d %*d\n",
+			targetWidth, tc.target, packageWidth, tc.path, optWidth, tc.opt,
 			codeWidth, size.Code, rodataWidth, size.ROData,
 			dataWidth, size.Data, bssWidth, size.BSS)
 	}
@@ -154,20 +187,25 @@ func formatSizeTable(tests []sizeTest, sizes []*programSize) string {
 // Check that the -size=full flag attributes binary size to the correct package
 // without filesystem paths and things like that.
 func TestSizeFull(t *testing.T) {
-	tests := []string{
-		"microbit",
-		"wasip1",
+	tests := []struct {
+		target   string
+		trimPath bool
+	}{
+		{"microbit", false},
+		{"microbit", true},
+		{"wasip1", false},
+		{"wasip1", true},
 	}
 
 	libMatch := regexp.MustCompile(`^C [a-z -]+$`) // example: "C interrupt vector"
 	pkgMatch := regexp.MustCompile(`^[a-z/]+$`)    // example: "internal/task"
 
-	for _, target := range tests {
-		t.Run(target, func(t *testing.T) {
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%s/trimpath=%v", test.target, test.trimPath), func(t *testing.T) {
 			t.Parallel()
 
 			// Build the binary.
-			result := buildBinary(t, target, "examples/serial")
+			result := buildBinary(t, test.target, "examples/serial", test.trimPath)
 
 			// Check whether the binary doesn't contain any unexpected package
 			// names.
@@ -192,23 +230,24 @@ func TestSizeFull(t *testing.T) {
 	}
 }
 
-func buildBinary(t *testing.T, targetString, pkgName string) BuildResult {
+func buildBinary(t *testing.T, targetString, pkgName string, trimPath bool) BuildResult {
 	t.Helper()
-	result, err := buildBinaryInDir(targetString, pkgName, t.TempDir())
+	result, err := buildBinaryInDir(targetString, pkgName, "z", t.TempDir(), trimPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return result
 }
 
-func buildBinaryInDir(targetString, pkgName, tmpdir string) (BuildResult, error) {
+func buildBinaryInDir(targetString, pkgName, opt, tmpdir string, trimPath bool) (BuildResult, error) {
 	options := compileopts.Options{
 		Target:        targetString,
-		Opt:           "z",
+		Opt:           opt,
 		Semaphore:     sema,
 		InterpTimeout: 60 * time.Second,
 		Debug:         true,
 		VerifyIR:      true,
+		TrimPath:      trimPath,
 	}
 	target, err := compileopts.LoadTarget(&options)
 	if err != nil {

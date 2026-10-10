@@ -72,6 +72,8 @@ smoketest-examples: | build/smoke
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=circuitplay-express examples/i2s
 	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/i2s-tone
+	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/mcp3008
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/memstats
@@ -141,6 +143,8 @@ smoketest-nrf: | build/smoke
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=microbit-s110v8     examples/echo
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=microbit-v2         examples/microbit-blink
+	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=microbit-v2         examples/i2s-tone
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=microbit-v2-s113v7  examples/microbit-blink
 	@$(MD5SUM) $(SMOKE_OUT).hex
@@ -237,6 +241,8 @@ smoketest-samd: | build/smoke
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=itsybitsy-nrf52840  examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=itsybitsy-nrf52840  examples/i2s-tone
+	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=qtpy                examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).hex
 
@@ -295,6 +301,8 @@ smoketest-rp2xxx: | build/smoke
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=waveshare-rp2040-zero examples/echo
 	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=waveshare-rp2040-pizero examples/echo
+	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=challenger-rp2040    examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=trinkey-qt2040      examples/temp
@@ -318,6 +326,10 @@ smoketest-rp2xxx: | build/smoke
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=blinky2350          examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pico-plus2          examples/blinky1
+	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=tufty2350          examples/blinky1
+	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=waveshare-rp2350-pizero examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=metro-rp2350        examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
@@ -473,6 +485,8 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-coreboard-v2  examples/adc
 	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-coreboard-v2  examples/pwm
+	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-generic     examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-generic     examples/machinetest
@@ -502,6 +516,13 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/blinkm
 	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/i2s-tone
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	# esp32h2-devkitm-1
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32h2-devkitm-1 	examples/machinetest
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32h2-devkitm-1 	examples/serial
+	@$(MD5SUM) $(SMOKE_OUT).bin
 	# xiao-esp32s3
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -512,6 +533,8 @@ ifneq ($(XTENSA), 0)
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/pwm
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/adc
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/i2s-tone
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	# esp32s3-supermini
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-supermini	    examples/blinky1
@@ -547,6 +570,8 @@ smoketest-riscv: | build/smoke
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=m5stamp-c3          examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c3        examples/machinetest
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c3        examples/i2s-tone
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-c3-devkit-rust-1 examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -606,16 +631,35 @@ ifneq ($(OS),Windows_NT)
 	$(TINYGO) build -o $(SMOKE_OUT).elf -gc=leaking -scheduler=none examples/serial
 endif
 
+# The host dependent part of the quick smoke test, plus a canary that shows cross
+# compilation works from this host. Cross compilation gives the same result on
+# every host, thus a second runner of the same OS only needs this part.
+.PHONY: smoketest-host
+smoketest-host: SMOKE_OUT = build/smoke/host
+smoketest-host: testchdir | build/smoke
+	$(TINYGO) version
+	$(TINYGO) targets > /dev/null
+	# regression test for #2892
+	cd tests/testing/recurse && ($(TINYGO) test ./... > recurse.log && cat recurse.log && test $$(wc -l < recurse.log) = 2 && rm recurse.log)
+ifneq ($(OS),Windows_NT)
+	# TODO: this does not yet work on Windows. Somehow, unused functions are
+	# not garbage collected.
+	$(TINYGO) build -o $(SMOKE_OUT).elf -gc=leaking -scheduler=none examples/serial
+endif
+	# canary, nrf52 Cortex-M4
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/blinky1
+	@$(MD5SUM) $(SMOKE_OUT).hex
+ifneq ($(WASM), 0)
+	# canary, wasm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).wasm -target=wasm               examples/wasm/main
+endif
+
 # A representative board for each processor architecture. This answers the
 # question "can TinyGo build a binary for each architecture" at a fraction of
 # the cost of the full smoke test, which runs separately on Linux.
 .PHONY: smoketest-quick
 smoketest-quick: SMOKE_OUT = build/smoke/quick
-smoketest-quick: testchdir | build/smoke
-	$(TINYGO) version
-	$(TINYGO) targets > /dev/null
-	# regression test for #2892
-	cd tests/testing/recurse && ($(TINYGO) test ./... > recurse.log && cat recurse.log && test $$(wc -l < recurse.log) = 2 && rm recurse.log)
+smoketest-quick: smoketest-host | build/smoke
 	# nrf51, Cortex-M0
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=microbit            examples/microbit-blink
 	@$(MD5SUM) $(SMOKE_OUT).hex
@@ -691,9 +735,4 @@ ifneq ($(WASM), 0)
 	$(TINYGO) build -size short -o $(SMOKE_OUT).wasm -target=wasm              examples/wasm/main
 	# wasm without a host, so without any imports
 	$(TINYGO) build -size short -o $(SMOKE_OUT).wasm -target=wasm-unknown      examples/hello-wasm-unknown
-endif
-ifneq ($(OS),Windows_NT)
-	# TODO: this does not yet work on Windows. Somehow, unused functions are
-	# not garbage collected.
-	$(TINYGO) build -o $(SMOKE_OUT).elf -gc=leaking -scheduler=none examples/serial
 endif

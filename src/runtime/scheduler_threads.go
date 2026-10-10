@@ -35,26 +35,35 @@ func sleep(duration int64) {
 	if duration <= 0 {
 		return
 	}
+	if synctestSleep(duration) {
+		return
+	}
 
 	sleepTicks(nanosecondsToTicks(duration))
 }
 
 func deadlock() {
+	synctestTaskBlock(task.Current())
 	task.Pause()
 }
 
 func goexit() {
-	task.Exit()
+	task.Goexit()
 }
 
 func scheduleTask(t *task.Task) {
+	synctestTaskWake(t)
+	scheduleTaskNoWake(t)
+}
+
+func scheduleTaskNoWake(t *task.Task) {
 	t.Resume()
 }
 
 func Gosched() {
-	// Each goroutine runs in a thread, so there's not much we can do here.
-	// There is sched_yield but it's only really intended for realtime
-	// operation, so is probably best not to use.
+	// Each goroutine runs in a thread, so yield the thread to let other
+	// goroutines make progress.
+	task.Yield()
 }
 
 // NumCPU returns the number of logical CPUs usable by the current process.
@@ -92,6 +101,7 @@ func timerRunner() {
 		tn := timerQueue
 		timerQueue = tn.next
 		tn.next = nil
+		delay := ticksToNanoseconds(now - tn.whenTicks())
 
 		// Mark the timer as firing, so that a concurrent Stop or Reset (via
 		// removeTimer) can prevent a periodic timer from re-adding itself in its
@@ -101,17 +111,7 @@ func timerRunner() {
 		timerQueueLock.Unlock()
 
 		// Run the callback stored in this timer node.
-		delay := ticksToNanoseconds(now - tn.whenTicks())
 		tn.callback(tn, delay)
-
-		// The callback has finished running. A periodic timer (a ticker) already
-		// removed itself from the firing list in reAddTimer; a one-shot timer
-		// isn't re-added, so remove it from the firing list here.
-		timerQueueLock.Lock()
-		if tn.timer.period == 0 {
-			firingTimersRemove(tn)
-		}
-		timerQueueLock.Unlock()
 	}
 }
 
@@ -131,9 +131,8 @@ func addTimer(tim *timerNode) {
 	timerQueueLock.Unlock()
 }
 
-// reAddTimer advances and re-adds a periodic timer (a ticker) after its
-// callback has run, unless it was stopped or reset while the callback was
-// running (in which case it must not be re-added).
+// reAddTimer finishes firing a timer. It re-adds periodic timers unless they
+// were stopped or reset while the callback was running.
 func reAddTimer(tn *timerNode) {
 	timerQueueLock.Lock()
 
@@ -146,6 +145,10 @@ func reAddTimer(tn *timerNode) {
 		// The timer was stopped or reset while its callback was running. Don't
 		// re-add it: a stopped ticker must stay stopped, and a reset ticker has
 		// already been re-added by resetTimer.
+		timerQueueLock.Unlock()
+		return
+	}
+	if tn.timer.period == 0 {
 		timerQueueLock.Unlock()
 		return
 	}
