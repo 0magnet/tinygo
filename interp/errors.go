@@ -57,15 +57,23 @@ func (e *Error) Error() string {
 // errorAt returns an error value for the currently interpreted package at the
 // location of the instruction. The location information may not be complete as
 // it depends on debug information in the IR.
+//
+// The instruction is only printed for errors that are reported. Recoverable
+// errors are discarded by the caller, which runs the code at runtime instead,
+// and printing an instruction numbers every value in its function: in a large
+// program that cost more than interpreting it.
 func (r *runner) errorAt(inst instruction, err error) *Error {
 	pos := getPosition(inst.llvmInst)
-	return &Error{
+	e := &Error{
 		ImportPath: r.pkgName,
-		Inst:       inst.llvmInst.String(),
 		Pos:        pos,
 		Err:        err,
-		Traceback:  []ErrorLine{{pos, inst.llvmInst.String()}},
 	}
+	if !isRecoverableError(err) {
+		e.Inst = inst.llvmInst.String()
+		e.Traceback = []ErrorLine{{pos, e.Inst}}
+	}
+	return e
 }
 
 // errorAt returns an error value at the location of the instruction.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/token"
 	"os"
+	"strings"
 
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler/ircheck"
@@ -165,6 +166,11 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		pipelineLevel = "O2"
 	}
 	passes := fmt.Sprintf("thinlto-pre-link<%s>", pipelineLevel)
+	if strings.HasPrefix(config.Triple(), "wasm") {
+		// WebAssembly is linked without optimizing again (see builder.Build),
+		// so the whole pipeline runs here, and only here.
+		passes = fmt.Sprintf("default<%s>", pipelineLevel)
+	}
 	blockGlobalAllocPromotion(mod)
 	err := mod.RunPasses(passes, llvm.TargetMachine{}, po)
 	removeGlobalAllocPromotionMarker(mod)

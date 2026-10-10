@@ -734,6 +734,15 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	// First add all jobs necessary to build this object file, then afterwards
 	// run all jobs in parallel as far as possible.
 
+	// WebAssembly is linked with full LTO and without optimizing again. The
+	// program is one module, so ThinLTO had nothing to split, and its
+	// post-link pipeline ran single-threaded over the whole program; instead
+	// transform.Optimize runs the complete pipeline for wasm, and the linker
+	// only generates code, split across threads (--lto-partitions). The
+	// post-link pipeline's inlining also left wasm-opt's asyncify pass several
+	// times more work.
+	wasmLTO := strings.HasPrefix(config.Triple(), "wasm")
+
 	// Add job to write the output object file.
 	objfile := filepath.Join(tmpdir, "main.o")
 	outputObjectFileJob := &compileJob{
@@ -741,6 +750,11 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		dependencies: []*compileJob{programJob},
 		result:       objfile,
 		run: func(*compileJob) error {
+			if wasmLTO {
+				llvmBuf := llvm.WriteBitcodeToMemoryBuffer(mod)
+				defer llvmBuf.Dispose()
+				return os.WriteFile(objfile, llvmBuf.Bytes(), 0666)
+			}
 			llvmBuf := llvm.WriteThinLTOBitcodeToMemoryBuffer(mod)
 			defer llvmBuf.Dispose()
 			return os.WriteFile(objfile, llvmBuf.Bytes(), 0666)
@@ -892,7 +906,15 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 					"--lto-O"+strconv.Itoa(speedLevel),
 					"-cache_path_lto", filepath.Join(cacheDir, "thinlto"))
 			case "gnu":
-				// Options for the ELF linker.
+				// Options for the ELF (and WebAssembly) linker.
+				if wasmLTO {
+					ldflags = append(ldflags,
+						"--lto-O0",
+						"--lto-CGO"+strconv.Itoa(speedLevel),
+						"--lto-partitions="+strconv.Itoa(runtime.NumCPU()),
+					)
+					break
+				}
 				ldflags = append(ldflags,
 					"--lto-O"+strconv.Itoa(speedLevel),
 					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"),
