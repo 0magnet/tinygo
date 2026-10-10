@@ -1,0 +1,117 @@
+# The 0magnet toolchain: develop built as a static Linux release and published
+# as the rolling "develop" release, for the CI of the projects that build with
+# this fork. Install it with:
+#
+#   curl -sSfL https://github.com/0magnet/tinygo/releases/download/develop/tinygo.linux-amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+#   echo "$RUNNER_TEMP/tinygo/bin" >> "$GITHUB_PATH"
+#
+# The steps are linux.yml's build-linux, without the packages, the linter and
+# the spellchecker. It shares that job's caches, so LLVM is built only when
+# llvm-version.txt changes.
+name: Toolchain
+
+on:
+  push:
+    branches: [ develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.27-alpine
+    permissions:
+      contents: write
+    steps:
+      - name: Install apk dependencies
+        run: apk add tar git openssh make g++ mold github-cli
+      - name: Work around CVE-2022-24765
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Cache Go
+        uses: actions/cache@v5
+        with:
+          key: go-cache-linux-alpine-v2-${{ hashFiles('go.mod') }}
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+      - name: Restore LLVM source cache
+        uses: actions/cache/restore@v5
+        id: cache-llvm-source
+        with:
+          key: llvm-source-22-linux-alpine-v1-${{ hashFiles('llvm-version.txt') }}
+          path: |
+            llvm-project/clang/lib/Headers
+            llvm-project/clang/include
+            llvm-project/compiler-rt
+            llvm-project/lld/include
+            llvm-project/llvm/include
+      - name: Download LLVM source
+        if: steps.cache-llvm-source.outputs.cache-hit != 'true'
+        run: make llvm-source
+      - name: Restore LLVM build cache
+        uses: actions/cache/restore@v5
+        id: cache-llvm-build
+        with:
+          key: llvm-build-22-linux-alpine-v1-${{ hashFiles('llvm-version.txt') }}
+          path: llvm-build
+      - name: Build LLVM
+        if: steps.cache-llvm-build.outputs.cache-hit != 'true'
+        run: |
+          rm -rf llvm-project
+          make llvm-source
+          apk add cmake samurai python3
+          make llvm-build
+          find llvm-build -name CMakeFiles -prune -exec rm -r '{}' \;
+      - name: Save LLVM build cache
+        uses: actions/cache/save@v5
+        if: steps.cache-llvm-build.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.cache-llvm-build.outputs.cache-primary-key }}
+          path: llvm-build
+      - name: Get Binaryen revision
+        id: binaryen-revision
+        run: echo "revision=$(git rev-parse HEAD:lib/binaryen)" >> "$GITHUB_OUTPUT"
+      - name: Cache Binaryen
+        uses: actions/cache@v5
+        id: cache-binaryen
+        with:
+          key: binaryen-linux-alpine-v3-${{ steps.binaryen-revision.outputs.revision }}
+          path: build/wasm-opt
+      - name: Build Binaryen
+        if: steps.cache-binaryen.outputs.cache-hit != 'true'
+        run: |
+          apk add cmake samurai python3
+          make binaryen STATIC=1
+      - name: Build TinyGo release
+        run: make release -j4 STATIC=1
+      - name: Smoke test
+        run: |
+          mkdir -p /tmp/rel /tmp/smoke
+          tar -xzf build/release.tar.gz -C /tmp/rel
+          cd /tmp/smoke
+          printf 'module smoke\n\ngo 1.24\n' > go.mod
+          printf 'package main\n\nimport "fmt"\n\nfunc main() {\n\tch := make(chan int)\n\tgo func() { ch <- 42 }()\n\tfmt.Println(<-ch)\n}\n' > main.go
+          /tmp/rel/tinygo/bin/tinygo version
+          /tmp/rel/tinygo/bin/wasm-opt --version
+          /tmp/rel/tinygo/bin/tinygo build -o smoke.wasm -target wasm -no-debug .
+          ls -l smoke.wasm
+      - name: Publish the develop release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cp build/release.tar.gz tinygo.linux-amd64.tar.gz
+          sha256sum tinygo.linux-amd64.tar.gz > tinygo.linux-amd64.tar.gz.sha256
+          gh release delete develop --cleanup-tag --yes || true
+          gh release create develop --prerelease --target "$GITHUB_SHA" \
+            --title "develop ($(git rev-parse --short HEAD))" \
+            --notes "0magnet/tinygo develop at $(git rev-parse HEAD), built by the Toolchain workflow. Rebuilt on every push to develop." \
+            tinygo.linux-amd64.tar.gz tinygo.linux-amd64.tar.gz.sha256
