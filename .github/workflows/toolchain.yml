@@ -1,8 +1,8 @@
 # The 0magnet toolchain: develop built as a static Linux release and published
-# as the rolling "develop" release, for the CI of the projects that build with
+# as the rolling "toolchain" release, for the CI of the projects that build with
 # this fork. Install it with:
 #
-#   curl -sSfL https://github.com/0magnet/tinygo/releases/download/develop/tinygo.linux-amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+#   curl -sSfL https://github.com/0magnet/tinygo/releases/download/toolchain/tinygo.linux-amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
 #   echo "$RUNNER_TEMP/tinygo/bin" >> "$GITHUB_PATH"
 #
 # The steps are linux.yml's build-linux, without the packages, the linter and
@@ -103,15 +103,18 @@ jobs:
           /tmp/rel/tinygo/bin/wasm-opt --version
           /tmp/rel/tinygo/bin/tinygo build -o smoke.wasm -target wasm -no-debug .
           ls -l smoke.wasm
-      - name: Publish the develop release
+      - name: Publish the toolchain release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           cp build/release.tar.gz tinygo.linux-amd64.tar.gz
           sha256sum tinygo.linux-amd64.tar.gz > tinygo.linux-amd64.tar.gz.sha256
+          # Its tag is not named after the branch: a tag "develop" made every
+          # push of the develop branch by name ambiguous.
           gh release delete develop --cleanup-tag --yes || true
-          gh release create develop --prerelease --target "$GITHUB_SHA" \
+          gh release delete toolchain --cleanup-tag --yes || true
+          gh release create toolchain --prerelease --target "$GITHUB_SHA" \
             --title "develop ($(git rev-parse --short HEAD))" \
             --notes "0magnet/tinygo develop at $(git rev-parse HEAD), built by the Toolchain workflow. Rebuilt on every push to develop." \
             tinygo.linux-amd64.tar.gz tinygo.linux-amd64.tar.gz.sha256
