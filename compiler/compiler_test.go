@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/tinygo-org/tinygo/compileopts"
+	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/transform"
@@ -115,6 +116,24 @@ func TestCompiler(t *testing.T) {
 				outFilePrefix += "-" + tc.scheduler
 			}
 			outPath := "./testdata/" + outFilePrefix + ".ll"
+
+			// LLVM 23 prints some IR differently (getelementptr over bytes,
+			// float comparisons folded by instcombine). Where its output
+			// differs it has a golden file of its own, written by -update
+			// only when the output differs from the common one.
+			if llvmutil.Version() >= 23 {
+				versioned := "./testdata/" + outFilePrefix + ".llvm23.ll"
+				if *flagUpdate {
+					common, _ := os.ReadFile(outPath)
+					if diffIR(string(common), mod.String()) == "" {
+						_ = os.Remove(versioned)
+						return
+					}
+					outPath = versioned
+				} else if _, err := os.Stat(versioned); err == nil {
+					outPath = versioned
+				}
+			}
 
 			// Update test if needed. Do not check the result.
 			if *flagUpdate {
