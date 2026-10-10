@@ -137,6 +137,25 @@ func TestCompiler(t *testing.T) {
 	}
 }
 
+func TestCGoGlobalOrder(t *testing.T) {
+	for range 10 {
+		mod, errs := testCompilePackage(t, &compileopts.Options{Target: "wasm"}, "cgo-global-order.go")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		var names []string
+		for global := mod.FirstGlobal(); !global.IsNil(); global = llvm.NextGlobal(global) {
+			if strings.HasSuffix(global.Name(), "$funcaddr") {
+				names = append(names, global.Name())
+			}
+		}
+		mod.Dispose()
+		if len(names) != 4 || !slices.IsSorted(names) {
+			t.Fatalf("CGo globals are not in name order: %v", names)
+		}
+	}
+}
+
 func TestOptimizedLargeAggregateABI(t *testing.T) {
 	options := &compileopts.Options{Target: "wasm"}
 	mod, errs := testCompilePackage(t, options, "large-optimized.go")
@@ -336,6 +355,44 @@ func TestAggregateExportedInterfaceABI(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWrapperDebugInfo(t *testing.T) {
+	mod, errs := testCompilePackageWithDebug(t, &compileopts.Options{Target: "wasm"}, "wrapper-debug.go", true)
+	defer mod.Dispose()
+	for _, err := range errs {
+		t.Error(err)
+	}
+
+	for _, name := range []string{
+		"(main.wrapperValue).get$bound",
+		"(main.wrapperValue).get$thunk",
+		"(*main.wrapperValue).get",
+	} {
+		fn := mod.NamedFunction(name)
+		if fn.IsNil() {
+			t.Errorf("missing function %s", name)
+			continue
+		}
+		sp := fn.Subprogram()
+		if sp.IsNil() {
+			t.Errorf("%s has no subprogram", name)
+			continue
+		}
+		if line := sp.SubprogramLine(); line != 5 {
+			t.Errorf("%s subprogram line is %d, want 5", name, line)
+		}
+		if file := sp.ScopeFile().FileFilename(); !strings.HasSuffix(file, "wrapper-debug.go") {
+			t.Errorf("%s subprogram file is %q", name, file)
+		}
+		for bb := fn.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
+			for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+				if !inst.IsACallInst().IsNil() && inst.InstructionDebugLoc().IsNil() {
+					t.Errorf("%s has a call without a debug location", name)
+				}
+			}
+		}
 	}
 }
 

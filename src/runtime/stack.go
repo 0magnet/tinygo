@@ -15,9 +15,8 @@ func (f *Func) FileLine(pc uintptr) (file string, line int) {
 	return "", 0
 }
 
-// Entry returns the entry address of the function. Stubbed like the rest of
-// runtime.Func on TinyGo; provided so callers that reference it (e.g.
-// github.com/stretchr/testify/mock via FileLine(f.Entry())) compile.
+// Entry returns the entry address of the function. It is stubbed like the
+// rest of runtime.Func, so that callers such as testify/mock compile.
 func (f *Func) Entry() uintptr {
 	return 0
 }

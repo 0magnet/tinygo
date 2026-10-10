@@ -50,6 +50,7 @@ type Config struct {
 	RelocationModel string
 	SizeLevel       int
 	TinyGoVersion   string // for llvm.ident
+	TrimPath        bool
 
 	// Various compiler options that determine how code is generated.
 	Scheduler          string
@@ -861,7 +862,8 @@ func (c *compilerContext) attachDebugInfoRawWithDefinition(f *ssa.Function, llvm
 // one.
 func (c *compilerContext) getDIFile(filename string) llvm.Metadata {
 	if _, ok := c.difiles[filename]; !ok {
-		dir, file := filepath.Split(filename)
+		recordedPath := c.loaderPkg.RecordedPath(filename)
+		dir, file := filepath.Split(recordedPath)
 		if dir != "" {
 			dir = dir[:len(dir)-1]
 		}
@@ -883,7 +885,7 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 	sort.Slice(members, func(i, j int) bool {
 		iPos := pkg.Members[members[i]].Pos()
 		jPos := pkg.Members[members[j]].Pos()
-		if i == j {
+		if iPos == jPos {
 			// Cannot sort by pos, so do it by name.
 			return members[i] < members[j]
 		}
@@ -1264,6 +1266,11 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		} else if b.fn.Syntax() != nil {
 			// Create debug info file if needed.
 			b.difunc = b.attachDebugInfo(b.fn)
+		} else if b.fn.Pos().IsValid() {
+			// Synthetic wrappers such as $bound and $thunk have no syntax but share the
+			// position of the wrapped method. See https://pkg.go.dev/golang.org/x/tools/go/ssa#Function
+			pos := b.program.Fset.Position(b.fn.Pos())
+			b.difunc = b.attachDebugInfoRaw(b.fn, b.llvmFn, "", pos.Filename, pos.Line)
 		}
 		b.setDebugLocation(b.fn.Pos())
 	}
