@@ -2409,6 +2409,8 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			}
 		case strings.HasPrefix(name, "syscall.rawSyscallNoError") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscallNoError"):
 			return b.createRawSyscallNoError(instr)
+		case (name == "syscall.socketcall" || name == "syscall.rawsocketcall" || name == "golang.org/x/sys/unix.socketcall" || name == "golang.org/x/sys/unix.rawsocketcall") && b.GOOS == "linux" && b.GOARCH == "386":
+			return b.createSocketcall(instr)
 		case name == "runtime.supportsRecover":
 			supportsRecover := uint64(0)
 			if b.supportsRecover() {
