@@ -12,7 +12,8 @@
 		return err;
 	};
 
-	if (!globalThis.fs) {
+	const fsStub = !globalThis.fs;
+	if (fsStub) {
 		let outputBuf = "";
 		globalThis.fs = {
 			constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_TRUNC: -1, O_APPEND: -1, O_EXCL: -1, O_DIRECTORY: -1 }, // unused
@@ -131,6 +132,42 @@
 		};
 		return { sync, stdio: { stdin }, getCwd: () => process.cwd() };
 	};
+
+	// __tinygo_fsSync answers a file call from syscall/fs_js.go at once when
+	// the host can: bottle's jsfs.sync, or Node's *Sync calls. It returns {v}
+	// or {e: code}, or undefined to send the call through globalThis.fs's
+	// callback API, which parks the goroutine. Under asyncify a park unwinds
+	// and rewinds the whole stack, so it is kept for what cannot answer now:
+	// jsfs refuses a mounted path with ENOTSUP and an empty pipe with EAGAIN.
+	// The fallback fs above answers its callbacks synchronously, which would
+	// re-enter Go, so without a host fs only stdout and stderr work.
+	if (!globalThis.__tinygo_fsSync) {
+		let nodeSync;
+		globalThis.__tinygo_fsSync = (name, args) => {
+			let sync = globalThis.jsfs && globalThis.jsfs.sync;
+			if (!sync && !fsStub) {
+				if (nodeSync === undefined) nodeSync = (nodeJsfs() || {}).sync || null;
+				sync = nodeSync;
+				// Node's readSync on a terminal blocks the whole process.
+				if (name === "read" && args[0] === 0) return undefined;
+			}
+			if (!sync) {
+				if (!fsStub) return undefined;
+				if (name === "write" && (args[0] === 1 || args[0] === 2)) {
+					return { v: globalThis.fs.writeSync(args[0], args[1].subarray(args[2], args[2] + args[3])) };
+				}
+				return { e: "ENOSYS" };
+			}
+			const f = sync[name];
+			if (typeof f !== "function") return undefined;
+			try {
+				return { v: f(...args) };
+			} catch (e) {
+				if (e && (e.code === "ENOTSUP" || e.code === "EAGAIN")) return undefined;
+				return { e: (e && e.code) || "EIO" };
+			}
+		};
+	}
 
 	// jsfsWasi serves the WASI filesystem imports from bottle's jsfs.sync, so C
 	// code works on the tree os sees through globalThis.fs. The only preopen is "/".
