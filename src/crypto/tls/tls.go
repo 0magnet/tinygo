@@ -15,6 +15,7 @@ package tls
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -162,4 +163,10 @@ func LoadX509KeyPair(certFile, keyFile string) (Certificate, error) {
 		return Certificate{}, err
 	}
 	return X509KeyPair(certPEMBlock, keyPEMBlock)
+}
+
+// Listen creates a TLS listener accepting connections on the given network
+// address using net.Listen.
+func Listen(network, laddr string, config *Config) (net.Listener, error) {
+	return nil, errors.New("tls:Listen not implemented")
 }
