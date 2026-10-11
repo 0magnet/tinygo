@@ -182,6 +182,20 @@
 				mem().setBigUint64(addr, v_ref, true);
 			}
 
+			// tryStore stores f's result and true at addr, or what f threw and false.
+			const tryStore = (addr, f) => {
+				let ok = 1;
+				let v;
+				try {
+					v = f();
+				} catch (err) {
+					v = err;
+					ok = 0;
+				}
+				storeValue(addr, v);
+				mem().setUint8(addr + 8, ok);
+			}
+
 			const loadSlice = (array, len, cap) => {
 				return new Uint8Array(this._inst.exports.memory.buffer, array, len);
 			}
@@ -353,6 +367,46 @@
 					// valueSetIndex(v ref, i int, x ref)
 					"syscall/js.valueSetIndex": (v_ref, i, x_ref) => {
 						Reflect.set(unboxValue(v_ref), i, unboxValue(x_ref));
+					},
+
+					// The checked accessors report a throw (a getter, a Proxy, a
+					// cross-origin object) to Go, which panics with a js.Error, rather
+					// than let it unwind through the wasm and strand the scheduler.
+
+					// func valueGet(v ref, p string) (ref, bool)
+					"syscall/js.valueTryGet": (ret_addr, v_ref, p_ptr, p_len) => {
+						ret_addr >>>= 0;
+						p_ptr >>>= 0;
+						p_len >>>= 0;
+						tryStore(ret_addr, () => Reflect.get(unboxValue(v_ref), loadString(p_ptr, p_len)));
+					},
+
+					// func valueSet(v ref, p string, x ref) (ref, bool)
+					"syscall/js.valueTrySet": (ret_addr, v_ref, p_ptr, p_len, x_ref) => {
+						ret_addr >>>= 0;
+						p_ptr >>>= 0;
+						p_len >>>= 0;
+						tryStore(ret_addr, () => { Reflect.set(unboxValue(v_ref), loadString(p_ptr, p_len), unboxValue(x_ref)); });
+					},
+
+					// func valueDelete(v ref, p string) (ref, bool)
+					"syscall/js.valueTryDelete": (ret_addr, v_ref, p_ptr, p_len) => {
+						ret_addr >>>= 0;
+						p_ptr >>>= 0;
+						p_len >>>= 0;
+						tryStore(ret_addr, () => { Reflect.deleteProperty(unboxValue(v_ref), loadString(p_ptr, p_len)); });
+					},
+
+					// func valueIndex(v ref, i int) (ref, bool)
+					"syscall/js.valueTryIndex": (ret_addr, v_ref, i) => {
+						ret_addr >>>= 0;
+						tryStore(ret_addr, () => Reflect.get(unboxValue(v_ref), i));
+					},
+
+					// func valueSetIndex(v ref, i int, x ref) (ref, bool)
+					"syscall/js.valueTrySetIndex": (ret_addr, v_ref, i, x_ref) => {
+						ret_addr >>>= 0;
+						tryStore(ret_addr, () => { Reflect.set(unboxValue(v_ref), i, unboxValue(x_ref)); });
 					},
 
 					// func valueCall(v ref, m string, args []ref) (ref, bool)

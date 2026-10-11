@@ -1314,6 +1314,29 @@ func TestWasmExport(t *testing.T) {
 
 // Test js.FuncOf (for syscall/js).
 // This test might be extended in the future to cover more cases in syscall/js.
+// Test that a JavaScript exception from a property access panics with a
+// js.Error that the program can recover.
+func TestWasmJSErrors(t *testing.T) {
+	t.Parallel()
+	options := optionsFromTarget("wasm", sema)
+	buildConfig, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := builder.Build("testdata/wasmjs-errors.go", ".wasm", t.TempDir(), buildConfig)
+	if err != nil {
+		t.Fatal("failed to build binary:", err)
+	}
+	output := &bytes.Buffer{}
+	cmd := exec.Command("node", "testdata/wasmjs-errors.js", result.Binary)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Run(); err != nil {
+		t.Error("failed to run node:", err)
+	}
+	checkOutput(t, "testdata/wasmjs-errors.txt", output.Bytes())
+}
+
 func TestWasmFuncOf(t *testing.T) {
 	// Build the wasm binary.
 	tmpdir := t.TempDir()

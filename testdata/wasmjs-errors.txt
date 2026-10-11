@@ -1,0 +1,7 @@
+Get: JavaScript error: get
+Set: JavaScript error: set
+Delete: JavaScript error: delete
+Index: JavaScript error: get
+SetIndex: JavaScript error: set
+done
+run: 0
