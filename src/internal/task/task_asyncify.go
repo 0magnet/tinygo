@@ -128,8 +128,11 @@ func Current() *Task {
 // Pause suspends the current task and returns to the scheduler.
 // This function may only be called when running on a goroutine stack, not when running on the system stack.
 func Pause() {
-	if *currentTask.state.canaryPtr != stackCanary {
-		runtimeFatal("stack overflow")
+	// The C stack grows down towards the save area at the bottom of the
+	// stack. Frames that went past it may have skipped the canary, and the
+	// unwind would then trap in asyncify with no message.
+	if *currentTask.state.canaryPtr != stackCanary || getCurrentStackPointer() < uintptr(currentTask.state.asyncifysp) {
+		runtimeFatal("goroutine stack overflow; build with a larger -stack-size")
 	}
 
 	currentTask.state.unwind()
@@ -216,7 +219,9 @@ func (t *Task) Resume() {
 	currentTask = prevTask
 	t.gcData.swap()
 	if uintptr(t.state.asyncifysp) > uintptr(t.state.csp) {
-		runtimeFatal("stack overflow")
+		// The locals saved for this pause did not fit between the bottom of
+		// the stack and the frames above it, and overwrote some of them.
+		runtimeFatal("goroutine stack overflow; build with a larger -stack-size")
 	}
 	if t.Exited {
 		runtime_freeTaskStack(t.state.stackBase)
@@ -230,6 +235,12 @@ func (t *Task) Resume() {
 		t.state.args = nil
 	}
 }
+
+// getCurrentStackPointer is runtime.getCurrentStackPointer, with its C
+// calling convention.
+//
+//export tinygo_getCurrentStackPointer
+func getCurrentStackPointer() uintptr
 
 //go:linkname saveStackPointer runtime.saveStackPointer
 func saveStackPointer()
