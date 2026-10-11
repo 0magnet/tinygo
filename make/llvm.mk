@@ -2,7 +2,10 @@
 
 .PHONY: llvm-source $(LLVM_BUILDDIR)
 
-LLVM_COMPONENTS = all-targets analysis asmparser asmprinter bitreader bitwriter codegen core coroutines coverage debuginfodwarf debuginfopdb dtlto executionengine frontenddriver frontendhlsl frontendopenmp instrumentation interpreter ipo irreader libdriver linker lto mc mcjit objcarcopts option profiledata scalaropts support target windowsdriver windowsmanifest
+# LLVM 23 moved code into new libraries, which earlier versions do not have.
+LLVM_MAJOR = $(shell $(LLVM_CONFIG_PREFIX) $(LLVM_BUILDDIR)/bin/llvm-config --version 2>/dev/null | cut -d. -f1)
+LLVM_23_PLUS = $(shell [ "$(LLVM_MAJOR)" -ge 23 ] 2>/dev/null && echo 1)
+LLVM_COMPONENTS = $(if $(LLVM_23_PLUS),abi) all-targets analysis asmparser asmprinter bitreader bitwriter codegen core coroutines coverage debuginfodwarf debuginfopdb dtlto executionengine frontenddriver frontendhlsl frontendopenmp instrumentation interpreter ipo irreader libdriver linker lto mc mcjit objcarcopts option profiledata scalaropts support target windowsdriver windowsmanifest
 
 ifeq ($(OS),Windows_NT)
     EXE = .exe
@@ -41,7 +44,7 @@ endif
 MD5SUM ?= md5sum
 
 # Libraries that should be linked in for the statically linked Clang.
-CLANG_LIB_NAMES = clangAnalysis clangAnalysisLifetimeSafety clangAPINotes clangAST clangASTMatchers clangBasic clangCodeGen clangCrossTU clangDriver clangDynamicASTMatchers clangEdit clangExtractAPI clangFormat clangFrontend clangFrontendTool clangHandleCXX clangHandleLLVM clangIndex clangInstallAPI clangLex clangOptions clangParse clangRewrite clangRewriteFrontend clangSema clangSerialization clangSupport clangTooling clangToolingASTDiff clangToolingCore clangToolingInclusions
+CLANG_LIB_NAMES = clangAnalysis clangAnalysisLifetimeSafety clangAPINotes clangAST clangASTMatchers clangBasic clangCodeGen clangCrossTU clangDriver clangDynamicASTMatchers clangEdit clangExtractAPI clangFormat clangFrontend clangFrontendTool clangHandleCXX clangHandleLLVM clangIndex clangInstallAPI clangLex clangOptions clangParse clangRewrite clangRewriteFrontend clangSema clangSerialization clangSupport clangTooling clangToolingASTDiff clangToolingCore clangToolingInclusions $(if $(LLVM_23_PLUS),clangDependencyScanning clangScalableStaticAnalysisAnalyses clangScalableStaticAnalysisCore clangScalableStaticAnalysisFrontend clangScalableStaticAnalysisSourceTransformation clangUnifiedSymbolResolution)
 CLANG_LIBS = $(START_GROUP) $(addprefix -l,$(CLANG_LIB_NAMES)) $(END_GROUP) -lstdc++
 
 # Libraries that should be linked in for the statically linked LLD.
