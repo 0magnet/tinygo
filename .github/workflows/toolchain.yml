@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache/restore@v5
         id: cache-llvm-build
         with:
-          key: llvm-build-23-linux-alpine-v1-${{ hashFiles('llvm-version.txt') }}
+          key: llvm-build-23-linux-alpine-v2-${{ hashFiles('llvm-version.txt') }}
           path: llvm-build
       - name: Build LLVM
         if: steps.cache-llvm-build.outputs.cache-hit != 'true'
