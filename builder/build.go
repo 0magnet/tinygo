@@ -41,7 +41,6 @@ import (
 	"github.com/tinygo-org/tinygo/transform"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
-	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -590,9 +589,11 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	for _, pkg := range lprogram.Sorted() {
 		initFuncs = append(initFuncs, pkg.Pkg.Path()+".init")
 	}
-	var debugProgram *ssa.Program
-	if config.Debug() && !config.Options.SkipDWARF {
-		debugProgram = program
+	debugInitAll := config.Debug() && !config.Options.SkipDWARF
+	var initAllPos token.Position
+	if debugInitAll {
+		initAllPos = program.Fset.Position(program.ImportedPackage("runtime").Members["initAll"].Pos())
+		initAllPos.Filename = lprogram.Packages["runtime"].RecordedPath(initAllPos.Filename)
 	}
 
 	// Add job that links and optimizes all packages together.
@@ -690,10 +691,8 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			irbuilder := mod.Context().NewBuilder()
 			defer irbuilder.Dispose()
 			irbuilder.SetInsertPointAtEnd(block)
-			if debugProgram != nil {
-				pos := debugProgram.Fset.Position(debugProgram.ImportedPackage("runtime").Members["initAll"].Pos())
-				pos.Filename = lprogram.Packages["runtime"].RecordedPath(pos.Filename)
-				addInitAllDebugInfo(mod, llvmInitFn, irbuilder, pos, config.TrimPath())
+			if debugInitAll {
+				addInitAllDebugInfo(mod, llvmInitFn, irbuilder, initAllPos, config.TrimPath())
 			}
 			ptrType := llvm.PointerType(mod.Context().Int8Type(), 0)
 			for _, name := range initFuncs {
