@@ -2,3 +2,6 @@ int: 3
 float64: 3.14
 string: "foo"
 slice of strings: ["foo","bar"]
+map of strings: {"a":1,"b":2}
+map of ints: {"1":"a","2":"b"}
+decoded map: 2 1 2
