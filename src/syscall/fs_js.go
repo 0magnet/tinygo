@@ -9,6 +9,8 @@
 // jsfs) through its callback API and park the goroutine until the callback
 // runs, so a filesystem that answers later, like a mount backed by the
 // network, works. wasi-libc's synchronous WASI imports cannot wait for one.
+// A call the host can answer at once, which is most of them, is answered
+// synchronously instead (see fsCall).
 
 package syscall
 
@@ -503,7 +505,22 @@ func Dup(fd int) (int, error) {
 	return 0, ENOSYS
 }
 
+// jsFSSync is wasm_exec.js's synchronous answer to a call, when the host has
+// one. A park unwinds and rewinds the goroutine's whole stack under asyncify,
+// so only a call it cannot answer at once waits for a callback.
+var jsFSSync = js.Global().Get("__tinygo_fsSync")
+
 func fsCall(name string, args ...any) (js.Value, error) {
+	if jsFSSync.Type() == js.TypeFunction {
+		r := jsFSSync.Invoke(name, args)
+		if !r.IsUndefined() {
+			if code := r.Get("e"); !code.IsUndefined() {
+				return js.Undefined(), mapJSCode(code)
+			}
+			return r.Get("v"), nil
+		}
+	}
+
 	type callResult struct {
 		val js.Value
 		err error
@@ -582,7 +599,10 @@ var errnoByCode = map[string]Errno{
 // mapJSError maps an error from the host's fs to an Errno. Go panics on a
 // code it does not know; an unknown one is EIO here.
 func mapJSError(jsErr js.Value) error {
-	code := jsErr.Get("code")
+	return mapJSCode(jsErr.Get("code"))
+}
+
+func mapJSCode(code js.Value) error {
 	if code.Type() == js.TypeString {
 		if errno, ok := errnoByCode[code.String()]; ok {
 			return errno
