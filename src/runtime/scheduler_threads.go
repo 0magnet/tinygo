@@ -76,7 +76,8 @@ func timerRunner() {
 	for {
 		timerQueueLock.Lock()
 
-		if timerQueue == nil {
+		next := timerQueuePeek()
+		if next == nil {
 			// No timer in the queue, so wait until one becomes available.
 			val := timerFutex.Load()
 			timerQueueLock.Unlock()
@@ -85,22 +86,20 @@ func timerRunner() {
 		}
 
 		now := ticks()
-		if now < timerQueue.whenTicks() {
+		if now < next.whenTicks() {
 			// There is a timer in the queue, but we need to wait until it
 			// expires.
 			// Using a futex, so that the wait is exited early when adding a new
 			// (sooner-to-expire) timer.
 			val := timerFutex.Load()
-			timeout := ticksToNanoseconds(timerQueue.whenTicks() - now)
+			timeout := ticksToNanoseconds(next.whenTicks() - now)
 			timerQueueLock.Unlock()
 			timerFutex.WaitUntil(val, uint64(timeout))
 			continue
 		}
 
 		// Pop timer from queue.
-		tn := timerQueue
-		timerQueue = tn.next
-		tn.next = nil
+		tn := timerQueuePop()
 		delay := ticksToNanoseconds(now - tn.whenTicks())
 
 		// Mark the timer as firing, so that a concurrent Stop or Reset (via
@@ -145,10 +144,12 @@ func reAddTimer(tn *timerNode) {
 		// The timer was stopped or reset while its callback was running. Don't
 		// re-add it: a stopped ticker must stay stopped, and a reset ticker has
 		// already been re-added by resetTimer.
+		freeTimerNode(tn)
 		timerQueueLock.Unlock()
 		return
 	}
 	if tn.timer.period == 0 {
+		freeTimerNode(tn)
 		timerQueueLock.Unlock()
 		return
 	}
@@ -210,4 +211,45 @@ func lockAtomics() interrupt.State {
 
 func unlockAtomics(mask interrupt.State) {
 	atomicsLock.Unlock()
+}
+
+// timerNodeFree holds nodes whose one-shot timer finished firing, linked
+// through firingNext, so Reset can reuse them. Guarded by timerQueueLock.
+var (
+	timerNodeFree  *timerNode
+	timerNodeFreeN int
+)
+
+// freeTimerNode keeps tn for reuse. The caller holds timerQueueLock and
+// nothing else refers to tn.
+func freeTimerNode(tn *timerNode) {
+	if timerNodeFreeN >= 256 {
+		return
+	}
+	*tn = timerNode{firingNext: timerNodeFree}
+	timerNodeFree = tn
+	timerNodeFreeN++
+}
+
+// releaseTimerNode keeps a node that Stop took off the queue.
+func releaseTimerNode(tn *timerNode) {
+	timerQueueLock.Lock()
+	freeTimerNode(tn)
+	timerQueueLock.Unlock()
+}
+
+// newTimerNode returns a zeroed node, reusing a freed one when it can.
+func newTimerNode() *timerNode {
+	timerQueueLock.Lock()
+	tn := timerNodeFree
+	if tn != nil {
+		timerNodeFree = tn.firingNext
+		timerNodeFreeN--
+		tn.firingNext = nil
+	}
+	timerQueueLock.Unlock()
+	if tn == nil {
+		tn = new(timerNode)
+	}
+	return tn
 }

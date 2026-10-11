@@ -123,6 +123,9 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 			)
 		}
 	}
+	if ptr != nil {
+		memProfRecord(ptr, size, uintptr(returnAddress(0)))
+	}
 	gcResumeWorld()
 	gcLock.Unlock()
 	if ptr == nil {
@@ -194,6 +197,8 @@ func ReadMemStats(m *MemStats) {
 	m.HeapInuse = uint64(gcMemStats.heapsize_full - gcMemStats.unmapped_bytes)
 	m.HeapReleased = uint64(gcMemStats.unmapped_bytes)
 	m.HeapSys = uint64(m.HeapInuse + m.HeapIdle)
+	m.HeapAlloc = uint64(gcMemStats.heapsize_full - gcMemStats.free_bytes_full)
+	m.Alloc = m.HeapAlloc
 	m.GCSys = 0 // not provided by bdwgc
 	m.TotalAlloc = uint64(gcMemStats.allocd_bytes_before_gc + gcMemStats.bytes_allocd_since_gc)
 	m.Mallocs = 0 // not provided by bdwgc

@@ -1,4 +1,4 @@
-//go:build !baremetal && !js && !wasm_unknown && !nintendoswitch
+//go:build !baremetal && !wasm_unknown && !nintendoswitch
 
 // Portions copyright 2009-2024 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
@@ -85,7 +85,7 @@ func (fs unixFilesystem) Remove(path string) error {
 }
 
 func (fs unixFilesystem) OpenFile(path string, flag int, perm FileMode) (uintptr, error) {
-	fp, err := syscall.Open(path, flag, uint32(perm))
+	fp, err := syscall.Open(path, flag|openCloexec, uint32(perm))
 	return uintptr(fp), handleSyscallError(err)
 }
 
@@ -97,9 +97,9 @@ type unixFileHandle uintptr
 // read and any error encountered. At end of file, Read returns 0, io.EOF.
 func (f unixFileHandle) Read(b []byte) (n int, err error) {
 	n, err = syscall.Read(syscallFd(f), b)
-	// In case of EISDIR, n == -1.
-	// This breaks the assumption that n always represent the number of read bytes.
-	if err == syscall.EISDIR {
+	// A failed read returns -1, which is not a byte count. A pty master reading
+	// after its slave closes fails with EIO, for example.
+	if n < 0 {
 		n = 0
 	}
 	err = handleSyscallError(err)
@@ -113,6 +113,9 @@ func (f unixFileHandle) Read(b []byte) (n int, err error) {
 // and an error, if any. Write returns a non-nil error when n != len(b).
 func (f unixFileHandle) Write(b []byte) (n int, err error) {
 	n, err = syscall.Write(syscallFd(f), b)
+	if n < 0 {
+		n = 0
+	}
 	err = handleSyscallError(err)
 	return
 }

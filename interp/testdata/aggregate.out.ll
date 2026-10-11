@@ -8,6 +8,12 @@ declare void @externalAggregate({ ptr }) local_unnamed_addr
 
 define void @runtime.initAll() unnamed_addr {
 entry:
+  call fastcc void @"main.init#interp"(ptr undef)
+  ret void
+}
+
+define internal fastcc void @"main.init#interp"(ptr %0) unnamed_addr {
+entry:
   call void @externalAggregate({ ptr } { ptr @main.value })
   %value = load i32, ptr @main.value, align 4
   store i32 %value, ptr @main.result, align 4

@@ -20,6 +20,7 @@ var (
 	errMapAlreadyCreated      = errors.New("interp: map already created")
 	errLoopUnrolled           = errors.New("interp: loop unrolled")
 	errLoopTooLong            = errors.New("interp: loop ran too many iterations")
+	errTimeout                = errors.New("interp: timeout exceeded")
 )
 
 // This is one of the errors that can be returned from toLLVMValue when the
@@ -30,13 +31,15 @@ var errInvalidPtrToIntSize = errors.New("interp: ptrtoint integer size does not 
 func isRecoverableError(err error) bool {
 	return err == errIntegerAsPointer || err == errUnsupportedInst ||
 		err == errUnsupportedRuntimeInst || err == errMapAlreadyCreated ||
-		err == errLoopUnrolled || err == errLoopTooLong || err == errInvalidPtrToIntSize
+		err == errLoopUnrolled || err == errLoopTooLong || err == errInvalidPtrToIntSize ||
+		err == errTimeout
 }
 
 // ErrorLine is one line in a traceback. The position may be missing.
 type ErrorLine struct {
 	Pos  token.Position
 	Inst string
+	inst llvm.Value
 }
 
 // Error encapsulates compile-time interpretation errors with an associated
@@ -47,6 +50,21 @@ type Error struct {
 	Pos        token.Position
 	Err        error
 	Traceback  []ErrorLine
+	inst       llvm.Value
+}
+
+// render fills in Inst and the traceback. Printing an LLVM value walks the
+// whole module, so it is left until an error leaves the interpreter.
+func (e *Error) render() {
+	if e.Inst == "" && !e.inst.IsNil() {
+		e.Inst = e.inst.String()
+	}
+	for i := range e.Traceback {
+		line := &e.Traceback[i]
+		if line.Inst == "" && !line.inst.IsNil() {
+			line.Inst = line.inst.String()
+		}
+	}
 }
 
 // Error returns the string of the first error in the list of errors.
@@ -57,23 +75,15 @@ func (e *Error) Error() string {
 // errorAt returns an error value for the currently interpreted package at the
 // location of the instruction. The location information may not be complete as
 // it depends on debug information in the IR.
-//
-// The instruction is only printed for errors that are reported. Recoverable
-// errors are discarded by the caller, which runs the code at runtime instead,
-// and printing an instruction numbers every value in its function: in a large
-// program that cost more than interpreting it.
 func (r *runner) errorAt(inst instruction, err error) *Error {
 	pos := getPosition(inst.llvmInst)
-	e := &Error{
+	return &Error{
 		ImportPath: r.pkgName,
 		Pos:        pos,
 		Err:        err,
+		Traceback:  []ErrorLine{{Pos: pos, inst: inst.llvmInst}},
+		inst:       inst.llvmInst,
 	}
-	if !isRecoverableError(err) {
-		e.Inst = inst.llvmInst.String()
-		e.Traceback = []ErrorLine{{pos, e.Inst}}
-	}
-	return e
 }
 
 // errorAt returns an error value at the location of the instruction.
@@ -101,5 +111,13 @@ func getPosition(inst llvm.Value) token.Position {
 		Filename: filepath.Join(file.FileDirectory(), file.FileFilename()),
 		Line:     int(loc.LocationLine()),
 		Column:   int(loc.LocationColumn()),
+	}
+}
+
+// renderReturned renders an *Error in *err while its module is still alive.
+func renderReturned(err *error) {
+	var e *Error
+	if errors.As(*err, &e) {
+		e.render()
 	}
 }

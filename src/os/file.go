@@ -251,10 +251,35 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 func (f *File) SyscallConn() (conn syscall.RawConn, err error) {
 	if f.handle == nil {
 		err = ErrClosed
+	} else if _, ok := f.handle.(fd); ok {
+		conn = rawConn{f}
 	} else {
 		err = ErrNotImplemented
 	}
 	return
+}
+
+// rawConn hands callers the descriptor of a file whose handle has one. TinyGo
+// files block, so Read and Write retry until the callback reports done.
+type rawConn struct{ f *File }
+
+func (c rawConn) Control(fn func(uintptr)) error {
+	fn(c.f.Fd())
+	return nil
+}
+
+func (c rawConn) Read(fn func(uintptr) bool) error {
+	for !fn(c.f.Fd()) {
+		time.Sleep(time.Millisecond)
+	}
+	return nil
+}
+
+func (c rawConn) Write(fn func(uintptr) bool) error {
+	for !fn(c.f.Fd()) {
+		time.Sleep(time.Millisecond)
+	}
+	return nil
 }
 
 // SetDeadline sets the read and write deadlines for a File.

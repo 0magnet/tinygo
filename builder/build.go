@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -40,6 +41,7 @@ import (
 	"github.com/tinygo-org/tinygo/transform"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
+	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -305,6 +307,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	// Create the *ssa.Program. This does not yet build the entire SSA of the
 	// program so it's pretty fast and doesn't need to be parallelized.
 	program := lprogram.LoadSSA()
+	phaseMem("after-LoadSSA")
 	buildProgram := sync.OnceFunc(program.Build)
 
 	// Add jobs to compile each package.
@@ -582,6 +585,16 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		packageJobs = append(packageJobs, job)
 	}
 
+	// The link job needs only these names, so go/ssa can be freed before it.
+	var initFuncs []string
+	for _, pkg := range lprogram.Sorted() {
+		initFuncs = append(initFuncs, pkg.Pkg.Path()+".init")
+	}
+	var debugProgram *ssa.Program
+	if config.Debug() && !config.Options.SkipDWARF {
+		debugProgram = program
+	}
+
 	// Add job that links and optimizes all packages together.
 	var mod llvm.Module
 	defer func() {
@@ -598,32 +611,60 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		run: func(*compileJob) error {
 			// Load and link all the bitcode files. This does not yet optimize
 			// anything, it only links the bitcode files together.
+			phaseMem("program-job-start")
+			debug.FreeOSMemory()
+			phaseMem("after-free")
 			ctx := llvm.NewContext()
 			mod = ctx.NewModule("main")
+			// Resolve duplicate function definitions before linking.
+			// This can happen when a newer Go version adds a function
+			// body in a standard library package that was previously
+			// just a declaration provided by //go:linkname from the
+			// runtime. In that case, keep the first (runtime) definition
+			// by weakening the later one's linkage so the LLVM linker
+			// discards it in favor of the strong one, whichever order the
+			// two meet in below.
+			defined := make(map[string]struct{})
+			mods := make([]llvm.Module, 0, len(packageJobs))
 			for _, pkgJob := range packageJobs {
 				pkgMod, err := ctx.ParseBitcodeFile(pkgJob.result)
 				if err != nil {
 					return fmt.Errorf("failed to load bitcode file: %w", err)
 				}
-				// Resolve duplicate function definitions before linking.
-				// This can happen when a newer Go version adds a function
-				// body in a standard library package that was previously
-				// just a declaration provided by //go:linkname from the
-				// runtime. In that case, keep the existing (runtime)
-				// definition by weakening the new one's linkage so the
-				// LLVM linker discards it in favor of the existing one.
 				for fn := pkgMod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
 					if fn.IsDeclaration() {
 						continue
 					}
-					existing := mod.NamedFunction(fn.Name())
-					if existing.IsNil() || existing.IsDeclaration() {
+					name := fn.Name()
+					if _, ok := defined[name]; ok {
+						fn.SetLinkage(llvm.LinkOnceODRLinkage)
 						continue
 					}
-					fn.SetLinkage(llvm.LinkOnceODRLinkage)
+					defined[name] = struct{}{}
 				}
-				err = llvm.LinkModules(mod, pkgMod)
-				if err != nil {
+				mods = append(mods, pkgMod)
+			}
+			// Link pairwise. Linking every package into one growing module
+			// walks that module once per package, which on a program of
+			// over a thousand packages took longer than everything else
+			// together. Halving the list each round keeps every module
+			// involved in only a logarithmic number of links.
+			for len(mods) > 1 {
+				next := make([]llvm.Module, 0, (len(mods)+1)/2)
+				for i := 0; i < len(mods); i += 2 {
+					if i+1 == len(mods) {
+						next = append(next, mods[i])
+						break
+					}
+					if err := llvm.LinkModules(mods[i], mods[i+1]); err != nil {
+						return fmt.Errorf("failed to link module: %w", err)
+					}
+					next = append(next, mods[i])
+				}
+				mods = next
+			}
+			if len(mods) == 1 {
+				if err := llvm.LinkModules(mod, mods[0]); err != nil {
 					return fmt.Errorf("failed to link module: %w", err)
 				}
 			}
@@ -636,6 +677,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			// https://github.com/tinygo-org/tinygo/issues/4810
 			globalsMod := makeGlobalsModule(ctx, globalValues, machine)
 			llvm.LinkModules(mod, globalsMod)
+			phaseMem("after-link")
 
 			// Create runtime.initAll function that calls the runtime
 			// initializer of each package.
@@ -648,16 +690,16 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			irbuilder := mod.Context().NewBuilder()
 			defer irbuilder.Dispose()
 			irbuilder.SetInsertPointAtEnd(block)
-			if config.Debug() && !config.Options.SkipDWARF {
-				pos := program.Fset.Position(program.ImportedPackage("runtime").Members["initAll"].Pos())
+			if debugProgram != nil {
+				pos := debugProgram.Fset.Position(debugProgram.ImportedPackage("runtime").Members["initAll"].Pos())
 				pos.Filename = lprogram.Packages["runtime"].RecordedPath(pos.Filename)
 				addInitAllDebugInfo(mod, llvmInitFn, irbuilder, pos, config.TrimPath())
 			}
 			ptrType := llvm.PointerType(mod.Context().Int8Type(), 0)
-			for _, pkg := range lprogram.Sorted() {
-				pkgInit := mod.NamedFunction(pkg.Pkg.Path() + ".init")
+			for _, name := range initFuncs {
+				pkgInit := mod.NamedFunction(name)
 				if pkgInit.IsNil() {
-					panic("init not found for " + pkg.Pkg.Path())
+					panic("init not found for " + name)
 				}
 				irbuilder.CreateCall(pkgInit.GlobalValueType(), pkgInit, []llvm.Value{llvm.Undef(ptrType)}, "")
 			}
@@ -694,7 +736,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 			// Run all optimization passes, which are much more effective now
 			// that the optimizer can see the whole program at once.
+			phaseMem("before-optimize")
 			err := optimizeProgram(mod, config)
+			phaseMem("after-optimize")
 			if err != nil {
 				return err
 			}
@@ -774,8 +818,19 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 				return os.WriteFile(objfile, llvmBuf.Bytes(), 0666)
 			}
 			llvmBuf := llvm.WriteThinLTOBitcodeToMemoryBuffer(mod)
-			defer llvmBuf.Dispose()
-			return os.WriteFile(objfile, llvmBuf.Bytes(), 0666)
+			err := os.WriteFile(objfile, llvmBuf.Bytes(), 0666)
+			llvmBuf.Dispose()
+			// Only the stack size analysis reads the module after this point.
+			// Free it now so the linker and wasm-opt do not run alongside it.
+			if !config.AutomaticStackSize() {
+				ctx := mod.Context()
+				mod.Dispose()
+				ctx.Dispose()
+				mod = llvm.Module{}
+				releaseCHeap()
+				phaseMem("after-free-module")
+			}
+			return err
 		},
 	}
 
@@ -959,8 +1014,13 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 					)
 					break
 				}
+				ltoOpt := strconv.Itoa(speedLevel)
+				if v := os.Getenv("TINYGO_LTO_OPT"); v != "" {
+					ltoOpt = v
+					ldflags = append(ldflags, "--lto-CGO"+strconv.Itoa(speedLevel))
+				}
 				ldflags = append(ldflags,
-					"--lto-O"+strconv.Itoa(speedLevel),
+					"--lto-O"+ltoOpt,
 					"--thinlto-cache-dir="+filepath.Join(cacheDir, "thinlto"),
 				)
 			default:
@@ -1351,6 +1411,11 @@ func optimizeProgram(mod llvm.Module, config *compileopts.Config) error {
 	err := interp.Run(mod, config.Options.InterpTimeout, config.Options.InterpMaxLoopIterations, config.DumpSSA())
 	if err != nil {
 		return err
+	}
+	if config.Scheduler() == "asyncify" {
+		// Asyncify instruments a function as a whole and wasm-opt's local
+		// passes grow faster than linearly with its size, so keep initAll small.
+		keepInitCallsOutOfLine(mod)
 	}
 	if config.VerifyIR() {
 		// Only verify if we really need it.
@@ -2017,4 +2082,24 @@ func gitVCSStamp(dir, modPath string) (version, settings string, gitErr error) {
 	sb.WriteString("build\tvcs.time=" + commitTime.Format(time.RFC3339Nano) + "\n")
 	sb.WriteString("build\tvcs.modified=" + strconv.FormatBool(modified) + "\n")
 	return version, sb.String(), nil
+}
+
+// keepInitCallsOutOfLine marks every function called from runtime.initAll as
+// noinline, so that the package initializers stay separate functions.
+func keepInitCallsOutOfLine(mod llvm.Module) {
+	initAll := mod.NamedFunction("runtime.initAll")
+	if initAll.IsNil() {
+		return
+	}
+	noinline := mod.Context().CreateEnumAttribute(llvm.AttributeKindID("noinline"), 0)
+	for bb := initAll.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
+		for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+			if inst.IsACallInst().IsNil() {
+				continue
+			}
+			if callee := inst.CalledValue().IsAFunction(); !callee.IsNil() && !callee.IsDeclaration() {
+				callee.AddFunctionAttr(noinline)
+			}
+		}
+	}
 }
