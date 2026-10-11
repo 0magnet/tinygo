@@ -636,6 +636,12 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 					if fn.IsDeclaration() {
 						continue
 					}
+					if l := fn.Linkage(); l == llvm.InternalLinkage || l == llvm.PrivateLinkage {
+						// The linker renames a local function whose name is
+						// taken. Weakening it would merge it with another
+						// package's function of that name instead.
+						continue
+					}
 					name := fn.Name()
 					if _, ok := defined[name]; ok {
 						fn.SetLinkage(llvm.LinkOnceODRLinkage)
