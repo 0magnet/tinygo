@@ -3,7 +3,7 @@ package reflectlite
 import (
 	"internal/gclayout"
 	"internal/itoa"
-	"internal/task"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -1332,8 +1332,10 @@ func align(offset uintptr, alignment uintptr) uintptr {
 	return (offset + alignment - 1) &^ (alignment - 1)
 }
 
+// sliceOfLock guards sliceOfCache. It spins: the section it guards never
+// pauses, and internal/task would be an import cycle on bare-metal targets.
 var (
-	sliceOfMu    task.PMutex
+	sliceOfLock  atomic.Bool
 	sliceOfCache map[*RawType]*RawType
 )
 
@@ -1344,8 +1346,9 @@ var (
 // needs it to marshal a map, and uses its slices only through reflect.
 func SliceOf(t Type) Type {
 	elem := t.(*RawType)
-	sliceOfMu.Lock()
-	defer sliceOfMu.Unlock()
+	for !sliceOfLock.CompareAndSwap(false, true) {
+	}
+	defer sliceOfLock.Store(false)
 	if s, ok := sliceOfCache[elem]; ok {
 		return s
 	}
