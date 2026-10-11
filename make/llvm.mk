@@ -75,7 +75,9 @@ endif
     CGO_LDFLAGS+=-L$(abspath $(LLVM_BUILDDIR)/lib) -lclang $(CLANG_LIBS) $(LLD_LIBS) $(shell $(LLVM_CONFIG_PREFIX) $(LLVM_BUILDDIR)/bin/llvm-config --ldflags --libs --system-libs $(LLVM_COMPONENTS)) -lstdc++ $(CGO_LDFLAGS_EXTRA)
 endif
 
-# Pinned in llvm-version.txt. Branch tinygo_22.x of tinygo-org/llvm-project.
+# Pinned in llvm-version.txt: llvmorg-23.1.3 of llvm/llvm-project. Xtensa (ESP32,
+# ESP32-S3) is not built: its backend is Espressif's, in tinygo-org/llvm-project
+# tinygo_22.x and espressif/llvm-project esp_main, not in LLVM 23.1.
 LLVM_REVISION = $(shell cat llvm-version.txt)
 
 llvm-source: ## Get or update LLVM sources
@@ -85,7 +87,7 @@ llvm-source: ## Get or update LLVM sources
 	cd $(LLVM_PROJECTDIR) && \
 	  if ! git cat-file -e "$(LLVM_REVISION)^{commit}" 2>/dev/null; then \
 	    if ! git remote get-url origin >/dev/null 2>&1; then \
-	      git remote add origin https://github.com/tinygo-org/llvm-project; \
+	      git remote add origin https://github.com/llvm/llvm-project; \
 	    fi && \
 	    git fetch --depth=1 origin $(LLVM_REVISION); \
 	  fi && \
@@ -94,7 +96,7 @@ llvm-source: ## Get or update LLVM sources
 # Configure LLVM.
 TINYGO_SOURCE_DIR=$(shell pwd)
 $(LLVM_BUILDDIR)/build.ninja:
-	mkdir -p $(LLVM_BUILDDIR) && cd $(LLVM_BUILDDIR) && cmake -G Ninja $(TINYGO_SOURCE_DIR)/$(LLVM_PROJECTDIR)/llvm "-DLLVM_TARGETS_TO_BUILD=X86;ARM;AArch64;AVR;Mips;RISCV;WebAssembly" "-DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=Xtensa" -DCMAKE_BUILD_TYPE=Release -DLIBCLANG_BUILD_STATIC=ON -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_Z3_SOLVER=OFF -DLLVM_ENABLE_OCAMLDOC=OFF -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TOOL_CLANG_TOOLS_EXTRA_BUILD=OFF -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF $(LLVM_OPTION)
+	mkdir -p $(LLVM_BUILDDIR) && cd $(LLVM_BUILDDIR) && cmake -G Ninja $(TINYGO_SOURCE_DIR)/$(LLVM_PROJECTDIR)/llvm "-DLLVM_TARGETS_TO_BUILD=X86;ARM;AArch64;AVR;Mips;RISCV;WebAssembly" -DCMAKE_BUILD_TYPE=Release -DLIBCLANG_BUILD_STATIC=ON -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_Z3_SOLVER=OFF -DLLVM_ENABLE_OCAMLDOC=OFF -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TOOL_CLANG_TOOLS_EXTRA_BUILD=OFF -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF $(LLVM_OPTION)
 
 $(LLVM_BUILDDIR): $(LLVM_BUILDDIR)/build.ninja ## Build LLVM
 	cd $(LLVM_BUILDDIR) && ninja $(NINJA_BUILD_TARGETS)
