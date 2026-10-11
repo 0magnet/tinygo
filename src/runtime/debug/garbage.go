@@ -35,7 +35,9 @@ func SetPanicOnFault(enabled bool) bool {
 	return enabled
 }
 
-func WriteHeapDump(fd uintptr)
+// WriteHeapDump writes nothing: TinyGo has no heap dump in Go's format.
+// Declared without a body, as Go declares it, it failed to link.
+func WriteHeapDump(fd uintptr) {}
 
 func SetTraceback(level string) {
 }
