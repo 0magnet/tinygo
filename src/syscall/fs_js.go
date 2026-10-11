@@ -20,27 +20,48 @@ import (
 	"unsafe"
 )
 
-var jsProcess = js.Global().Get("process")
-var jsFS = js.Global().Get("fs")
-var constants = jsFS.Get("constants")
+// jsHostValues are the host's objects that the file calls use. They are looked
+// up on the first call rather than at init: a js.Value holding an object
+// carries a finalizer, and a program that never touches a file should not pay
+// for them, nor have them move its finalizer-driven GC (see finalizeridle.go).
+type jsHostValues struct {
+	process, fs, uint8Array js.Value
+	// sync is wasm_exec.js's synchronous answer to a call, when the host has
+	// one. A park unwinds and rewinds the goroutine's whole stack under
+	// asyncify, so only a call it cannot answer at once waits for a callback.
+	sync js.Value
 
-var uint8Array = js.Global().Get("Uint8Array")
+	wronly, rdwr, create, trunc, append, excl, directory int
+}
 
-var (
-	nodeWRONLY    = constants.Get("O_WRONLY").Int()
-	nodeRDWR      = constants.Get("O_RDWR").Int()
-	nodeCREATE    = constants.Get("O_CREAT").Int()
-	nodeTRUNC     = constants.Get("O_TRUNC").Int()
-	nodeAPPEND    = constants.Get("O_APPEND").Int()
-	nodeEXCL      = constants.Get("O_EXCL").Int()
-	nodeDIRECTORY = -1
-)
+var jsHostState jsHostValues
+var jsHostReady bool
 
-func init() {
-	oDir := constants.Get("O_DIRECTORY")
-	if !oDir.IsUndefined() {
-		nodeDIRECTORY = oDir.Int()
+// jsHost returns the host's objects. js runs one goroutine at a time and this
+// does not yield, so it needs no lock.
+func jsHost() *jsHostValues {
+	h := &jsHostState
+	if jsHostReady {
+		return h
 	}
+	g := js.Global()
+	h.process = g.Get("process")
+	h.fs = g.Get("fs")
+	h.uint8Array = g.Get("Uint8Array")
+	h.sync = g.Get("__tinygo_fsSync")
+	c := h.fs.Get("constants")
+	h.wronly = c.Get("O_WRONLY").Int()
+	h.rdwr = c.Get("O_RDWR").Int()
+	h.create = c.Get("O_CREAT").Int()
+	h.trunc = c.Get("O_TRUNC").Int()
+	h.append = c.Get("O_APPEND").Int()
+	h.excl = c.Get("O_EXCL").Int()
+	h.directory = -1
+	if d := c.Get("O_DIRECTORY"); !d.IsUndefined() {
+		h.directory = d.Int()
+	}
+	jsHostReady = true
+	return h
 }
 
 type jsFile struct {
@@ -71,27 +92,28 @@ func Open(path string, openmode int, perm uint32) (int, error) {
 		return 0, err
 	}
 
+	h := jsHost()
 	flags := 0
 	switch openmode & O_RDWR {
 	case O_WRONLY:
-		flags |= nodeWRONLY
+		flags |= h.wronly
 	case O_RDWR:
-		flags |= nodeRDWR
+		flags |= h.rdwr
 	}
 	if openmode&O_CREAT != 0 {
-		flags |= nodeCREATE
+		flags |= h.create
 	}
 	if openmode&O_TRUNC != 0 {
-		flags |= nodeTRUNC
+		flags |= h.trunc
 	}
 	if openmode&O_APPEND != 0 {
-		flags |= nodeAPPEND
+		flags |= h.append
 	}
 	if openmode&O_EXCL != 0 {
-		flags |= nodeEXCL
+		flags |= h.excl
 	}
-	if openmode&O_DIRECTORY != 0 && nodeDIRECTORY != -1 {
-		flags |= nodeDIRECTORY
+	if openmode&O_DIRECTORY != 0 && h.directory != -1 {
+		flags |= h.directory
 	}
 
 	jsFD, err := fsCall("open", path, flags, perm)
@@ -100,7 +122,7 @@ func Open(path string, openmode int, perm uint32) (int, error) {
 	}
 	fd := jsFD.Int()
 
-	if openmode&O_DIRECTORY != 0 && nodeDIRECTORY == -1 {
+	if openmode&O_DIRECTORY != 0 && h.directory == -1 {
 		var st Stat_t
 		if err := Fstat(fd, &st); err != nil || st.Mode&S_IFMT != S_IFDIR {
 			fsCall("close", fd)
@@ -303,7 +325,7 @@ func Lchown(path string, uid, gid int) error {
 	if err := checkPath(path); err != nil {
 		return err
 	}
-	if jsFS.Get("lchown").IsUndefined() {
+	if jsHost().fs.Get("lchown").IsUndefined() {
 		return ENOSYS
 	}
 	_, err := fsCall("lchown", path, uint32(uid), uint32(gid))
@@ -332,11 +354,11 @@ func Truncate(path string, length int64) error {
 // Getwd and Chdir use the host's process, whose directory is the one the
 // filesystem resolves relative paths against.
 func Getwd() (string, error) {
-	cwd := jsProcess.Get("cwd")
+	cwd := jsHost().process.Get("cwd")
 	if cwd.Type() != js.TypeFunction {
 		return "", ENOSYS
 	}
-	return jsProcess.Call("cwd").String(), nil
+	return jsHost().process.Call("cwd").String(), nil
 }
 
 func Chdir(path string) error {
@@ -352,10 +374,10 @@ func Chdir(path string) error {
 	if st.Mode&S_IFMT != S_IFDIR {
 		return ENOTDIR
 	}
-	if jsProcess.Get("chdir").Type() != js.TypeFunction {
+	if jsHost().process.Get("chdir").Type() != js.TypeFunction {
 		return ENOSYS
 	}
-	jsProcess.Call("chdir", path)
+	jsHost().process.Call("chdir", path)
 	return nil
 }
 
@@ -410,7 +432,7 @@ func Read(fd int, b []byte) (int, error) {
 		return n, err
 	}
 
-	buf := uint8Array.New(len(b))
+	buf := jsHost().uint8Array.New(len(b))
 	n, err := fsCall("read", fd, buf, 0, len(b), nil)
 	if err != nil {
 		return 0, err
@@ -436,7 +458,7 @@ func Write(fd int, b []byte) (int, error) {
 		return n, err
 	}
 
-	buf := uint8Array.New(len(b))
+	buf := jsHost().uint8Array.New(len(b))
 	js.CopyBytesToJS(buf, b)
 	n, err := fsCall("write", fd, buf, 0, len(b), nil)
 	if err != nil {
@@ -448,7 +470,7 @@ func Write(fd int, b []byte) (int, error) {
 }
 
 func Pread(fd int, b []byte, offset int64) (int, error) {
-	buf := uint8Array.New(len(b))
+	buf := jsHost().uint8Array.New(len(b))
 	n, err := fsCall("read", fd, buf, 0, len(b), offset)
 	if err != nil {
 		return 0, err
@@ -461,7 +483,7 @@ func Pread(fd int, b []byte, offset int64) (int, error) {
 }
 
 func Pwrite(fd int, b []byte, offset int64) (int, error) {
-	buf := uint8Array.New(len(b))
+	buf := jsHost().uint8Array.New(len(b))
 	js.CopyBytesToJS(buf, b)
 	n, err := fsCall("write", fd, buf, 0, len(b), offset)
 	if err != nil {
@@ -505,14 +527,9 @@ func Dup(fd int) (int, error) {
 	return 0, ENOSYS
 }
 
-// jsFSSync is wasm_exec.js's synchronous answer to a call, when the host has
-// one. A park unwinds and rewinds the goroutine's whole stack under asyncify,
-// so only a call it cannot answer at once waits for a callback.
-var jsFSSync = js.Global().Get("__tinygo_fsSync")
-
 func fsCall(name string, args ...any) (js.Value, error) {
-	if jsFSSync.Type() == js.TypeFunction {
-		r := jsFSSync.Invoke(name, args)
+	if fsSync := jsHost().sync; fsSync.Type() == js.TypeFunction {
+		r := fsSync.Invoke(name, args)
 		if !r.IsUndefined() {
 			if code := r.Get("e"); !code.IsUndefined() {
 				return js.Undefined(), mapJSCode(code)
@@ -545,7 +562,7 @@ func fsCall(name string, args ...any) (js.Value, error) {
 		return nil
 	})
 	defer f.Release()
-	jsFS.Call(name, append(args, f)...)
+	jsHost().fs.Call(name, append(args, f)...)
 	res := <-c
 	return res.val, res.err
 }
