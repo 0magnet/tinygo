@@ -69,7 +69,7 @@
 			pid: -1,
 			ppid: -1,
 			umask() { throw enosys(); },
-			cwd() { throw enosys(); },
+			cwd() { return "/"; },
 			chdir() { throw enosys(); },
 		}
 	}
@@ -132,8 +132,8 @@
 		return { sync, stdio: { stdin }, getCwd: () => process.cwd() };
 	};
 
-	// jsfsWasi serves the WASI filesystem imports from bottle's jsfs.sync, so os
-	// works on one in-memory tree shared with the page. The only preopen is "/".
+	// jsfsWasi serves the WASI filesystem imports from bottle's jsfs.sync, so C
+	// code works on the tree os sees through globalThis.fs. The only preopen is "/".
 	const jsfsWasi = (jsfs, buffer) => {
 		const sync = jsfs.sync;
 		const C = sync.constants;
@@ -852,10 +852,10 @@
 			// For compatibility, we use both as long as Go 1.20 is supported.
 			this.importObject.env = this.importObject.gojs;
 
-			// With bottle's jsfs on the page, os reaches its filesystem through the
-			// WASI imports. Under Node, Node's fs serves the same imports, as Go's
-			// own js target reaches it. Otherwise there are no preopens and every
-			// open fails.
+			// Go's os reaches globalThis.fs through its callback API (see
+			// src/syscall/fs_js.go). C code linked against wasi-libc reaches the
+			// same tree through the WASI imports, served from bottle's jsfs.sync on
+			// the page or Node's fs under Node; otherwise every open there fails.
 			const wasi = this.importObject.wasi_snapshot_preview1;
 			this._jsfs = globalThis.jsfs && globalThis.jsfs.sync ? globalThis.jsfs : nodeJsfs();
 			if (this._jsfs) {
