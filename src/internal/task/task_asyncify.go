@@ -128,6 +128,13 @@ func Current() *Task {
 // Pause suspends the current task and returns to the scheduler.
 // This function may only be called when running on a goroutine stack, not when running on the system stack.
 func Pause() {
+	if currentTask.state.panicReplay != 0 {
+		// A deferred call is blocking while a panic runs its defers. Save
+		// this pause above the frames kept for the panic traceback, which
+		// start at the bottom of the save area like any other unwind.
+		currentTask.state.asyncifysp = currentTask.state.panicOrigin.asyncifysp
+	}
+
 	if *currentTask.state.canaryPtr != stackCanary {
 		runtimeFatal("stack overflow")
 	}
@@ -172,6 +179,8 @@ func ClearPanicReplay() {
 	currentTask.state.panicReplay = 0
 	currentTask.state.panicTarget = 0
 	panicStackState = stackState{}
+	// Pause may have moved the save area up past those frames.
+	currentTask.state.asyncifysp = unsafe.Add(unsafe.Pointer(currentTask.state.canaryPtr), unsafe.Sizeof(uintptr(0)))
 }
 
 func PanicRewindData() unsafe.Pointer {
