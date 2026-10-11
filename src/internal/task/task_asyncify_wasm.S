@@ -51,6 +51,7 @@ tinygo_unwind: // func (state *stackState) unwind()
 .type tinygo_launch,@function
 tinygo_launch: // func (state *state) launch()
     .functype tinygo_launch (i32) -> ()
+    .local i32
     // Switch to the goroutine's C stack.
     global.get __stack_pointer // prev := getCurrentStackPointer()
     local.get 0
@@ -64,7 +65,28 @@ tinygo_launch: // func (state *state) launch()
     // Launch the entry function.
     call_indirect (i32) -> () // fn(args)
     // Stop unwinding.
+    // An unwind that ran past the end of the save area has written into the
+    // goroutine's own frames, and stop_unwind would trap with no message. Let
+    // it pass with the bound moved to the end of the data, then put csp back
+    // so that Resume reports the overflow. stop_unwind stays in this function
+    // so that asyncify does not instrument it.
+    local.get 0
+    i32.load 12
+    local.set 1 // csp := state.csp
+    local.get 0
+    i32.load 8
+    local.get 1
+    i32.gt_u
+    if // if state.asyncifysp > csp {
+    local.get 0
+    local.get 0
+    i32.load 8
+    i32.store 12 // state.csp = state.asyncifysp
+    end_if
     call stop_unwind
+    local.get 0
+    local.get 1
+    i32.store 12 // state.csp = csp
     // Restore the C stack.
     global.set __stack_pointer // setStackPointer(prev)
     return
@@ -75,6 +97,7 @@ tinygo_launch: // func (state *state) launch()
 .type    tinygo_rewind,@function
 tinygo_rewind: // func (state *state) rewind()
     .functype tinygo_rewind (i32) -> ()
+    .local i32
     // Switch to the goroutine's C stack.
     global.get __stack_pointer // prev := getCurrentStackPointer()
     local.get 0
@@ -97,7 +120,24 @@ tinygo_rewind: // func (state *state) rewind()
     // This will actually rewind the call stack.
     call_indirect (i32) -> () // fn(args)
     // Stop unwinding.
+    // Report an overrun save area, as in tinygo_launch.
+    local.get 0
+    i32.load 12
+    local.set 1 // csp := state.csp
+    local.get 0
+    i32.load 8
+    local.get 1
+    i32.gt_u
+    if // if state.asyncifysp > csp {
+    local.get 0
+    local.get 0
+    i32.load 8
+    i32.store 12 // state.csp = state.asyncifysp
+    end_if
     call stop_unwind
+    local.get 0
+    local.get 1
+    i32.store 12 // state.csp = csp
     // Restore the C stack.
     global.set __stack_pointer // setStackPointer(prev)
     return
