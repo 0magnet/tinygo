@@ -17,14 +17,8 @@ func main() {
 	// Send the signal.
 	syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 
-	// Receive it directly, with nothing sleeping anywhere.
-	//
-	// The sleep this replaces was doing the delivery: sleepTicks waits on the
-	// same futex the signal handler bumps and calls checkSignals on the way
-	// out, so a signal arrived on the back of the sleep. That hid whether
-	// anything else delivers it. Blocking on this receive parks the only
-	// goroutine there is, so under the threads scheduler the signal watcher is
-	// the only thing left that can — and if it does not, this hangs.
+	// Receive it directly, with nothing sleeping anywhere. Under the threads
+	// scheduler only the watcher can deliver it, so this hangs without the fix.
 	if sig := <-c; sig == syscall.SIGUSR1 {
 		println("got expected signal")
 	} else {
