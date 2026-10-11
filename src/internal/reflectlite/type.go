@@ -3,6 +3,7 @@ package reflectlite
 import (
 	"internal/gclayout"
 	"internal/itoa"
+	"internal/task"
 	"unsafe"
 )
 
@@ -1335,8 +1336,31 @@ func align(offset uintptr, alignment uintptr) uintptr {
 	return (offset + alignment - 1) &^ (alignment - 1)
 }
 
+var (
+	sliceOfMu    task.PMutex
+	sliceOfCache map[*RawType]*RawType
+)
+
+// SliceOf returns the type of a slice of t. The compiler emits no table of the
+// slice types a program uses, so it makes one: a value of it works everywhere
+// in reflect, but it is not the type the compiler gave []T, so Interface on
+// one does not convert to a []T (see tinygo-org/tinygo#3131). encoding/json/v2
+// needs it to marshal a map, and uses its slices only through reflect.
 func SliceOf(t Type) Type {
-	panic("unimplemented: reflect.SliceOf()")
+	elem := t.(*RawType)
+	sliceOfMu.Lock()
+	defer sliceOfMu.Unlock()
+	if s, ok := sliceOfCache[elem]; ok {
+		return s
+	}
+	s := &elemType{RawType: RawType{meta: uint8(Slice)}, elem: elem}
+	// A pointer type is the element's descriptor address plus one; see elem.
+	s.ptrTo = (*RawType)(unsafe.Add(unsafe.Pointer(s), 1))
+	if sliceOfCache == nil {
+		sliceOfCache = make(map[*RawType]*RawType)
+	}
+	sliceOfCache[elem] = &s.RawType
+	return &s.RawType
 }
 
 func ArrayOf(n int, t Type) Type {
