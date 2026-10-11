@@ -375,11 +375,8 @@ func (c *compilerContext) canonicalFunctionName(f *ssa.Function) string {
 	return name + methodPackageQualifier(f)
 }
 
-// methodPackageQualifier distinguishes an unexported method promoted from a
-// type in another package. Go names such a method by its declaring package, so
-// a type can hold two unexported methods of the same name, one its own and one
-// promoted. RelString spells both the same way, so the promoted one gets its
-// declaring package appended.
+// methodPackageQualifier names an unexported method promoted from another
+// package by that package, as RelString spells it like the type's own method.
 func methodPackageQualifier(f *ssa.Function) string {
 	recv := f.Signature.Recv()
 	if recv == nil {
