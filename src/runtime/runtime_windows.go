@@ -252,25 +252,32 @@ func growHeap() bool {
 	return true
 }
 
+//export GetLastError
+func _GetLastError() uint32
+
 //go:linkname syscall_loadsystemlibrary syscall.loadsystemlibrary
 func syscall_loadsystemlibrary(filename *uint16) (handle, err uintptr) {
 	handle = _LoadLibraryExW(filename, 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if handle == 0 {
-		panic("todo: get error")
+		err = uintptr(_GetLastError())
 	}
 	return
 }
 
 //go:linkname syscall_loadlibrary syscall.loadlibrary
 func syscall_loadlibrary(filename *uint16) (handle, err uintptr) {
-	panic("todo: syscall.loadlibrary")
+	handle = _LoadLibraryExW(filename, 0, 0)
+	if handle == 0 {
+		err = uintptr(_GetLastError())
+	}
+	return
 }
 
 //go:linkname syscall_getprocaddress syscall.getprocaddress
 func syscall_getprocaddress(handle uintptr, procname *byte) (outhandle, err uintptr) {
 	outhandle = getProcAddress(handle, procname)
 	if outhandle == 0 {
-		panic("todo: get error")
+		err = uintptr(_GetLastError())
 	}
 	return
 }
