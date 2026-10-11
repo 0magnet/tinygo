@@ -305,7 +305,9 @@ func pathsToOverride(goMinor int, needsSyscallPackage, thinTLS bool) map[string]
 	}
 
 	if needsSyscallPackage {
-		paths["syscall/"] = true // include syscall/js
+		paths["syscall/"] = true
+		// Go's syscall/js with property access that panics when JS throws.
+		paths["syscall/js/"] = false
 		paths["internal/syscall/"] = true
 		paths["internal/syscall/unix/"] = false
 	}
