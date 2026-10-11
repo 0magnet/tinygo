@@ -1334,6 +1334,31 @@ func TestWasmFuncOf(t *testing.T) {
 	checkOutput(t, "testdata/wasmfunc.txt", output.Bytes())
 }
 
+// Test syscall/js when JavaScript throws, and event dispatch order.
+func TestWasmJSErrors(t *testing.T) {
+	t.Parallel()
+	tmpdir := t.TempDir()
+	options := optionsFromTarget("wasm", sema)
+	buildConfig, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := builder.Build("testdata/wasmjs-errors.go", ".wasm", tmpdir, buildConfig)
+	if err != nil {
+		t.Fatal("failed to build binary:", err)
+	}
+
+	output := &bytes.Buffer{}
+	cmd := exec.Command("node", "testdata/wasmjs-errors.js", result.Binary)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err = cmd.Run()
+	if err != nil {
+		t.Error("failed to run node:", err)
+	}
+	checkOutput(t, "testdata/wasmjs-errors.txt", output.Bytes())
+}
+
 // Test //go:wasmexport in JavaScript (using NodeJS).
 func TestWasmExportJS(t *testing.T) {
 	t.Parallel()
@@ -1561,26 +1586,33 @@ func TestWASIPanicTraceback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := builder.Build("testdata/panic-traceback.go", ".wasm", t.TempDir(), config)
-	if err != nil {
-		t.Fatal("failed to build binary:", err)
-	}
-	data, err := os.ReadFile(result.Binary)
-	if err != nil {
-		t.Fatal("failed to read binary:", err)
-	}
+	// In panic-traceback-blocking.go a deferred call blocks while the panic
+	// runs its defers.
+	for _, name := range []string{"panic-traceback.go", "panic-traceback-blocking.go"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result, err := builder.Build("testdata/"+name, ".wasm", t.TempDir(), config)
+			if err != nil {
+				t.Fatal("failed to build binary:", err)
+			}
+			data, err := os.ReadFile(result.Binary)
+			if err != nil {
+				t.Fatal("failed to read binary:", err)
+			}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
-	defer r.Close(ctx)
-	wasi_snapshot_preview1.MustInstantiate(ctx, r)
-	_, err = r.InstantiateWithConfig(ctx, data, wazero.NewModuleConfig())
-	if err == nil {
-		t.Fatal("program unexpectedly exited successfully")
-	}
-	if !strings.Contains(err.Error(), "main.panicHere") {
-		t.Fatalf("panic traceback does not contain main.panicHere:\n%s", err)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
+			defer r.Close(ctx)
+			wasi_snapshot_preview1.MustInstantiate(ctx, r)
+			_, err = r.InstantiateWithConfig(ctx, data, wazero.NewModuleConfig())
+			if err == nil {
+				t.Fatal("program unexpectedly exited successfully")
+			}
+			if !strings.Contains(err.Error(), "main.panicHere") {
+				t.Fatalf("panic traceback does not contain main.panicHere:\n%s", err)
+			}
+		})
 	}
 }
 
