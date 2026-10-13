@@ -58,6 +58,7 @@ var (
 	gcTotalAlloc  uint64         // total number of bytes allocated
 	gcMallocs     uint64         // total number of allocations
 	gcNumGC       uint32         // total number of completed collection cycles
+	gcLastLive    uint64         // heap bytes still in use after the last collection
 	gcLock        task.PMutex    // lock to avoid race conditions on multicore systems
 )
 
@@ -652,6 +653,7 @@ func runGC() (freeBytes uintptr) {
 	// Sweep phase: free all non-marked objects and unmark marked objects for
 	// the next collection cycle. This also rebuilds the free ranges list.
 	freeBytes = sweep()
+	gcLastLive = uint64(uintptr(metadataStart) - heapStart - freeBytes)
 
 	// Show how much has been sweeped, for debugging.
 	if gcDebug {

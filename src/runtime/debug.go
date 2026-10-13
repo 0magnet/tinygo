@@ -26,3 +26,24 @@ func SetBlockProfileRate(rate int) {
 func SetMutexProfileFraction(rate int) int {
 	return 0
 }
+
+// StackRecord describes a single execution stack, as upstream Go defines it.
+type StackRecord struct {
+	Stack0 [32]uintptr // stack trace for this record; ends at first 0 entry
+}
+
+// Stack returns the stack trace associated with the record.
+func (r *StackRecord) Stack() []uintptr {
+	for i, v := range r.Stack0 {
+		if v == 0 {
+			return r.Stack0[0:i]
+		}
+	}
+	return r.Stack0[0:]
+}
+
+// Stub for ThreadCreateProfile, reports no records. TinyGo keeps no thread
+// creation profile.
+func ThreadCreateProfile(p []StackRecord) (n int, ok bool) {
+	return 0, true
+}

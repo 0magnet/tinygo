@@ -76,35 +76,35 @@ deref.next:                                       ; preds = %entry
   br i1 false, label %deref.throw, label %deref.next1
 
 deref.next1:                                      ; preds = %deref.next
+  br i1 false, label %deref.throw, label %store.next
+
+store.next:                                       ; preds = %deref.next1
   %0 = load float, ptr %a, align 4
   %1 = load float, ptr %b, align 4
   %2 = fadd float %0, %1
+  store float %2, ptr %complit, align 4
   br i1 false, label %deref.throw, label %deref.next2
 
-deref.next2:                                      ; preds = %deref.next1
+deref.next2:                                      ; preds = %store.next
   br i1 false, label %deref.throw, label %deref.next3
 
 deref.next3:                                      ; preds = %deref.next2
-  %3 = getelementptr inbounds nuw i8, ptr %b, i32 4
-  %4 = getelementptr inbounds nuw i8, ptr %a, i32 4
-  %5 = load float, ptr %4, align 4
-  %6 = load float, ptr %3, align 4
-  br i1 false, label %deref.throw, label %store.next
-
-store.next:                                       ; preds = %deref.next3
-  store float %2, ptr %complit, align 4
   br i1 false, label %deref.throw, label %store.next4
 
-store.next4:                                      ; preds = %store.next
-  %7 = getelementptr inbounds nuw i8, ptr %complit, i32 4
-  %8 = fadd float %5, %6
-  store float %8, ptr %7, align 4
+store.next4:                                      ; preds = %deref.next3
+  %3 = getelementptr inbounds nuw i8, ptr %complit, i32 4
+  %4 = getelementptr inbounds nuw i8, ptr %a, i32 4
+  %5 = load float, ptr %4, align 4
+  %6 = getelementptr inbounds nuw i8, ptr %b, i32 4
+  %7 = load float, ptr %6, align 4
+  %8 = fadd float %5, %7
+  store float %8, ptr %3, align 4
   %.unpack = load float, ptr %complit, align 4
   %9 = insertvalue %"main.Point[float32]" poison, float %.unpack, 0
   %10 = insertvalue %"main.Point[float32]" %9, float %8, 1
   ret %"main.Point[float32]" %10
 
-deref.throw:                                      ; preds = %store.next, %deref.next3, %deref.next2, %deref.next1, %deref.next, %entry
+deref.throw:                                      ; preds = %deref.next3, %deref.next2, %store.next, %deref.next1, %deref.next, %entry
   br label %unwind.return
 
 unwind.return:                                    ; preds = %deref.throw
@@ -142,35 +142,35 @@ deref.next:                                       ; preds = %entry
   br i1 false, label %deref.throw, label %deref.next1
 
 deref.next1:                                      ; preds = %deref.next
+  br i1 false, label %deref.throw, label %store.next
+
+store.next:                                       ; preds = %deref.next1
   %0 = load i32, ptr %a, align 4
   %1 = load i32, ptr %b, align 4
   %2 = add i32 %0, %1
+  store i32 %2, ptr %complit, align 4
   br i1 false, label %deref.throw, label %deref.next2
 
-deref.next2:                                      ; preds = %deref.next1
+deref.next2:                                      ; preds = %store.next
   br i1 false, label %deref.throw, label %deref.next3
 
 deref.next3:                                      ; preds = %deref.next2
-  %3 = getelementptr inbounds nuw i8, ptr %b, i32 4
-  %4 = getelementptr inbounds nuw i8, ptr %a, i32 4
-  %5 = load i32, ptr %4, align 4
-  %6 = load i32, ptr %3, align 4
-  br i1 false, label %deref.throw, label %store.next
-
-store.next:                                       ; preds = %deref.next3
-  store i32 %2, ptr %complit, align 4
   br i1 false, label %deref.throw, label %store.next4
 
-store.next4:                                      ; preds = %store.next
-  %7 = getelementptr inbounds nuw i8, ptr %complit, i32 4
-  %8 = add i32 %5, %6
-  store i32 %8, ptr %7, align 4
+store.next4:                                      ; preds = %deref.next3
+  %3 = getelementptr inbounds nuw i8, ptr %complit, i32 4
+  %4 = getelementptr inbounds nuw i8, ptr %a, i32 4
+  %5 = load i32, ptr %4, align 4
+  %6 = getelementptr inbounds nuw i8, ptr %b, i32 4
+  %7 = load i32, ptr %6, align 4
+  %8 = add i32 %5, %7
+  store i32 %8, ptr %3, align 4
   %.unpack = load i32, ptr %complit, align 4
   %9 = insertvalue %"main.Point[int]" poison, i32 %.unpack, 0
   %10 = insertvalue %"main.Point[int]" %9, i32 %8, 1
   ret %"main.Point[int]" %10
 
-deref.throw:                                      ; preds = %store.next, %deref.next3, %deref.next2, %deref.next1, %deref.next, %entry
+deref.throw:                                      ; preds = %deref.next3, %deref.next2, %store.next, %deref.next1, %deref.next, %entry
   br label %unwind.return
 
 unwind.return:                                    ; preds = %deref.throw

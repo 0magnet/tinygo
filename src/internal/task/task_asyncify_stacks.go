@@ -63,9 +63,3 @@ func liveStackRanges(mark func(start, end uintptr)) {
 		}
 	}
 }
-
-// getCurrentStackPointer is runtime.getCurrentStackPointer, with its C
-// calling convention.
-//
-//export tinygo_getCurrentStackPointer
-func getCurrentStackPointer() uintptr
