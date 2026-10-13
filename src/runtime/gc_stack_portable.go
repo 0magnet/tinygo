@@ -23,8 +23,9 @@ type stackChainObject struct {
 
 // markStack marks all root pointers found on the stack.
 //
-//   - Goroutine stacks are heap allocated. markTaskStacks scans the live part
-//     of each, or the GC scans each as a whole object where it cannot.
+//   - Goroutine stacks are heap allocated and always reachable in some way
+//     (for example through internal/task.currentTask) so they will always be
+//     scanned.
 //   - The system stack (aka startup stack) is not heap allocated, so even
 //     though it may be referenced it will not be scanned by default.
 //
@@ -51,7 +52,6 @@ func markStack() {
 		sysSP = savedStackPointer
 	}
 	markRoots(sysSP, stackTop)
-	markTaskStacks()
 }
 
 // trackPointer is a stub function call inserted by the compiler during IR
