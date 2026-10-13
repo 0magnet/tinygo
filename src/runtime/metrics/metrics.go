@@ -15,6 +15,20 @@ type Description struct {
 //go:linkname metricsHeapLive runtime.metricsHeapLive
 func metricsHeapLive() (uint64, bool)
 
+//go:linkname metricsStackStats runtime.metricsStackStats
+func metricsStackStats() ([7]uint64, bool)
+
+// stackNames are the asyncify stack use names, in metricsStackStats order.
+var stackNames = [7]string{
+	"/tinygo/stack/max-c:bytes",
+	"/tinygo/stack/max-save:bytes",
+	"/tinygo/stack/sum-peak:bytes",
+	"/tinygo/stack/over-16k:goroutines",
+	"/tinygo/stack/over-32k:goroutines",
+	"/tinygo/stack/over-64k:goroutines",
+	"/tinygo/stack/over-128k:goroutines",
+}
+
 const heapLive = "/gc/heap/live:bytes"
 
 func All() []Description {
@@ -44,6 +58,13 @@ func Read(m []Sample) {
 		if m[i].Name == heapLive {
 			if n, ok := metricsHeapLive(); ok {
 				m[i].Value = Value{kind: KindUint64, scalar: n}
+			}
+		}
+		for j, name := range stackNames {
+			if m[i].Name == name {
+				if v, ok := metricsStackStats(); ok {
+					m[i].Value = Value{kind: KindUint64, scalar: v[j]}
+				}
 			}
 		}
 	}

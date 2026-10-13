@@ -39,6 +39,10 @@ type state struct {
 	// running is set while Resume runs this task, so a task that resumed
 	// another from a JS callback is known to have frames below csp.
 	running bool
+
+	// peakC and peakSave are the most C stack and save area this task has used
+	// at a pause.
+	peakC, peakSave uintptr
 }
 
 const hasReleasableStack = true
@@ -238,6 +242,9 @@ func (t *Task) Resume() {
 		// The locals saved for this pause did not fit between the bottom of
 		// the stack and the frames above it, and overwrote some of them.
 		runtimeFatal("goroutine stack overflow; build with a larger -stack-size")
+	}
+	if !t.Exited {
+		t.state.notePeak()
 	}
 	if t.Exited {
 		runtime_freeTaskStack(t.state.stackBase)
