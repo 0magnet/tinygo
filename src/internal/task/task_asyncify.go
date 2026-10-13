@@ -35,6 +35,9 @@ type state struct {
 	panicOrigin    stackState
 	panicReplay    uintptr
 	panicTarget    uintptr
+
+	// Unused padding: does a bigger task alone break the finalizer tests?
+	pad [3]uintptr
 }
 
 const hasReleasableStack = true
