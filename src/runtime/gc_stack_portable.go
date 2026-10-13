@@ -68,3 +68,8 @@ func swapStackChain(dst **stackChainObject) {
 func gcResumeWorld() {
 	// Nothing to do here (single threaded).
 }
+
+// DebugPeek prints the word at the saved system stack pointer. Temporary bisect aid.
+func DebugPeek(tag string) {
+	println("peek", tag, "savedSP", savedStackPointer, "word", *(*uintptr)(unsafe.Pointer(savedStackPointer)))
+}
