@@ -1,6 +1,9 @@
-// Package metrics is a dummy package that is not yet implemented.
+// Package metrics implements a subset of the Go runtime/metrics package.
+// Names the runtime does not provide read as KindBad, as in Go.
 
 package metrics
+
+import _ "unsafe"
 
 type Description struct {
 	Name        string
@@ -9,8 +12,20 @@ type Description struct {
 	Cumulative  bool
 }
 
+//go:linkname metricsHeapLive runtime.metricsHeapLive
+func metricsHeapLive() (uint64, bool)
+
+const heapLive = "/gc/heap/live:bytes"
+
 func All() []Description {
-	return nil
+	if _, ok := metricsHeapLive(); !ok {
+		return nil
+	}
+	return []Description{{
+		Name:        heapLive,
+		Description: "Heap memory occupied by live objects that were marked by the previous GC.",
+		Kind:        KindUint64,
+	}}
 }
 
 type Float64Histogram struct {
@@ -23,21 +38,36 @@ type Sample struct {
 	Value Value
 }
 
-func Read(m []Sample) {}
+func Read(m []Sample) {
+	for i := range m {
+		m[i].Value = Value{}
+		if m[i].Name == heapLive {
+			if n, ok := metricsHeapLive(); ok {
+				m[i].Value = Value{kind: KindUint64, scalar: n}
+			}
+		}
+	}
+}
 
-type Value struct{}
+type Value struct {
+	kind   ValueKind
+	scalar uint64
+}
 
 func (v Value) Float64() float64 {
 	return 0
 }
+
 func (v Value) Float64Histogram() *Float64Histogram {
 	return nil
 }
+
 func (v Value) Kind() ValueKind {
-	return KindBad
+	return v.kind
 }
+
 func (v Value) Uint64() uint64 {
-	return 0
+	return v.scalar
 }
 
 type ValueKind int
