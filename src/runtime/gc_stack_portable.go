@@ -50,6 +50,14 @@ func markStack() {
 		// Use the saved stack pointer.
 		sysSP = savedStackPointer
 	}
+	if DebugAddr != 0 {
+		println("dbg: gc", gcNumGC, "onSystemStack", task.OnSystemStack(), "sysSP", sysSP, "stackTop", stackTop)
+		for a := sysSP; a < stackTop; a += unsafe.Sizeof(a) {
+			if v := *(*uintptr)(unsafe.Pointer(a)); v >= DebugAddr && v < DebugAddr+16 {
+				println("dbg:   system stack word at", a, "is obj")
+			}
+		}
+	}
 	markRoots(sysSP, stackTop)
 	markTaskStacks()
 }
