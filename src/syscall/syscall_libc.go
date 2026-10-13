@@ -183,16 +183,6 @@ func libc_chdir(pathname *byte) int32
 //export chmod
 func libc_chmod(pathname *byte, mode uint32) int32
 
-// int chown(const char *pathname, uid_t owner, gid_t group);
-//
-//export chown
-func libc_chown(pathname *byte, owner, group int) int32
-
-// int lchown(const char *pathname, uid_t owner, gid_t group);
-//
-//export lchown
-func libc_lchown(pathname *byte, owner, group int) int32
-
 // int mkdir(const char *pathname, mode_t mode);
 //
 //export mkdir

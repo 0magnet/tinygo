@@ -81,14 +81,15 @@ func Chmod(path string, mode uint32) (err error) {
 	return Lstat(path, &stat)
 }
 
-// Chown and Lchown only check that the path exists, as wasi has no file
-// owners and wasi-libc has no chown.
-func Chown(path string, uid, gid int) (err error) {
-	stat := Stat_t{}
-	return Stat(path, &stat)
+// WASI has no ownership operations. Match Go's syscall/fs_wasip1.go.
+func Chown(path string, uid, gid int) error {
+	return ENOSYS
 }
 
-func Lchown(path string, uid, gid int) (err error) {
-	stat := Stat_t{}
-	return Lstat(path, &stat)
+func Fchown(fd int, uid, gid int) error {
+	return ENOSYS
+}
+
+func Lchown(path string, uid, gid int) error {
+	return ENOSYS
 }

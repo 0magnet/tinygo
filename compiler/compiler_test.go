@@ -539,7 +539,7 @@ func TestDarwinCgoImportDynamicErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for line := range strings.SplitSeq(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if after, ok := strings.CutPrefix(line, "// ERROR: "); ok {
 			expected = append(expected, after)
 		}
@@ -686,8 +686,8 @@ func filterIrrelevantIRLines(lines []string) []string {
 		panic(err)
 	}
 	for _, line := range lines {
-		line = strings.Split(line, ";")[0]    // strip out comments/info
-		line = strings.TrimRight(line, "\r ") // drop '\r' on Windows and remove trailing spaces from comments
+		line = strings.Split(line, ";")[0]  // strip out comments/info
+		line = strings.TrimRight(line, " ") // remove trailing spaces from comments
 		if line == "" {
 			continue
 		}
@@ -716,8 +716,7 @@ func TestCompilerErrors(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	errorsFileString := strings.ReplaceAll(string(errorsFile), "\r\n", "\n")
-	for line := range strings.SplitSeq(errorsFileString, "\n") {
+	for line := range strings.SplitSeq(string(errorsFile), "\n") {
 		if after, ok := strings.CutPrefix(line, "// ERROR: "); ok {
 			expectedErrors = append(expectedErrors, after)
 		}
