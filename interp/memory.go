@@ -923,7 +923,7 @@ func (v rawValue) toLLVMValue(llvmType llvm.Type, mem *memoryView) (llvm.Value, 
 		for i, fieldType := range fieldTypes {
 			offset := mem.r.targetData.ElementOffset(llvmType, i)
 			field := rawValue{
-				buf: v.buf[offset:],
+				buf: v.buf[offset : offset+mem.r.targetData.TypeStoreSize(fieldType)],
 			}
 			var err error
 			fields[i], err = field.toLLVMValue(fieldType, mem)
@@ -943,7 +943,7 @@ func (v rawValue) toLLVMValue(llvmType llvm.Type, mem *memoryView) (llvm.Value, 
 		for i := range fields {
 			offset := i * int(childTypeSize)
 			field := rawValue{
-				buf: v.buf[offset:],
+				buf: v.buf[offset : offset+int(childTypeSize)],
 			}
 			var err error
 			fields[i], err = field.toLLVMValue(childType, mem)
@@ -1072,6 +1072,33 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) bool {
 			}
 			ptrValue.pointer += totalOffset
 			for i := range ptrSize {
+				v.buf[i] = ptrValue.pointer
+			}
+		case llvm.Add:
+			// Pointer arithmetic that LLVM folded into a constant, such as
+			// uintptr(unsafe.Pointer(&global)) + offset. Keep it a pointer with
+			// an offset so it stays relocatable, as the GetElementPtr case does.
+			ptrOp, intOp := llvmValue.Operand(0), llvmValue.Operand(1)
+			if intOp.IsAConstantInt().IsNil() {
+				ptrOp, intOp = intOp, ptrOp
+			}
+			if intOp.IsAConstantInt().IsNil() {
+				return false
+			}
+			size := uint32(r.targetData.TypeAllocSize(llvmValue.Type()))
+			src := newRawValue(size)
+			if !src.set(ptrOp, r) {
+				return false
+			}
+			if !src.hasPointer() || size != r.pointerSize {
+				return false
+			}
+			ptrValue, err := src.asPointer(r)
+			if err != nil {
+				return false
+			}
+			ptrValue.pointer += intOp.ZExtValue()
+			for i := range r.pointerSize {
 				v.buf[i] = ptrValue.pointer
 			}
 		case llvm.ICmp:
