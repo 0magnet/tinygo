@@ -7,9 +7,11 @@ package debug
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	_ "unsafe"
 )
 
 // SetMaxStack sets the maximum amount of memory that can be used by a single
@@ -256,10 +258,14 @@ type Module struct {
 	Replace *Module // replaced by this module
 }
 
-// Not implemented.
+// SetGCPercent sets the collection target where the garbage collector
+// supports it. It returns the previous setting.
 func SetGCPercent(n int) int {
-	return n
+	return int(setGCPercent(int32(n)))
 }
+
+//go:linkname setGCPercent runtime.setGCPercent
+func setGCPercent(int32) int32
 
 // Start of stolen from big go. TODO: import/reuse without copy pasta.
 
@@ -325,3 +331,25 @@ func (bi *BuildInfo) String() string {
 
 	return buf.String()
 }
+
+// CrashOptions provides options that control the formatting of the fatal
+// crash message. It is empty, as upstream Go's is.
+type CrashOptions struct{}
+
+// crashFile keeps the file passed to SetCrashOutput open for the crash.
+var crashFile *os.File
+
+// SetCrashOutput makes a panic or fatal error also be written to f. Unlike Go
+// it uses f itself rather than a duplicate, so the caller must leave it open.
+func SetCrashOutput(f *os.File, opts CrashOptions) error {
+	fd := int32(-1)
+	if f != nil {
+		fd = int32(f.Fd())
+	}
+	crashFile = f
+	setCrashFD(fd)
+	return nil
+}
+
+// setCrashFD is implemented in the runtime.
+func setCrashFD(fd int32) int32

@@ -169,6 +169,7 @@ func tinygo_handle_fatal_signal(sig int32, addr uintptr) {
 	if panicStrategy() == tinygo.PanicStrategyTrap {
 		trap()
 	}
+	crashing = true
 
 	// Print signal including the faulting instruction.
 	if addr != 0 {
@@ -234,6 +235,9 @@ func syscall_runtime_envs() []string {
 func putchar(c byte) {
 	buf := [1]byte{c}
 	libc_write(1, unsafe.Pointer(&buf[0]), 1)
+	if crashing && crashFD >= 0 {
+		libc_write(crashFD, unsafe.Pointer(&buf[0]), 1)
+	}
 }
 
 func ticksToNanoseconds(ticks timeUnit) int64 {
@@ -318,13 +322,24 @@ func procUnpin() {
 var heapSize uintptr = 128 * 1024 // small amount to start
 var heapMaxSize uintptr
 
+// heapMaxReserve is how much virtual address space to reserve for the heap:
+// 16GB (1<<34) on 64-bit targets and 1GB (1<<30) on 32-bit ones. The
+// reservation is not a commitment: pages cost physical RAM only when first
+// touched, and allocateHeap's halving loop still adapts if mmap refuses.
+// A flat 1GB cap on 64-bit made any single allocation approaching 1GB
+// (e.g. a scrypt key-derivation buffer with N=1<<20, r=8) fail regardless
+// of available system memory. Deriving the shift from TargetBits keeps the
+// constant within uintptr range on 32-bit targets, where a plain 16GB
+// literal would not compile even in a dead branch.
+const heapMaxReserve = 1 << (30 + 4*(TargetBits/64))
+
 var heapStart, heapEnd uintptr
 
 func allocateHeap() {
 	// Allocate a large chunk of virtual memory. Because it is virtual, it won't
 	// really be allocated in RAM. Memory will only be allocated when it is
 	// first touched.
-	heapMaxSize = 1 * 1024 * 1024 * 1024 // 1GB for the entire heap
+	heapMaxSize = heapMaxReserve
 	for {
 		addr := mmap(nil, heapMaxSize, flag_PROT_READ|flag_PROT_WRITE, flag_MAP_PRIVATE|flag_MAP_ANONYMOUS, -1, 0)
 		if addr == unsafe.Pointer(^uintptr(0)) {
@@ -390,8 +405,39 @@ func signal_enable(s uint32) {
 	// scheduler (and therefore there is no parallelism).
 	hasSignals = true
 
+	// Under the threads scheduler checkSignals() is only reached from
+	// sleepTicks(), so start a watcher thread. Other schedulers skip this.
+	startSignalWatcher()
+
 	// It's easier to implement this function in C.
 	tinygo_signal_enable(s)
+}
+
+// signalWatcherStarted is set by whoever starts the watcher thread. It stays
+// set, because the watcher serves signals for the rest of the process.
+var signalWatcherStarted atomic.Bool
+
+// startSignalWatcher starts the watcher thread on the first enabled signal,
+// under the threads scheduler only (!hasScheduler && hasParallelism).
+func startSignalWatcher() {
+	if hasScheduler || !hasParallelism {
+		return
+	}
+	if !signalWatcherStarted.Swap(true) {
+		go signalWatcher()
+	}
+}
+
+// signalWatcher runs on its own thread under the threads scheduler, mirroring
+// the signal half of waitForEvents(), which that scheduler never calls.
+func signalWatcher() {
+	for {
+		// Block until the signal handler bumps the futex from 0 to 1.
+		signalFutex.Wait(0)
+		if signalFutex.Swap(0) != 0 {
+			checkSignals()
+		}
+	}
 }
 
 //go:linkname signal_ignore os/signal.signal_ignore
