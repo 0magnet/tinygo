@@ -49,7 +49,7 @@ func highWaterC(s *state) uintptr {
 	}
 	base := uintptr(unsafe.Pointer(s.canaryPtr))
 	top := uintptr(s.top)
-	p := base + s.peakSave
+	p := base + unsafe.Sizeof(base) + s.peakSave
 	p = (p + unsafe.Sizeof(p) - 1) &^ (unsafe.Sizeof(p) - 1)
 	for p < top && *(*uintptr)(unsafe.Pointer(p)) == 0 {
 		p += unsafe.Sizeof(p)
