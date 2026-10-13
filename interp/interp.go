@@ -71,7 +71,8 @@ func (r *runner) dispose() {
 
 // Run evaluates runtime.initAll function as much as possible at compile time.
 // Set debug to true if it should print output while running.
-func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bool) error {
+func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bool) (err error) {
+	defer renderReturned(&err)
 	r := newRunner(mod, timeout, maxLoopIterations, debug)
 	defer r.dispose()
 
@@ -116,6 +117,7 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		initCalls = append(initCalls, inst)
 	}
 
+	var moved [][2]llvm.Value // package init, residual function
 	// Run initializers for each package. Once the package initializer is
 	// finished, the call to the package initializer can be removed.
 	for _, call := range initCalls {
@@ -128,8 +130,26 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		if r.debug {
 			fmt.Fprintln(os.Stderr, "call:", fn.Name())
 		}
+		// Give each package initializer its own timeout budget (errTimeout is
+		// recoverable): one heavy compile-time-uncomputable init — e.g. crypto
+		// AES/secp256k1 key expansion — reverts to a runtime call without
+		// starving the remaining packages of precomputation time.
+		r.start = time.Now()
+		// Emit what must run at runtime into a function of its own. Kept in
+		// initAll, the leftovers of every package form one huge function.
+		residual := llvm.AddFunction(mod, fn.Name()+"#interp", fn.GlobalValueType())
+		residual.SetLinkage(llvm.InternalLinkage)
+		r.builder.SetInsertPointAtEnd(mod.Context().AddBasicBlock(residual, "entry"))
+		subprogram := fn.Subprogram()
+		if !subprogram.IsNil() {
+			r.builder.SetCurrentDebugLocation(subprogram.SubprogramLine(), 0, subprogram, llvm.Metadata{})
+		}
 		_, mem, callErr := r.run(r.getFunction(fn), nil, nil, "    ")
 		call.EraseFromParentAsInstruction()
+		r.builder.SetInsertPointBefore(dummy)
+		if subprogram := initAll.Subprogram(); !subprogram.IsNil() {
+			r.builder.SetCurrentDebugLocation(subprogram.SubprogramLine(), 0, subprogram, llvm.Metadata{})
+		}
 		if callErr != nil {
 			if isRecoverableError(callErr.Err) {
 				if r.debug {
@@ -138,6 +158,7 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 				// Remove instructions that were created as part of interpreting
 				// the package.
 				mem.revert()
+				residual.EraseFromParentAsFunction()
 				// Create a call to the package initializer (which was
 				// previously deleted).
 				i8undef := llvm.Undef(r.dataPtrType)
@@ -155,8 +176,34 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		for index, obj := range mem.objects {
 			r.objects[index] = obj
 		}
+		if residual.EntryBasicBlock().FirstInstruction().IsNil() {
+			residual.EraseFromParentAsFunction()
+			continue
+		}
+		b := mod.Context().NewBuilder()
+		b.SetInsertPointAtEnd(residual.EntryBasicBlock())
+		b.CreateRetVoid()
+		b.Dispose()
+		var args []llvm.Value
+		for _, param := range residual.Params() {
+			args = append(args, llvm.Undef(param.Type()))
+		}
+		r.builder.CreateCall(residual.GlobalValueType(), residual, args, "")
+		if !subprogram.IsNil() {
+			moved = append(moved, [2]llvm.Value{fn, residual})
+		}
 	}
 	r.pkgName = ""
+
+	// A subprogram may belong to one function only. The package initializers
+	// whose call was removed are no longer used, so hand theirs over.
+	for _, m := range moved {
+		if m[0].FirstUse().IsNil() {
+			subprogram := m[0].Subprogram()
+			m[0].EraseFromParentAsFunction()
+			m[1].SetSubprogram(subprogram)
+		}
+	}
 
 	// Update all global variables in the LLVM module.
 	mem := memoryView{r: r}
@@ -214,7 +261,8 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 
 // RunFunc evaluates a single package initializer at compile time.
 // Set debug to true if it should print output while running.
-func RunFunc(fn llvm.Value, timeout time.Duration, maxLoopIterations int, debug bool) error {
+func RunFunc(fn llvm.Value, timeout time.Duration, maxLoopIterations int, debug bool) (err error) {
+	defer renderReturned(&err)
 	// Create and initialize *runner object.
 	mod := fn.GlobalParent()
 	r := newRunner(mod, timeout, maxLoopIterations, debug)
