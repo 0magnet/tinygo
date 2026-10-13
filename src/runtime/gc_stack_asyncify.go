@@ -4,4 +4,7 @@ package runtime
 
 import "internal/task"
 
-func markTaskStacks() { task.ScanStacks() }
+func markTaskStacks() {
+	task.DebugRanges = DebugAddr != 0
+	task.ScanStacks()
+}

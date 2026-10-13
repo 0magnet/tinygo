@@ -7,6 +7,9 @@ import "unsafe"
 // stackTasks lists every task that has a heap stack, newest first.
 var stackTasks *Task
 
+// DebugRanges makes liveStackRanges print each range. Temporary bisect aid.
+var DebugRanges bool
+
 func linkStack(t *Task) {
 	t.state.nextStack = stackTasks
 	if stackTasks != nil {
@@ -54,6 +57,9 @@ func liveStackRanges(mark func(start, end uintptr)) {
 		if sp < saved {
 			// The frames reach into the save area, so scan the whole stack.
 			sp = saved
+		}
+		if DebugRanges {
+			println("dbg: task", uintptr(unsafe.Pointer(t)), "base", base, "saved", saved, "sp", sp, "top", top, "current", t == currentTask)
 		}
 		if saved > base {
 			mark(base, saved)

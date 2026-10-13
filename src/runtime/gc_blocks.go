@@ -741,7 +741,13 @@ func finishMark() {
 }
 
 // mark a GC root at the address addr.
+// DebugAddr is a temporary bisect aid: markRoot reports words that point at it.
+var DebugAddr uintptr
+
 func markRoot(addr, root uintptr) {
+	if DebugAddr != 0 && root >= DebugAddr && root < DebugAddr+16 {
+		println("dbg: ref to obj at", addr, "gc", gcNumGC)
+	}
 	// Find the heap block corresponding to the root.
 	if !isOnHeap(root) {
 		// This is not a heap pointer.
