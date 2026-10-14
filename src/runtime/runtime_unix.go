@@ -484,6 +484,9 @@ func signal_recv() uint32 {
 	for {
 		val := receivedSignals.Load()
 		if val == 0 {
+			for i := 0; i < 200000000; i++ {
+				signalRecvSpin.Add(1)
+			}
 			// There are no signals to receive. Sleep until there are.
 			if signalRecvWaiter.Swap(task.Current()) != nil {
 				// We expect only a single goroutine to call signal_recv.
@@ -539,3 +542,5 @@ func waitForEvents() {
 		runtimeFatal("deadlocked: no event source")
 	}
 }
+
+var signalRecvSpin atomic.Uint32
