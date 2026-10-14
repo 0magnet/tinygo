@@ -31,6 +31,10 @@ func unlinkStack(t *Task) {
 // save area at the bottom and the C stack frames at the top. The gap between
 // them keeps stale words from deeper calls, which must not be treated as roots.
 func liveStackRanges(mark func(start, end uintptr)) {
+	if t := currentTask; t != nil && t.Exited {
+		// It left the list on exit but still runs until its final pause.
+		mark(getCurrentStackPointer(), uintptr(t.state.top))
+	}
 	for t := stackTasks; t != nil; t = t.state.nextStack {
 		s := &t.state
 		if s.canaryPtr == nil {
@@ -45,8 +49,11 @@ func liveStackRanges(mark func(start, end uintptr)) {
 		sp := uintptr(s.csp)
 		if t == currentTask {
 			sp = getCurrentStackPointer()
-		} else if s.nestedSP != 0 {
-			sp = s.nestedSP
+		} else if s.running {
+			// It resumed the current task from a JS callback, so its frames
+			// reach below csp. Scan all of it.
+			mark(base, top)
+			continue
 		}
 		if saved > top {
 			saved = top

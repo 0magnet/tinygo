@@ -36,8 +36,9 @@ type state struct {
 	// nextStack and prevStack link the tasks whose stacks the GC scans.
 	nextStack, prevStack *Task
 
-	// nestedSP is the stack pointer of a running task while it resumes another.
-	nestedSP uintptr
+	// running is set while Resume runs this task, so a task that resumed
+	// another from a JS callback is known to have frames below csp.
+	running bool
 }
 
 const hasReleasableStack = true
@@ -220,21 +221,18 @@ func (t *Task) Resume() {
 	if prevTask == nil {
 		// Save the system stack pointer.
 		saveStackPointer()
-	} else {
-		prevTask.state.nestedSP = getCurrentStackPointer()
 	}
 	t.gcData.swap()
 	currentTask = t
+	t.state.running = true
 	if !t.state.launched {
 		t.state.launch()
 		t.state.launched = true
 	} else {
 		t.state.rewind()
 	}
+	t.state.running = false
 	currentTask = prevTask
-	if prevTask != nil {
-		prevTask.state.nestedSP = 0
-	}
 	t.gcData.swap()
 	if uintptr(t.state.asyncifysp) > uintptr(t.state.csp) {
 		// The locals saved for this pause did not fit between the bottom of
@@ -242,7 +240,6 @@ func (t *Task) Resume() {
 		runtimeFatal("goroutine stack overflow; build with a larger -stack-size")
 	}
 	if t.Exited {
-		unlinkStack(t)
 		runtime_freeTaskStack(t.state.stackBase)
 		t.state = state{}
 		t.gcData = gcData{}
