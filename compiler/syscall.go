@@ -607,3 +607,35 @@ func (b *builder) createDarwinImportedFunctionAddr(name string, pos token.Pos) l
 	}
 	return b.CreatePtrToInt(llvmFn, b.uintptrType, "")
 }
+
+// createSocketcall emits syscall.socketcall and syscall.rawsocketcall on
+// linux/386, which Go implements in assembly (syscall/asm_linux_386.s). The
+// kernel takes the call number and a pointer to the six arguments.
+func (b *builder) createSocketcall(call *ssa.CallCommon) (llvm.Value, error) {
+	const sysSocketcall = 102 // SYS_SOCKETCALL in linux/arch/x86/entry/syscalls/syscall_32.tbl
+	arrayType := llvm.ArrayType(b.uintptrType, 6)
+	args, size := b.createTemporaryAlloca(arrayType, "socketcall.args")
+	zero32 := llvm.ConstInt(b.ctx.Int32Type(), 0, false)
+	for i, arg := range call.Args[1:] {
+		idx := llvm.ConstInt(b.ctx.Int32Type(), uint64(i), false)
+		gep := b.CreateInBoundsGEP(arrayType, args, []llvm.Value{zero32, idx}, "")
+		b.CreateStore(b.getValue(arg, getPos(call)), gep)
+	}
+	num := llvm.ConstInt(b.uintptrType, sysSocketcall, false)
+	callNum := b.getValue(call.Args[0], getPos(call))
+	ptr := b.CreatePtrToInt(args, b.uintptrType, "")
+	fnType := llvm.FunctionType(b.uintptrType, []llvm.Type{b.uintptrType, b.uintptrType, b.uintptrType}, false)
+	target := llvm.InlineAsm(fnType, "int 0x80", "={eax},0,{ebx},{ecx},~{memory}", true, false, llvm.InlineAsmDialectIntel, false)
+	result := b.CreateCall(fnType, target, []llvm.Value{num, callNum, ptr}, "")
+	b.emitLifetimeEnd(args, size)
+
+	// Like the assembly: on an error n is -1 and err is the negated result.
+	zero := llvm.ConstInt(b.uintptrType, 0, false)
+	hasError := b.CreateICmp(llvm.IntUGT, result, llvm.ConstInt(b.uintptrType, 0xfffff000, false), "")
+	n := b.CreateSelect(hasError, llvm.ConstAllOnes(b.uintptrType), result, "")
+	errResult := b.CreateSelect(hasError, b.CreateSub(zero, result, ""), zero, "")
+	retval := llvm.Undef(b.ctx.StructType([]llvm.Type{b.uintptrType, b.uintptrType}, false))
+	retval = b.CreateInsertValue(retval, n, 0, "")
+	retval = b.CreateInsertValue(retval, errResult, 1, "")
+	return retval, nil
+}
