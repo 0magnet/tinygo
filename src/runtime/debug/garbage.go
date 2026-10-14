@@ -3,6 +3,7 @@ package debug
 
 import (
 	"time"
+	_ "unsafe"
 )
 
 type GCStats struct {
@@ -17,8 +18,14 @@ type GCStats struct {
 func ReadGCStats(stats *GCStats) {
 }
 
+// FreeOSMemory forces a collection and returns as much memory to the
+// operating system as the garbage collector can.
 func FreeOSMemory() {
+	freeOSMemory()
 }
+
+//go:linkname freeOSMemory runtime.freeOSMemory
+func freeOSMemory()
 
 func SetMaxThreads(threads int) int {
 	return threads
@@ -28,7 +35,9 @@ func SetPanicOnFault(enabled bool) bool {
 	return enabled
 }
 
-func WriteHeapDump(fd uintptr)
+// WriteHeapDump writes nothing: TinyGo has no heap dump in Go's format.
+// Declared without a body, as Go declares it, it failed to link.
+func WriteHeapDump(fd uintptr) {}
 
 func SetTraceback(level string) {
 }

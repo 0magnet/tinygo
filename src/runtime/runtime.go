@@ -142,8 +142,11 @@ func registerWeakPointer(ptr unsafe.Pointer) unsafe.Pointer {
 }
 
 //go:linkname makeStrongFromWeak weak.runtime_makeStrongFromWeak
-func makeStrongFromWeak(ptr unsafe.Pointer) unsafe.Pointer {
-	return ptr
+func makeStrongFromWeak(u unsafe.Pointer) unsafe.Pointer {
+	// Counterpart to registerWeakPointer above. Because weak pointers are never
+	// collected here (the "weak" handle is just the pointer itself), the
+	// referent is always still alive, so return it unchanged.
+	return u
 }
 
 var godebugUpdate func(string, string)

@@ -17,6 +17,9 @@ type timer struct {
 	arg any
 
 	synctest *synctestBubble
+
+	// node is the node of this timer that is waiting in a timer heap, if any.
+	node *timerNode
 }
 
 func (tim *timer) callCallback(delta int64) {
@@ -47,10 +50,9 @@ func newTimer(when, period int64, f func(arg any, seq uintptr, delta int64), arg
 		},
 	}
 	scheduleLog("new timer")
-	node := &timerNode{
-		timer:    &tim.timer,
-		callback: timerCallback,
-	}
+	node := newTimerNode()
+	node.timer = &tim.timer
+	node.callback = timerCallback
 	if bubble != nil {
 		bubble.addTimer(node)
 	} else {
@@ -66,12 +68,18 @@ func stopTimer(tim *timeTimer) bool {
 	}
 	tim.timer.lock.Lock()
 	var removed bool
+	var n *timerNode
 	if tim.timer.synctest != nil {
 		removed = tim.timer.synctest.removeTimer(&tim.timer) != nil
 	} else {
-		removed = removeTimer(&tim.timer) != nil
+		n = removeTimer(&tim.timer)
+		removed = n != nil
 	}
 	tim.timer.lock.Unlock()
+	if n != nil {
+		// Off the queue and not firing, so nothing else refers to n.
+		releaseTimerNode(n)
+	}
 	return removed
 }
 
@@ -91,7 +99,7 @@ func resetTimer(t *timeTimer, when, period int64) bool {
 	if n == nil {
 		// Allocation can start GC, so do not hold the cores spin lock.
 		t.timer.lock.Unlock()
-		replacement := new(timerNode)
+		replacement := newTimerNode()
 		t.timer.lock.Lock()
 		// A concurrent reset can queue the timer during allocation.
 		// Remove it again so this reset takes effect after that operation.
@@ -139,11 +147,15 @@ func time_runtimeNow() (sec int64, nsec int32, mono int64) {
 	return now()
 }
 
-// timerNode is an element in a linked list of timers.
+// timerNode is an element in a timer heap.
 type timerNode struct {
-	next     *timerNode
 	timer    *timer
 	callback func(node *timerNode, delta int64)
+
+	// when and seq are the heap key, and index is the position in the heap.
+	when  int64
+	seq   int64
+	index int
 
 	// The following fields are only used by schedulers that run timer
 	// callbacks concurrently with user goroutines (the threads and cores
@@ -161,7 +173,7 @@ type timerNode struct {
 
 // whenTicks returns the (absolute) time when this timer should trigger next.
 func (t *timerNode) whenTicks() timeUnit {
-	return nanosecondsToTicks(t.timer.when)
+	return nanosecondsToTicks(t.when)
 }
 
 // timerCallback is called when a timer expires. It makes sure to call the
@@ -180,13 +192,15 @@ func timerCallback(tn *timerNode, delta int64) {
 	tn.timer.callCallback(delta)
 
 	// Finish firing the timer and re-add it if it is periodic.
-	tn.timer.lock.Lock()
-	if tn.timer.synctest != nil {
-		tn.timer.synctest.finishTimer(tn)
+	// reAddTimer may hand tn to the next Reset, so keep the timer.
+	tim := tn.timer
+	tim.lock.Lock()
+	if tim.synctest != nil {
+		tim.synctest.finishTimer(tn)
 	} else {
 		reAddTimer(tn)
 	}
-	tn.timer.lock.Unlock()
+	tim.lock.Unlock()
 }
 
 //go:linkname time_runtimeIsBubbled time.runtimeIsBubbled
