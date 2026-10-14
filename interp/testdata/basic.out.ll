@@ -18,33 +18,7 @@ declare void @runtime.printnl() unnamed_addr
 
 define void @runtime.initAll() unnamed_addr {
 entry:
-  call void @runtime.printint64(i64 5)
-  call void @runtime.printnl()
-  %value1 = call i64 @someValue()
-  store i64 %value1, ptr @main.nonConst1, align 8
-  %value2 = load i64, ptr @main.nonConst1, align 8
-  store i64 %value2, ptr @main.nonConst2, align 8
-  call void @modifyExternal(ptr getelementptr inbounds (i8, ptr @main.someArray, i32 28))
-  call void @modifyExternal(ptr @main.exportedValue)
-  store i16 5, ptr @main.exposedValue1, align 2
-  call void @readExternal(ptr @main.exportedConst)
-  call void @runtime.printint64(i64 42)
-  call void @modifyExternal(ptr @willModifyGlobal)
-  store i16 7, ptr @main.exposedValue2, align 2
-  call void @modifyExternal(ptr @hasInlineAsm)
-  call void @runtime.printint64(i64 6)
-  call void @runtime.printint64(i64 -1)
-  %agg = call { i8, i32, { float, { i64, i16 } } } @nestedStruct()
-  %elt.agg = extractvalue { i8, i32, { float, { i64, i16 } } } %agg, 2
-  %elt.agg1 = extractvalue { float, { i64, i16 } } %elt.agg, 1
-  %elt = extractvalue { i64, i16 } %elt.agg1, 0
-  call void @runtime.printint64(i64 %elt)
-  %agg2.agg0 = extractvalue { i8, i32, { float, { i64, i16 } } } %agg, 2
-  %agg2.agg1 = extractvalue { float, { i64, i16 } } %agg2.agg0, 1
-  %agg2.insertvalue2 = insertvalue { i64, i16 } %agg2.agg1, i64 5, 0
-  %agg2.insertvalue1 = insertvalue { float, { i64, i16 } } %agg2.agg0, { i64, i16 } %agg2.insertvalue2, 1
-  %agg2.insertvalue0 = insertvalue { i8, i32, { float, { i64, i16 } } } %agg, { float, { i64, i16 } } %agg2.insertvalue1, 2
-  store { i8, i32, { float, { i64, i16 } } } %agg2.insertvalue0, ptr @main.insertedValue, align 8
+  call fastcc void @"main.init#interp"()
   ret void
 }
 
@@ -95,3 +69,35 @@ otherwise:                                        ; preds = %entry
 }
 
 declare { i8, i32, { float, { i64, i16 } } } @nestedStruct() local_unnamed_addr
+
+define internal fastcc void @"main.init#interp"() unnamed_addr {
+entry:
+  call void @runtime.printint64(i64 5)
+  call void @runtime.printnl()
+  %value1 = call i64 @someValue()
+  store i64 %value1, ptr @main.nonConst1, align 8
+  %value2 = load i64, ptr @main.nonConst1, align 8
+  store i64 %value2, ptr @main.nonConst2, align 8
+  call void @modifyExternal(ptr getelementptr inbounds (i8, ptr @main.someArray, i32 28))
+  call void @modifyExternal(ptr @main.exportedValue)
+  store i16 5, ptr @main.exposedValue1, align 2
+  call void @readExternal(ptr @main.exportedConst)
+  call void @runtime.printint64(i64 42)
+  call void @modifyExternal(ptr @willModifyGlobal)
+  store i16 7, ptr @main.exposedValue2, align 2
+  call void @modifyExternal(ptr @hasInlineAsm)
+  call void @runtime.printint64(i64 6)
+  call void @runtime.printint64(i64 -1)
+  %agg = call { i8, i32, { float, { i64, i16 } } } @nestedStruct()
+  %elt.agg = extractvalue { i8, i32, { float, { i64, i16 } } } %agg, 2
+  %elt.agg1 = extractvalue { float, { i64, i16 } } %elt.agg, 1
+  %elt = extractvalue { i64, i16 } %elt.agg1, 0
+  call void @runtime.printint64(i64 %elt)
+  %agg2.agg0 = extractvalue { i8, i32, { float, { i64, i16 } } } %agg, 2
+  %agg2.agg1 = extractvalue { float, { i64, i16 } } %agg2.agg0, 1
+  %agg2.insertvalue2 = insertvalue { i64, i16 } %agg2.agg1, i64 5, 0
+  %agg2.insertvalue1 = insertvalue { float, { i64, i16 } } %agg2.agg0, { i64, i16 } %agg2.insertvalue2, 1
+  %agg2.insertvalue0 = insertvalue { i8, i32, { float, { i64, i16 } } } %agg, { float, { i64, i16 } } %agg2.insertvalue1, 2
+  store { i8, i32, { float, { i64, i16 } } } %agg2.insertvalue0, ptr @main.insertedValue, align 8
+  ret void
+}

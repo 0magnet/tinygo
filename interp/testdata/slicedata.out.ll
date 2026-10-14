@@ -6,6 +6,12 @@ target triple = "x86_64--linux"
 
 define void @runtime.initAll() unnamed_addr {
 entry:
+  call fastcc void @"main.init#interp"(ptr undef)
+  ret void
+}
+
+define internal fastcc void @"main.init#interp"(ptr %0) unnamed_addr {
+entry:
   %val = load i64, ptr @main.zeroSized, align 8
   store i64 %val, ptr @main.v, align 8
   ret void

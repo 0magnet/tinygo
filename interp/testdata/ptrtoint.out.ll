@@ -13,6 +13,12 @@ target triple = "x86_64--linux"
 
 define void @runtime.initAll() unnamed_addr {
 entry:
+  call fastcc void @"main.init#interp"()
+  ret void
+}
+
+define internal fastcc void @"main.init#interp"() unnamed_addr {
+entry:
   store i8 ptrtoint (ptr @main.global to i8), ptr @main.v3, align 1
   store i8 ptrtoint (ptr @main.global to i8), ptr @main.v5, align 1
   %v7 = load i8, ptr getelementptr inbounds (i8, ptr @main.v6, i64 1), align 1

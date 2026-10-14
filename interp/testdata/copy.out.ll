@@ -13,15 +13,21 @@ target triple = "x86_64--linux"
 declare void @use(ptr) local_unnamed_addr
 
 define void @runtime.initAll() local_unnamed_addr {
-  call void @llvm.memmove.p0.p0.i64(ptr @moveExternalDst, ptr @externalSrc, i64 2, i1 false)
-  call void @use(ptr @moveEscapedSrc)
-  call void @llvm.memmove.p0.p0.i64(ptr @moveEscapedDst, ptr @moveEscapedSrc, i64 4, i1 false)
-  call void @llvm.memcpy.p0.p0.i64(ptr @volatileDst, ptr @volatileSrc, i64 2, i1 true)
+  call fastcc void @"main.init#interp"()
   ret void
 }
 
 declare void @llvm.memmove.p0.p0.i64(ptr nocapture writeonly, ptr nocapture readonly, i64, i1 immarg) #0
 
 declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg) #0
+
+define internal fastcc void @"main.init#interp"() unnamed_addr {
+entry:
+  call void @llvm.memmove.p0.p0.i64(ptr @moveExternalDst, ptr @externalSrc, i64 2, i1 false)
+  call void @use(ptr @moveEscapedSrc)
+  call void @llvm.memmove.p0.p0.i64(ptr @moveEscapedDst, ptr @moveEscapedSrc, i64 4, i1 false)
+  call void @llvm.memcpy.p0.p0.i64(ptr @volatileDst, ptr @volatileSrc, i64 2, i1 true)
+  ret void
+}
 
 attributes #0 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
