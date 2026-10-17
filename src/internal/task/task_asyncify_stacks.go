@@ -15,6 +15,10 @@ func linkStack(t *Task) {
 	stackTasks = t
 }
 
+// DetachStack takes the current task off the stack list. A //go:wasmexport call
+// does this before its last pause, since it never resumes or exits.
+func DetachStack() { unlinkStack(currentTask) }
+
 func unlinkStack(t *Task) {
 	if t.state.prevStack != nil {
 		t.state.prevStack.state.nextStack = t.state.nextStack
@@ -31,8 +35,8 @@ func unlinkStack(t *Task) {
 // save area at the bottom and the C stack frames at the top. The gap between
 // them keeps stale words from deeper calls, which must not be treated as roots.
 func liveStackRanges(mark func(start, end uintptr)) {
-	if t := currentTask; t != nil && t.Exited {
-		// It left the list on exit but still runs until its final pause.
+	if t := currentTask; t != nil && t.state.prevStack == nil && stackTasks != t {
+		// It left the list on exit or detach but still runs until its final pause.
 		mark(getCurrentStackPointer(), uintptr(t.state.top))
 	}
 	for t := stackTasks; t != nil; t = t.state.nextStack {
