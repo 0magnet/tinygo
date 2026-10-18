@@ -1,5 +1,7 @@
 package main
 
+import "unsafe"
+
 func main() {
 	println("string equality")
 	println(a == "a")
@@ -110,6 +112,9 @@ func main() {
 	println("q1==q2", q1 == q2)
 	q2.b[3] = 0
 	println("q1==q2", q1 == q2)
+	var n1, n2 nestedPaddedStruct
+	(*[72]byte)(unsafe.Pointer(&n2))[71] = 1 // a padding byte
+	println("n1==n2", n1 == n2)
 }
 
 type plainStruct struct {
@@ -121,6 +126,14 @@ type plainStruct struct {
 type paddedStruct struct {
 	a uint8
 	b [32]uint32
+}
+
+type nestedPaddedStruct struct {
+	a [16]uint32
+	b struct {
+		x uint32
+		y uint8
+	}
 }
 
 var x = true

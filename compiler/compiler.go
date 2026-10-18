@@ -1745,23 +1745,15 @@ func (c *compilerContext) isMemequalComparison(expr *ssa.BinOp) bool {
 func (c *compilerContext) isPlainComparable(typ types.Type) bool {
 	switch typ := typ.Underlying().(type) {
 	case *types.Struct:
-		llvmType := c.getLLVMType(typ)
-		fieldTypes := llvmType.StructElementTypes()
-		if len(fieldTypes) != typ.NumFields() {
-			return false
-		}
-		offset := uint64(0)
+		size := uint64(0)
 		for i := 0; i < typ.NumFields(); i++ {
 			field := typ.Field(i)
 			if field.Name() == "_" || !c.isPlainComparable(field.Type()) {
 				return false
 			}
-			if c.targetData.ElementOffset(llvmType, i) != offset {
-				return false
-			}
-			offset += c.targetData.TypeAllocSize(fieldTypes[i])
+			size += c.targetData.TypeAllocSize(c.getLLVMType(field.Type()))
 		}
-		return offset == c.targetData.TypeAllocSize(llvmType)
+		return size == c.targetData.TypeAllocSize(c.getLLVMType(typ))
 	case *types.Array:
 		return c.isPlainComparable(typ.Elem())
 	default:
