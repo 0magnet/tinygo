@@ -285,7 +285,7 @@
 							try {
 								this._inst.exports.go_scheduler();
 							} catch (e) {
-								if (e !== wasmExit) throw e;
+								if (e !== wasmExit) throw this._crash(e);
 							}
 						}, ms);
 					},
@@ -505,14 +505,7 @@
 				this._scheduledWakeup = undefined;
 			}
 			this.exitCode = 0;
-			// syscall/js.handleEvent reads _pendingEvent and returns early only when
-			// it IsNull(). Leaving it `undefined` is not null, so handleEvent falls
-			// through to cb.Get("id") and panics with "call of Value.Get on
-			// undefined", which surfaces as RuntimeError: unreachable. Upstream Go's
-			// wasm_exec.js initializes this in its constructor; this line restores
-			// parity. Any resume() that runs without a pending event -- and resume()
-			// always spawns a handleEvent goroutine -- depends on it.
-			this._pendingEvent = null; // event awaiting dispatch by syscall/js.handleEvent
+			this._events = []; // events awaiting dispatch by syscall/js.handleEvent, oldest first
 
 			if (this._inst.exports._start) {
 				let exitPromise = new Promise((resolve, reject) => {
@@ -524,7 +517,7 @@
 				try {
 					this._inst.exports._start();
 				} catch (e) {
-					if (e !== wasmExit) throw e;
+					if (e !== wasmExit) throw this._crash(e);
 				}
 
 				await exitPromise;
@@ -541,10 +534,44 @@
 			try {
 				this._inst.exports.resume();
 			} catch (e) {
-				if (e !== wasmExit) throw e;
+				if (e !== wasmExit) throw this._crash(e);
 			}
 			if (this.exited) {
 				this._resolveExitPromise();
+			}
+		}
+
+		// _crash ends the program after a trap, or a JS exception, unwound out
+		// of the instance, and returns e for the caller to rethrow. The unwind
+		// skipped the rest of the scheduler, so the next event must not enter
+		// the instance again.
+		_crash(e) {
+			if (!this.exited) {
+				this.exited = true;
+				this.exitCode = 2;
+				if (typeof this.exit === "function") {
+					this.exit(2);
+				}
+				if (this._resolveExitPromise) {
+					this._resolveExitPromise();
+				}
+			}
+			return e;
+		}
+
+		// syscall/js.handleEvent takes the event at the head of the queue and
+		// then clears it. Every resume() starts one handleEvent goroutine, but at
+		// the back of the run queue, so a goroutine that runs first can call into
+		// JS and queue another event before it.
+		get _pendingEvent() {
+			return this._events && this._events.length ? this._events[0] : null;
+		}
+
+		set _pendingEvent(event) {
+			if (event === null) {
+				this._events.shift();
+			} else {
+				this._events.push(event);
 			}
 		}
 

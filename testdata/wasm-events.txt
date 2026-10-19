@@ -1,0 +1,7 @@
+second -> second
+first -> first
+exit 2
+crash: Error: length
+exited: true 2
+ping: Error: Go program has already exited
+run: 2

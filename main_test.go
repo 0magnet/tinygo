@@ -1314,6 +1314,29 @@ func TestWasmExport(t *testing.T) {
 
 // Test js.FuncOf (for syscall/js).
 // This test might be extended in the future to cover more cases in syscall/js.
+// Test that events queued while another waits are each dispatched, and that a
+// JavaScript exception unwinding out of the program ends it.
+func TestWasmEvents(t *testing.T) {
+	t.Parallel()
+	options := optionsFromTarget("wasm", sema)
+	buildConfig, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := builder.Build("testdata/wasm-events.go", ".wasm", t.TempDir(), buildConfig)
+	if err != nil {
+		t.Fatal("failed to build binary:", err)
+	}
+	output := &bytes.Buffer{}
+	cmd := exec.Command("node", "testdata/wasm-events.js", result.Binary)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Run(); err != nil {
+		t.Error("failed to run node:", err)
+	}
+	checkOutput(t, "testdata/wasm-events.txt", output.Bytes())
+}
+
 func TestWasmFuncOf(t *testing.T) {
 	// Build the wasm binary.
 	tmpdir := t.TempDir()
