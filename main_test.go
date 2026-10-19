@@ -324,6 +324,7 @@ func TestBuild(t *testing.T) {
 		"calls.go",
 		"cgo/",
 		"channel.go",
+		"coreassign.go",
 		"embed/",
 		"finalizer.go",
 		"finalizerbits.go",
@@ -336,6 +337,7 @@ func TestBuild(t *testing.T) {
 		"goroutines.go",
 		"init.go",
 		"init_multi.go",
+		"interface-blank.go",
 		"interface.go",
 		"json.go",
 		"localtypes/",
@@ -406,7 +408,6 @@ func TestBuild(t *testing.T) {
 		switch runtime.GOOS {
 		case "darwin", "linux":
 			for _, scheduler := range []string{"threads", "none"} {
-				scheduler := scheduler
 				t.Run("finalizerinvariants.go-gc-conservative-scheduler-"+scheduler, func(t *testing.T) {
 					t.Parallel()
 					options := compileopts.Options(hostOptions)
@@ -688,6 +689,10 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// output order, so only run it with non-threaded schedulers.
 			continue
 		}
+		if name == "coreassign.go" && spec.Scheduler != "cores" {
+			// Core assignment needs the cores scheduler.
+			continue
+		}
 		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386") {
 			switch name {
 			case "timers.go":
@@ -797,11 +802,12 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			testOptions := compileopts.Options(options)
-			if name == "finalizerinvariants.go" || name == "finalizerlarge.go" {
+			switch name {
+			case "finalizerinvariants.go", "finalizerlarge.go", "interface.go", "interface-blank.go":
 				testOptions.Tags = append(append([]string(nil), options.Tags...), "runtime_asserts")
 			}
-			if testOptions.Target == "simavr" && name == "math.go" {
-				// This test exceeds simavr's default 384-byte goroutine stack.
+			if testOptions.Target == "simavr" && (name == "math.go" || name == "string.go") {
+				// These tests exceed simavr's default 384-byte goroutine stack.
 				testOptions.StackSize = 512
 			}
 			runTest(name, testOptions, t, nil, nil)
@@ -1701,6 +1707,26 @@ func TestTest(t *testing.T) {
 
 			emuCheck(t, targ.opts)
 
+			t.Run("StringComparisons", func(t *testing.T) {
+				t.Parallel()
+
+				var wg sync.WaitGroup
+				defer wg.Wait()
+
+				out := ioLogger(t, &wg)
+				defer out.Close()
+
+				opts := targ.opts
+				opts.GC = "conservative"
+				passed, err := Test("github.com/tinygo-org/tinygo/tests/stringcompare", false, out, out, &opts, "")
+				if err != nil {
+					t.Errorf("test error: %v", err)
+				}
+				if !passed {
+					t.Error("test failed")
+				}
+			})
+
 			t.Run("Pass", func(t *testing.T) {
 				t.Parallel()
 
@@ -1799,16 +1825,14 @@ func TestTest(t *testing.T) {
 
 func ioLogger(t *testing.T, wg *sync.WaitGroup) io.WriteCloser {
 	r, w := io.Pipe()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer r.Close()
 
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			t.Log(scanner.Text())
 		}
-	}()
+	})
 
 	return w
 }

@@ -175,6 +175,29 @@ func TestCGoGlobalOrder(t *testing.T) {
 	}
 }
 
+func TestCGoPragmas(t *testing.T) {
+	mod, errs := testCompilePackage(t, &compileopts.Options{Target: "wasm"}, "cgo-pragmas.go")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	defer mod.Dispose()
+
+	fn := mod.NamedFunction("variadicNoescape")
+	if fn.IsNil() {
+		t.Fatal("missing variadicNoescape declaration")
+	}
+	if !fn.GlobalValueType().IsFunctionVarArg() {
+		t.Error("C function declaration is not variadic")
+	}
+	nocapture := fn.GetEnumAttributeAtIndex(1, llvm.AttributeKindID(llvmutil.NoCaptureAttrName()))
+	if !llvmutil.IsNoCapture(nocapture) {
+		t.Error("C function pointer parameter can escape")
+	}
+	if err := llvm.VerifyModule(mod, llvm.ReturnStatusAction); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOptimizedLargeAggregateABI(t *testing.T) {
 	options := &compileopts.Options{Target: "wasm"}
 	mod, errs := testCompilePackage(t, options, "large-optimized.go")

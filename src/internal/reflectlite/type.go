@@ -460,41 +460,45 @@ func (t *RawType) key() *RawType {
 // Field returns the type of the i'th field of this struct type. It panics if t
 // is not a struct type.
 func (t *RawType) Field(i int) StructField {
-	field := t.rawField(i)
+	descriptor, field := t.rawFieldDescriptor(i)
+	index := []int{i}
+	flagsByte, name, offset := field.decode()
 	return StructField{
-		Name:      field.Name,
-		PkgPath:   field.PkgPath,
-		Type:      field.Type, // note: converts RawType to Type
-		Tag:       field.Tag,
-		Anonymous: field.Anonymous,
-		Offset:    field.Offset,
-		Index:     []int{i},
+		Name:      name,
+		PkgPath:   structFieldPkgPath(descriptor, flagsByte),
+		Type:      field.fieldType,
+		Tag:       structFieldTag(name, flagsByte),
+		Anonymous: flagsByte&structFieldFlagAnonymous != 0,
+		Offset:    uintptr(offset),
+		Index:     index,
 	}
 }
 
-func rawStructFieldFromPointer(descriptor *structType, fieldType *RawType, data unsafe.Pointer, flagsByte uint8, name string, offset uint32) rawStructField {
-	// Read the field tag, if there is one.
-	var tag string
+// structFieldTag reads the tag that follows the NUL after name.
+func structFieldTag(name string, flagsByte uint8) StructTag {
 	if flagsByte&structFieldFlagHasTag != 0 {
-		data = unsafe.Add(data, 1) // C: data+1
+		data := unsafe.Add(unsafe.Pointer(unsafe.StringData(name)), len(name)+1)
 		tagLen, prefixLen := readUvarint(data)
 		data = unsafe.Add(data, prefixLen)
-		tag = unsafe.String((*byte)(data), tagLen)
+		return StructTag(unsafe.String((*byte)(data), tagLen))
 	}
+	return ""
+}
 
-	// Set the PkgPath to some (arbitrary) value if the package path is not
-	// exported.
-	pkgPath := ""
+func structFieldPkgPath(descriptor *structType, flagsByte uint8) string {
 	if flagsByte&structFieldFlagIsExported == 0 {
-		// This field is unexported.
-		pkgPath = readStringZ(unsafe.Pointer(descriptor.pkgpath))
+		return readStringZ(unsafe.Pointer(descriptor.pkgpath))
 	}
+	return ""
+}
 
+func rawStructFieldOf(descriptor *structType, field *structField) rawStructField {
+	flagsByte, name, offset := field.decode()
 	return rawStructField{
 		Name:      name,
-		PkgPath:   pkgPath,
-		Type:      fieldType,
-		Tag:       StructTag(tag),
+		PkgPath:   structFieldPkgPath(descriptor, flagsByte),
+		Type:      field.fieldType,
+		Tag:       structFieldTag(name, flagsByte),
 		Anonymous: flagsByte&structFieldFlagAnonymous != 0,
 		Offset:    uintptr(offset),
 	}
@@ -505,6 +509,10 @@ func rawStructFieldFromPointer(descriptor *structType, fieldType *RawType, data 
 //
 // For internal use only.
 func (t *RawType) rawField(n int) rawStructField {
+	return rawStructFieldOf(t.rawFieldDescriptor(n))
+}
+
+func (t *RawType) rawFieldDescriptor(n int) (*structType, *structField) {
 	if t.Kind() != Struct {
 		panic(errTypeField)
 	}
@@ -513,24 +521,14 @@ func (t *RawType) rawField(n int) rawStructField {
 		panic("reflect: field index out of range")
 	}
 
-	// Iterate over all the fields to calculate the offset.
-	// This offset could have been stored directly in the array (to make the
-	// lookup faster), but by calculating it on-the-fly a bit of storage can be
-	// saved.
 	field := (*structField)(unsafe.Add(unsafe.Pointer(&descriptor.fields[0]), uintptr(n)*unsafe.Sizeof(structField{})))
-	data := field.data
+	return descriptor, field
+}
 
-	// Read some flags of this field, like whether the field is an embedded
-	// field. See structFieldFlagAnonymous and similar flags.
-	flagsByte := *(*byte)(data)
-	data = unsafe.Add(data, 1)
+func (field *structField) decode() (flagsByte uint8, name string, offset uint32) {
+	data := unsafe.Add(field.data, 1)
 	offset, lenOffs := uvarint32(unsafe.Slice((*byte)(data), maxVarintLen32))
-	data = unsafe.Add(data, lenOffs)
-
-	name := readStringZ(data)
-	data = unsafe.Add(data, len(name))
-
-	return rawStructFieldFromPointer(descriptor, field.fieldType, data, flagsByte, name, offset)
+	return *(*uint8)(field.data), readStringZ(unsafe.Add(data, lenOffs)), offset
 }
 
 // rawFieldByNameFunc returns nearly the same value as FieldByNameFunc but without converting the
@@ -569,23 +567,12 @@ func (t *RawType) rawFieldByNameFunc(match func(string) bool) (rawStructField, [
 
 			for i := uint16(0); i < descriptor.numField; i++ {
 				field := (*structField)(unsafe.Add(unsafe.Pointer(&descriptor.fields[0]), uintptr(i)*unsafe.Sizeof(structField{})))
-				data := field.data
-
-				// Read some flags of this field, like whether the field is an embedded
-				// field. See structFieldFlagAnonymous and similar flags.
-				flagsByte := *(*byte)(data)
-				data = unsafe.Add(data, 1)
-
-				offset, lenOffs := uvarint32(unsafe.Slice((*byte)(data), maxVarintLen32))
-				data = unsafe.Add(data, lenOffs)
-
-				name := readStringZ(data)
-				data = unsafe.Add(data, len(name))
+				flagsByte, name, _ := field.decode()
 				if match(name) {
 					if count[scan.t] > 1 || found {
 						return rawStructField{}, nil, false
 					}
-					result = rawStructFieldFromPointer(descriptor, field.fieldType, data, flagsByte, name, offset)
+					result = rawStructFieldOf(descriptor, field)
 					resultIndex = append(scan.index[:len(scan.index):len(scan.index)], int(i))
 					found = true
 					continue
@@ -1198,6 +1185,13 @@ func (t *RawType) FieldByNameFunc(match func(string) bool) (StructField, bool) {
 }
 
 func (t *RawType) FieldByIndex(index []int) StructField {
+	if t.Kind() != Struct {
+		panic(errTypeFieldByIndex)
+	}
+	if len(index) == 0 {
+		return StructField{Type: t}
+	}
+
 	ftype := t
 	var field rawStructField
 

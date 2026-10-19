@@ -37,7 +37,6 @@ func runTest(t *testing.T, pathPrefix string) {
 	// Read the input IR.
 	ctx := llvm.NewContext()
 	defer ctx.Dispose()
-	ensureTestCacheFreshness(t, pathPrefix+".ll")
 	buf, err := llvm.NewMemoryBufferFromFile(pathPrefix + ".ll")
 	if err != nil {
 		t.Fatalf("could not read file %s: %v", pathPrefix+".ll", err)
@@ -182,14 +181,10 @@ func filterIrrelevantIRLines(lines []string) []string {
 	return out
 }
 
-// TestInterpLargeArray serializes a mostly-zero global that init has written
-// to. Each element used to be handed the rest of the buffer rather than its
-// own bytes, and the zero check rescanned all of it, which made this
-// quadratic: at the size of a per-rune lookup table it took about half an
-// hour.
+// TestInterpLargeArray checks that a large global written by an init function
+// is serialized in linear time. It used to take about half an hour.
 func TestInterpLargeArray(t *testing.T) {
 	t.Parallel()
-	ensureTestCacheFreshness(t, "testdata/largearray.ll")
 	ctx := llvm.NewContext()
 	defer ctx.Dispose()
 	buf, err := llvm.NewMemoryBufferFromFile("testdata/largearray.ll")
@@ -217,18 +212,9 @@ func TestInterpLargeArray(t *testing.T) {
 	}
 	got := plane.ConstGetAsString()
 	if len(got) != 0x110000 || got[0] != 1 || got[767] != 2 || strings.Trim(got[1:767]+got[768:], "\x00") != "" {
-		t.Errorf("first plane holds the wrong bytes")
+		t.Error("first plane holds the wrong bytes")
 	}
 	if !init.Operand(1).IsNull() {
-		t.Errorf("second plane is not zero")
-	}
-}
-
-// ensureTestCacheFreshness registers path as an input of the running test.
-// see https://github.com/tinygo-org/tinygo/issues/5780.
-func ensureTestCacheFreshness(t *testing.T, path string) {
-	t.Helper()
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("could not stat test fixture %s: %v", path, err)
+		t.Error("second plane is not zero")
 	}
 }

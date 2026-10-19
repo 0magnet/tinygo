@@ -400,25 +400,21 @@ func signal_enable(s uint32) {
 		runtimePanicAt(returnAddress(0), errUnsupportedSignal)
 	}
 
-	// This is intentonally a non-atomic store. This is safe, since hasSignals
-	// is only used in waitForEvents which is only called when there's a
-	// scheduler (and therefore there is no parallelism).
+	// Non-atomic on purpose. Only waitForEvents reads hasSignals, and the
+	// threads scheduler never calls it, so the watcher does not depend on it.
 	hasSignals = true
 
-	// Under the threads scheduler checkSignals() is only reached from
-	// sleepTicks(), so start a watcher thread. Other schedulers skip this.
+	// Under the threads scheduler only sleepTicks reaches checkSignals.
 	startSignalWatcher()
 
 	// It's easier to implement this function in C.
 	tinygo_signal_enable(s)
 }
 
-// signalWatcherStarted is set by whoever starts the watcher thread. It stays
-// set, because the watcher serves signals for the rest of the process.
+// signalWatcherStarted is never cleared, the watcher never exits.
 var signalWatcherStarted atomic.Bool
 
-// startSignalWatcher starts the watcher thread on the first enabled signal,
-// under the threads scheduler only (!hasScheduler && hasParallelism).
+// startSignalWatcher starts the watcher once, under the threads scheduler only.
 func startSignalWatcher() {
 	if hasScheduler || !hasParallelism {
 		return
@@ -428,8 +424,8 @@ func startSignalWatcher() {
 	}
 }
 
-// signalWatcher runs on its own thread under the threads scheduler, mirroring
-// the signal half of waitForEvents(), which that scheduler never calls.
+// signalWatcher mirrors the signal half of waitForEvents. A futex wait that
+// returns early (EINTR) is harmless, Swap(0) is 0 and the loop waits again.
 func signalWatcher() {
 	for {
 		// Block until the signal handler bumps the futex from 0 to 1.
@@ -507,6 +503,11 @@ func signal_recv() uint32 {
 			if signalRecvWaiter.Swap(task.Current()) != nil {
 				// We expect only a single goroutine to call signal_recv.
 				runtimeFatal("signal_recv called concurrently")
+			}
+			// A signal that arrived before the waiter was published found no waiter.
+			// Take the waiter back and loop, unless checkSignals already took it.
+			if receivedSignals.Load() != 0 && signalRecvWaiter.Swap(nil) != nil {
+				continue
 			}
 			task.Pause()
 			continue

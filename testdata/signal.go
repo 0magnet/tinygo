@@ -17,8 +17,7 @@ func main() {
 	// Send the signal.
 	syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 
-	// Receive it directly, with nothing sleeping anywhere. Under the threads
-	// scheduler only the watcher can deliver it, so this hangs without the fix.
+	// Nothing sleeps here, so only the watcher can deliver it under threads.
 	if sig := <-c; sig == syscall.SIGUSR1 {
 		println("got expected signal")
 	} else {

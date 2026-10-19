@@ -23,6 +23,8 @@ func main() {
 	println(intSliceSrc[0])
 	println(intSliceDst[0])
 	println("ptradd:", ptrAdd == uintptr(unsafe.Pointer(&ptrArr[1])))
+	println("loaded:", loaded)
+	println("shifted:", string(shifted[:]), shiftDone)
 }
 
 type (
@@ -114,6 +116,35 @@ func sliceSlice(s []int, start, end int) []int {
 }
 
 type outside struct{}
+
+var (
+	loadPair struct{ a, b int }
+	loaded   int
+)
+
+func loadA() int { return loadPair.a }
+
+// The value loaded by loadA must not change when init stores to loadPair.a.
+func init() {
+	loadPair.a = 1
+	x := loadA()
+	loadPair.a = 2
+	loaded = x
+}
+
+// The copy runs in interp, then the function is reverted and run again at
+// runtime. The reverted copy must not change the initial value of shifted.
+var (
+	shifted   = [4]byte{'A', 'B', 'C', 'D'}
+	shiftDone = shift()
+)
+
+func shift() int {
+	defer func() {}()
+	copy(shifted[1:], shifted[:3])
+	println("shift")
+	return 1
+}
 
 func init() {
 	_, _ = any(0).(interface{ DoesNotExist() })

@@ -1208,6 +1208,9 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 	}
 
 	b.addStandardDefinedAttributes(b.llvmFn)
+	if b.info.noruntime {
+		b.llvmFn.AddFunctionAttr(b.ctx.CreateStringAttribute("tinygo-noruntime", ""))
+	}
 	if !b.info.exported {
 		// Do not set visibility for local linkage (internal or private).
 		// Otherwise a "local linkage requires default visibility"
@@ -1695,8 +1698,8 @@ func (b *builder) isOversizedAggregate(typ types.Type) bool {
 
 func (b *builder) isAggregateValue(typ types.Type) bool {
 	if tuple, ok := typ.(*types.Tuple); ok {
-		for i := 0; i < tuple.Len(); i++ {
-			if !isLLVMValueType(tuple.At(i).Type()) {
+		for v := range tuple.Variables() {
+			if !isLLVMValueType(v.Type()) {
 				return false
 			}
 		}
@@ -3115,10 +3118,7 @@ func isByteSliceToStringComparison(expr *ssa.Convert) bool {
 		return false
 	}
 	comparison := adjacentComparison(expr, isByteSliceToStringConvert)
-	return comparison != nil &&
-		isComparisonOp(comparison.Op) &&
-		isByteSliceToStringConvert(comparison.X) &&
-		isByteSliceToStringConvert(comparison.Y)
+	return comparison != nil && isComparisonOp(comparison.Op)
 }
 
 func isComparisonOp(op token.Token) bool {

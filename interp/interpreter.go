@@ -162,34 +162,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 			}
 			continue
 		}
-		switch inst.opcode {
-		case llvm.Ret:
-			if time.Since(r.start) > r.timeout {
-				// Running for more than the allowed timeout; This shouldn't happen, but it does.
-				// See github.com/tinygo-org/tinygo/issues/2124
-				// errTimeout is recoverable: rather than abort the whole build,
-				// the caller reverts this package initializer to a runtime call
-				// (so heavy compile-time-uncomputable init like crypto AES/secp256k1
-				// key expansion just runs at program startup, as on native Go).
-				if r.debug {
-					fmt.Fprintf(os.Stderr, "interp: %s: timing out after %s (executed calls: %d); leaving as runtime init\n", r.pkgName, r.timeout, r.callsExecuted)
-				}
-				return nil, mem, r.errorAt(fn.blocks[0].instructions[0], errTimeout)
-			}
-
-			if len(operands) != 0 {
-				if r.debug {
-					fmt.Fprintln(os.Stderr, indent+"ret", operands[0])
-				}
-				// Return instruction has a value to return.
-				return operands[0], mem, nil
-			}
-			if r.debug {
-				fmt.Fprintln(os.Stderr, indent+"ret")
-			}
-			// Return instruction doesn't return anything, it's just 'ret void'.
-			return nil, mem, nil
-		case opBr:
+		if inst.branch {
 			switch len(operands) {
 			case 1:
 				// Unconditional branch: [nextBB]
@@ -219,6 +192,33 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 			default:
 				panic("unknown operands length")
 			}
+			continue
+		}
+		switch inst.opcode {
+		case llvm.Ret:
+			if time.Since(r.start) > r.timeout {
+				// Running for more than the allowed timeout; This shouldn't happen, but it does.
+				// See github.com/tinygo-org/tinygo/issues/2124
+				// errTimeout is recoverable: the caller reverts this package initializer to a
+				// runtime call, so init that interp cannot finish runs at program startup.
+				if r.debug {
+					fmt.Fprintf(os.Stderr, "interp: %s: timing out after %s (executed calls: %d); leaving as runtime init\n", r.pkgName, r.timeout, r.callsExecuted)
+				}
+				return nil, mem, r.errorAt(fn.blocks[0].instructions[0], errTimeout)
+			}
+
+			if len(operands) != 0 {
+				if r.debug {
+					fmt.Fprintln(os.Stderr, indent+"ret", operands[0])
+				}
+				// Return instruction has a value to return.
+				return operands[0], mem, nil
+			}
+			if r.debug {
+				fmt.Fprintln(os.Stderr, indent+"ret")
+			}
+			// Return instruction doesn't return anything, it's just 'ret void'.
+			return nil, mem, nil
 		case llvm.Switch:
 			// Switch statement: [value, defaultLabel, case0, label0, case1, label1, ...]
 			value := operands[0].Uint(r)

@@ -1,8 +1,7 @@
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64--linux"
 
-; Shaped like go-runewidth's strictWidthLUT: one byte per rune in each of two
-; planes, with init writing only the start of the first.
+; One byte per rune in two planes, like the width table in go-runewidth.
 @lut = global [2 x [1114112 x i8]] zeroinitializer
 
 define void @runtime.initAll() unnamed_addr {
