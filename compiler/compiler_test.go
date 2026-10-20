@@ -198,6 +198,59 @@ func TestCGoPragmas(t *testing.T) {
 	}
 }
 
+func TestPragmaSourceBodies(t *testing.T) {
+	t.Run("definitions", func(t *testing.T) {
+		mod, errs := testCompilePackage(t, &compileopts.Options{Target: "wasm"}, "pragma-dependencies.go")
+		defer mod.Dispose()
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		for _, name := range []string{
+			"github.com/tinygo-org/tinygo/compiler/testdata/pragmadeps.Definition",
+			"(*github.com/tinygo-org/tinygo/compiler/testdata/pragmadeps.Register).Get",
+			"github.com/tinygo-org/tinygo/compiler/testdata/pragmadeps.Section",
+			"github.com/tinygo-org/tinygo/compiler/testdata/pragmadeps.Interrupt",
+			"github.com/tinygo-org/tinygo/compiler/testdata/pragmadeps.WasmExport",
+		} {
+			fn := mod.NamedFunction(name)
+			if fn.IsNil() {
+				t.Fatalf("missing dependency function %s", name)
+			}
+			if fn.BasicBlocksCount() != 0 {
+				t.Errorf("dependency function %s was built", name)
+			}
+		}
+		if err := llvm.VerifyModule(mod, llvm.ReturnStatusAction); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("placements", func(t *testing.T) {
+		data, err := os.ReadFile("testdata/pragmadeps/pragma.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var expected []string
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if after, ok := strings.CutPrefix(line, "// ERROR: "); ok {
+				expected = append(expected, after)
+			}
+		}
+
+		mod, errs := testCompilePackage(t, &compileopts.Options{Target: "wasm"}, "pragma-dependency-errors.go")
+		defer mod.Dispose()
+		var actual []string
+		for _, err := range errs {
+			actual = append(actual, err.(types.Error).Msg)
+		}
+		slices.Sort(expected)
+		slices.Sort(actual)
+		if !slices.Equal(expected, actual) {
+			t.Errorf("expected errors %q, got %q", expected, actual)
+		}
+	})
+}
+
 func TestOptimizedLargeAggregateABI(t *testing.T) {
 	options := &compileopts.Options{Target: "wasm"}
 	mod, errs := testCompilePackage(t, options, "large-optimized.go")
@@ -702,12 +755,6 @@ func normalizeCapturesAttr(s string) string {
 // stripped out.
 func filterIrrelevantIRLines(lines []string) []string {
 	var out []string
-	llvmVersion, err := strconv.Atoi(strings.Split(llvm.Version, ".")[0])
-	if err != nil {
-		// Note: this should never happen and if it does, it will always happen
-		// for a particular build because llvm.Version is a constant.
-		panic(err)
-	}
 	for _, line := range lines {
 		line = strings.Split(line, ";")[0]  // strip out comments/info
 		line = strings.TrimRight(line, " ") // remove trailing spaces from comments
@@ -718,11 +765,6 @@ func filterIrrelevantIRLines(lines []string) []string {
 			continue
 		}
 		if strings.HasPrefix(line, "@tinygo.indirect-abi = ") {
-			continue
-		}
-		if llvmVersion < 15 && strings.HasPrefix(line, "target datalayout = ") {
-			// The datalayout string may vary betewen LLVM versions.
-			// Right now test outputs are for LLVM 15 and higher.
 			continue
 		}
 		out = append(out, line)
