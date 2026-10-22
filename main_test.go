@@ -357,6 +357,7 @@ func TestBuild(t *testing.T) {
 		"structs.go",
 		"testing.go",
 		"timers.go",
+		"weak.go",
 		"zeroalloc.go",
 	}
 
@@ -690,6 +691,10 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 		}
 		if name == "coreassign.go" && spec.Scheduler != "cores" {
 			// Core assignment needs the cores scheduler.
+			continue
+		}
+		if name == "weak.go" && spec.GC != "boehm" {
+			// Only the boehm GC clears weak pointers.
 			continue
 		}
 		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386") {

@@ -1,0 +1,5 @@
+dropped objects collected: true
+kept object alive: true
+Make(p) == Make(p): true
+distinct pointers differ: true
+global alive: true
