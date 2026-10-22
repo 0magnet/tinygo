@@ -72,12 +72,19 @@ void tinygo_task_init(void *mainTask, pthread_t *thread, int *numCPU, void *cont
 
 void tinygo_task_exited(void*);
 
+#ifdef __linux__
+void tinygo_signal_thread_init(int is_main);
+#endif
+
 // Helper to start a goroutine while also storing the 'task' structure.
 static void* start_wrapper(void *arg) {
     struct state_pass *state = arg;
     void *(*start)(void*) = state->start;
     void *args = state->args;
     current_task = state->task;
+    #ifdef __linux__
+    tinygo_signal_thread_init(0);
+    #endif
 
     // Save the current stack pointer in the goroutine state, for the GC.
     int stackAddr;

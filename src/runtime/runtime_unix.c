@@ -9,6 +9,11 @@
 #include <stdint.h>
 #include <ucontext.h>
 #include <string.h>
+#if __linux__
+#include <pthread.h>
+#include <sys/resource.h>
+#include <stdlib.h>
+#endif
 
 void tinygo_handle_fatal_signal(int sig, uintptr_t addr);
 
@@ -87,8 +92,77 @@ static int redirect_to_sigpanic(int sig, ucontext_t *uctx) {
 	return 1;
 }
 
+#if __linux__
+// A thread that runs out of stack faults in the guard page below it. The
+// handler then needs a stack of its own, and must not push onto the full one.
+#define SIGNAL_STACK_SIZE (32 * 1024)
+#define OVERFLOW_WINDOW   (64 * 1024)
+#define SA_FATAL          (SA_SIGINFO | SA_RESETHAND | SA_ONSTACK)
+
+void tinygo_handle_stack_overflow(int sig);
+
+static __thread uintptr_t stack_lo;
+static pthread_key_t signal_stack_key;
+static pthread_once_t signal_stack_once = PTHREAD_ONCE_INIT;
+
+static void signal_stack_free(void *stack) {
+	stack_t ss = { .ss_flags = SS_DISABLE };
+	sigaltstack(&ss, NULL);
+	free(stack);
+}
+
+static void signal_stack_key_init(void) {
+	pthread_key_create(&signal_stack_key, signal_stack_free);
+}
+
+// Give the calling thread a signal stack and record where its stack ends. The
+// main thread's stack grows on demand, up to RLIMIT_STACK below its top.
+void tinygo_signal_thread_init(int is_main) {
+	pthread_attr_t attr;
+	if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+		void *addr;
+		size_t size;
+		if (pthread_attr_getstack(&attr, &addr, &size) == 0) {
+			stack_lo = (uintptr_t)addr;
+			struct rlimit rl;
+			if (is_main && getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
+				rl.rlim_cur < stack_lo + size) {
+				stack_lo = stack_lo + size - rl.rlim_cur;
+			}
+		}
+		pthread_attr_destroy(&attr);
+	}
+	void *stack = malloc(SIGNAL_STACK_SIZE);
+	if (stack == NULL) {
+		return;
+	}
+	stack_t ss = { .ss_sp = stack, .ss_size = SIGNAL_STACK_SIZE };
+	if (sigaltstack(&ss, NULL) != 0) {
+		free(stack);
+		return;
+	}
+	pthread_once(&signal_stack_once, signal_stack_key_init);
+	pthread_setspecific(signal_stack_key, stack);
+}
+
+static int is_stack_overflow(int sig, siginfo_t *info) {
+	uintptr_t addr = (uintptr_t)info->si_addr;
+	return (sig == SIGSEGV || sig == SIGBUS) && stack_lo != 0 &&
+		addr + OVERFLOW_WINDOW >= stack_lo && addr < stack_lo + OVERFLOW_WINDOW;
+}
+#else
+#define SA_FATAL (SA_SIGINFO | SA_RESETHAND)
+#endif
+
 static void signal_handler(int sig, siginfo_t *info, void *context) {
 	ucontext_t* uctx = context;
+
+#if __linux__
+	if (is_stack_overflow(sig, info)) {
+		tinygo_handle_stack_overflow(sig);
+		return;
+	}
+#endif
 
 	// Try to redirect to sigpanic for a recoverable panic.
 	if (redirect_to_sigpanic(sig, uctx)) {
@@ -97,7 +171,7 @@ static void signal_handler(int sig, siginfo_t *info, void *context) {
 		// stack overflow during panic).
 		struct sigaction act;
 		memset(&act, 0, sizeof(act));
-		act.sa_flags = SA_SIGINFO | SA_RESETHAND;
+		act.sa_flags = SA_FATAL;
 		act.sa_sigaction = &signal_handler;
 		sigaction(sig, &act, NULL);
 		return; // return from signal handler; execution resumes at sigpanic
@@ -132,10 +206,14 @@ static void signal_handler(int sig, siginfo_t *info, void *context) {
 }
 
 void tinygo_register_fatal_signals(void) {
+#if __linux__
+	tinygo_signal_thread_init(1);
+#endif
 	struct sigaction act = { 0 };
 	// SA_SIGINFO:   we want the 2 extra parameters
 	// SA_RESETHAND: only catch the signal once (the handler will re-raise the signal)
-	act.sa_flags = SA_SIGINFO | SA_RESETHAND;
+	// SA_ONSTACK:   run on the thread's signal stack, on Linux
+	act.sa_flags = SA_FATAL;
 	act.sa_sigaction = &signal_handler;
 
 	// Register the signal handler for common issues. There are more signals,
