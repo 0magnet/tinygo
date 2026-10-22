@@ -394,9 +394,8 @@ func (t *rawType) CanSeq() bool {
 	case Int8, Int16, Int32, Int64, Int, Uint8, Uint16, Uint32, Uint64, Uint, Uintptr, Array, Slice, Chan, String, Map:
 		return true
 	case Func:
-		// TODO: implement canRangeFunc
-		// return canRangeFunc(t)
-		panic("unimplemented: (reflect.Type).CanSeq() for functions")
+		// TINYGO: func signatures are not kept, so iterator funcs are not detected.
+		return false
 	case Pointer:
 		return t.Elem().Kind() == Array
 	}
@@ -408,9 +407,7 @@ func (t *rawType) CanSeq2() bool {
 	case Array, Slice, String, Map:
 		return true
 	case Func:
-		// TODO: implement canRangeFunc2
-		// return canRangeFunc2(t)
-		panic("unimplemented: (reflect.Type).CanSeq2() for functions")
+		return false
 	case Pointer:
 		return t.Elem().Kind() == Array
 	}
@@ -459,8 +456,11 @@ func (t *rawType) Implements(u Type) bool {
 	return t.RawType.Implements(&(u.(*rawType).RawType))
 }
 
+// TINYGO: func type descriptors carry no parameter or result types, so a func
+// type reports none and In and Out are always out of range.
 func (t *rawType) In(i int) Type {
-	panic("unimplemented: (reflect.Type).In()")
+	t.mustBeFunc("In")
+	panic("reflect: Function index out of range")
 }
 
 func (t *rawType) Ins() iter.Seq[Type] {
@@ -474,19 +474,26 @@ func (t *rawType) Ins() iter.Seq[Type] {
 }
 
 func (t *rawType) IsVariadic() bool {
-	panic("unimplemented: (reflect.Type).IsVariadic()")
+	t.mustBeFunc("IsVariadic")
+	return false
 }
 
 func (t *rawType) Key() Type {
 	return toType(t.RawType.Key())
 }
 
+// TINYGO: method names, types and funcs are not kept at run time. Method returns
+// only the Index, and MethodByName finds nothing, so callers fall back as they
+// would for a type without the method.
 func (t *rawType) Method(i int) Method {
-	panic("unimplemented: (reflect.Type).Method()")
+	if i < 0 || i >= t.NumMethod() {
+		panic("reflect: Method index out of range")
+	}
+	return Method{Index: i}
 }
 
 func (t *rawType) MethodByName(name string) (Method, bool) {
-	panic("unimplemented: (reflect.Type).MethodByName()")
+	return Method{}, false
 }
 
 func (t *rawType) Methods() iter.Seq[Method] {
@@ -500,15 +507,24 @@ func (t *rawType) Methods() iter.Seq[Method] {
 }
 
 func (t *rawType) NumIn() int {
-	panic("unimplemented: (reflect.Type).NumIn()")
+	t.mustBeFunc("NumIn")
+	return 0
 }
 
 func (t *rawType) NumOut() int {
-	panic("unimplemented: (reflect.Type).NumOut()")
+	t.mustBeFunc("NumOut")
+	return 0
 }
 
 func (t *rawType) Out(i int) Type {
-	panic("unimplemented: (reflect.Type).Out()")
+	t.mustBeFunc("Out")
+	panic("reflect: Function index out of range")
+}
+
+func (t *rawType) mustBeFunc(method string) {
+	if t.Kind() != Func {
+		panic("reflect: " + method + " of non-func type " + t.String())
+	}
 }
 
 func (t *rawType) Outs() iter.Seq[Type] {

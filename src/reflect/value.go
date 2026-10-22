@@ -206,24 +206,30 @@ func MakeChan(typ Type, buffer int) Value {
 	return Value{reflectlite.MakeChan(toRawType(typ), buffer)}
 }
 
+// TINYGO: there is no way to call a func with arguments built at run time.
 func (v Value) Call(in []Value) []Value {
-	panic("unimplemented: (reflect.Value).Call()")
+	panic("reflect: Value.Call is not supported by TinyGo")
 }
 
 func (v Value) CallSlice(in []Value) []Value {
-	panic("unimplemented: (reflect.Value).CallSlice()")
+	panic("reflect: Value.CallSlice is not supported by TinyGo")
 }
 
 func (v Value) Equal(u Value) bool {
 	return v.Value.Equal(u.Value)
 }
 
+// TINYGO: methods cannot be called (see Call), so Method and MethodByName
+// return the zero Value, which callers treat as no such method.
 func (v Value) Method(i int) Value {
-	panic("unimplemented: (reflect.Value).Method()")
+	if i < 0 || i >= v.NumMethod() {
+		panic("reflect: Method index out of range")
+	}
+	return Value{}
 }
 
 func (v Value) MethodByName(name string) Value {
-	panic("unimplemented: (reflect.Value).MethodByName()")
+	return Value{}
 }
 
 func (v Value) Recv() (x Value, ok bool) {
