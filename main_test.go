@@ -348,6 +348,7 @@ func TestBuild(t *testing.T) {
 		"oldgo/",
 		"print.go",
 		"reflect.go",
+		"reflectmethod.go",
 		"signal.go",
 		"signalnotify.go",
 		"slice.go",
@@ -722,7 +723,7 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// Not all tests are currently supported on AVR.
 			// Skip the ones that aren't.
 			switch name {
-			case "reflect.go":
+			case "reflect.go", "reflectmethod.go":
 				// Reflect tests do not run correctly, probably because of the
 				// limited amount of memory.
 				continue
