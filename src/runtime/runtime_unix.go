@@ -159,6 +159,18 @@ func tinygo_sigpanic() {
 	}
 }
 
+// A thread ran into the guard page below its stack. The signal is raised again
+// for its default action, as in tinygo_handle_fatal_signal.
+//
+//export tinygo_handle_stack_overflow
+func tinygo_handle_stack_overflow(sig int32) {
+	if panicStrategy() == tinygo.PanicStrategyTrap {
+		trap()
+	}
+	println("fatal error: goroutine stack overflow; build with a larger -stack-size")
+	raise(sig)
+}
+
 // Print fatal errors when they happen, including the instruction location.
 // With the particular formatting below, `tinygo run` can extract the location
 // where the signal happened and try to show the source location based on DWARF
