@@ -6,4 +6,6 @@ Value.MethodByName valid: false
 Value.Method valid: false
 Value.Method valid: false
 Field by name: x
-func NumIn NumOut IsVariadic: 0 0 false
+func NumIn NumOut IsVariadic: 1 1 false
+func String: func(int) error
+func Call: 5

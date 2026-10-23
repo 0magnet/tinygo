@@ -29,4 +29,7 @@ func main() {
 
 	ft := reflect.TypeOf(func(int) error { return nil })
 	println("func NumIn NumOut IsVariadic:", ft.NumIn(), ft.NumOut(), ft.IsVariadic())
+	println("func String:", ft.String())
+	add := func(a, b int) int { return a + b }
+	println("func Call:", reflect.ValueOf(add).Call([]reflect.Value{reflect.ValueOf(2), reflect.ValueOf(3)})[0].Int())
 }
