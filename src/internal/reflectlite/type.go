@@ -199,6 +199,21 @@ type interfaceType struct {
 	methods methodSet
 }
 
+// funcType is a Func type descriptor. The params array holds numIn parameter
+// types followed by the result types; bit 15 of numOut (funcVariadic) marks a
+// variadic signature. ptrTo sits where it does in interfaceType.
+type funcType struct {
+	RawType
+	ptrTo  *RawType
+	numIn  uint16
+	numOut uint16
+	call   unsafe.Pointer
+	params [0]*RawType
+}
+
+// funcVariadic must match the constant in compiler/interface.go.
+const funcVariadic = 0x8000
+
 type arrayType struct {
 	RawType
 	numMethod uint16
@@ -393,6 +408,34 @@ func (t *RawType) String() string {
 	case Interface:
 		// TODO(dgryski): Needs actual method set info
 		return "interface {}"
+	case Func:
+		s := "func("
+		for i, n := 0, t.NumIn(); i < n; i++ {
+			if i > 0 {
+				s += ", "
+			}
+			if i == n-1 && t.IsVariadic() {
+				s += "..." + t.In(i).elem().String()
+			} else {
+				s += t.In(i).String()
+			}
+		}
+		s += ")"
+		switch n := t.NumOut(); n {
+		case 0:
+		case 1:
+			s += " " + t.Out(0).String()
+		default:
+			s += " ("
+			for i := 0; i < n; i++ {
+				if i > 0 {
+					s += ", "
+				}
+				s += t.Out(i).String()
+			}
+			s += ")"
+		}
+		return s
 	default:
 		return t.Kind().String()
 	}
@@ -1409,4 +1452,43 @@ func uvarint32(buf []byte) (uint32, int) {
 func TypeFor[T any]() Type {
 	// This function was copied from the Go 1.22 source tree.
 	return TypeOf((*T)(nil)).Elem()
+}
+
+func (t *RawType) funcType(method string) *funcType {
+	if t.Kind() != Func {
+		panic(&TypeError{Method: method})
+	}
+	return (*funcType)(unsafe.Pointer(t.underlying()))
+}
+
+// NumIn returns a function type's input parameter count.
+func (t *RawType) NumIn() int { return int(t.funcType("NumIn").numIn) }
+
+// NumOut returns a function type's output parameter count.
+func (t *RawType) NumOut() int { return int(t.funcType("NumOut").numOut &^ funcVariadic) }
+
+// IsVariadic reports whether a function type's final input parameter is a
+// "..." parameter.
+func (t *RawType) IsVariadic() bool { return t.funcType("IsVariadic").numOut&funcVariadic != 0 }
+
+// In returns the type of a function type's i'th input parameter.
+func (t *RawType) In(i int) *RawType {
+	ft := t.funcType("In")
+	if i < 0 || i >= int(ft.numIn) {
+		panic("reflect: Function index out of range")
+	}
+	return ft.param(i)
+}
+
+// Out returns the type of a function type's i'th output parameter.
+func (t *RawType) Out(i int) *RawType {
+	ft := t.funcType("Out")
+	if i < 0 || i >= int(ft.numOut&^funcVariadic) {
+		panic("reflect: Function index out of range")
+	}
+	return ft.param(int(ft.numIn) + i)
+}
+
+func (ft *funcType) param(i int) *RawType {
+	return *(**RawType)(unsafe.Add(unsafe.Pointer(&ft.params), uintptr(i)*unsafe.Sizeof(uintptr(0))))
 }

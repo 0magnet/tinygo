@@ -456,11 +456,9 @@ func (t *rawType) Implements(u Type) bool {
 	return t.RawType.Implements(&(u.(*rawType).RawType))
 }
 
-// TINYGO: func type descriptors carry no parameter or result types, so a func
-// type reports none and In and Out are always out of range.
 func (t *rawType) In(i int) Type {
 	t.mustBeFunc("In")
-	panic("reflect: Function index out of range")
+	return toType(t.RawType.In(i))
 }
 
 func (t *rawType) Ins() iter.Seq[Type] {
@@ -475,7 +473,7 @@ func (t *rawType) Ins() iter.Seq[Type] {
 
 func (t *rawType) IsVariadic() bool {
 	t.mustBeFunc("IsVariadic")
-	return false
+	return t.RawType.IsVariadic()
 }
 
 func (t *rawType) Key() Type {
@@ -508,17 +506,17 @@ func (t *rawType) Methods() iter.Seq[Method] {
 
 func (t *rawType) NumIn() int {
 	t.mustBeFunc("NumIn")
-	return 0
+	return t.RawType.NumIn()
 }
 
 func (t *rawType) NumOut() int {
 	t.mustBeFunc("NumOut")
-	return 0
+	return t.RawType.NumOut()
 }
 
 func (t *rawType) Out(i int) Type {
 	t.mustBeFunc("Out")
-	panic("reflect: Function index out of range")
+	return toType(t.RawType.Out(i))
 }
 
 func (t *rawType) mustBeFunc(method string) {

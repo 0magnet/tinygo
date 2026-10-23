@@ -206,13 +206,28 @@ func MakeChan(typ Type, buffer int) Value {
 	return Value{reflectlite.MakeChan(toRawType(typ), buffer)}
 }
 
-// TINYGO: there is no way to call a func with arguments built at run time.
 func (v Value) Call(in []Value) []Value {
-	panic("reflect: Value.Call is not supported by TinyGo")
+	return fromLite(v.Value.Call(toLite(in)))
 }
 
 func (v Value) CallSlice(in []Value) []Value {
-	panic("reflect: Value.CallSlice is not supported by TinyGo")
+	return fromLite(v.Value.CallSlice(toLite(in)))
+}
+
+func toLite(in []Value) []reflectlite.Value {
+	out := make([]reflectlite.Value, len(in))
+	for i, v := range in {
+		out[i] = v.Value
+	}
+	return out
+}
+
+func fromLite(in []reflectlite.Value) []Value {
+	out := make([]Value, len(in))
+	for i, v := range in {
+		out[i] = Value{v}
+	}
+	return out
 }
 
 func (v Value) Equal(u Value) bool {

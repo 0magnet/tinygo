@@ -25,6 +25,11 @@ import (
 // src/internal/reflectlite/type.go.
 const numMethodHasMethodSet = 0x8000
 
+// funcVariadic is a flag in bit 15 of the numOut field of a Func type
+// descriptor, set for a variadic signature. Must match the constant in
+// src/internal/reflectlite/type.go.
+const funcVariadic = 0x8000
+
 func reflectTypeName(typ *types.Named) string {
 	name := typ.Obj().Name()
 	if typ.TypeArgs().Len() == 0 {
@@ -331,8 +336,11 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 		case *types.Signature:
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "ptrTo", types.Typ[types.UnsafePointer]),
+				types.NewVar(token.NoPos, nil, "numIn", types.Typ[types.Uint16]),
+				types.NewVar(token.NoPos, nil, "numOut", types.Typ[types.Uint16]),
+				types.NewVar(token.NoPos, nil, "call", types.Typ[types.UnsafePointer]),
+				types.NewVar(token.NoPos, nil, "params", types.NewArray(types.Typ[types.UnsafePointer], int64(typ.Params().Len()+typ.Results().Len()))),
 			)
-			// TODO: signature params and return values
 		}
 		if hasMethodSet {
 			// This method set is appended at the start of the struct. It is
@@ -526,8 +534,26 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 				methodSetValue,
 			}
 		case *types.Signature:
-			typeFields = []llvm.Value{c.getTypeCode(types.NewPointer(typ))}
-			// TODO: params, return values, etc
+			// The parameter types, then the result types; reflect reads them
+			// for In, Out and IsVariadic.
+			numOut := uint64(typ.Results().Len())
+			if typ.Variadic() {
+				numOut |= funcVariadic
+			}
+			params := make([]llvm.Value, 0, typ.Params().Len()+typ.Results().Len())
+			for i := 0; i < typ.Params().Len(); i++ {
+				params = append(params, c.getTypeCode(typ.Params().At(i).Type()))
+			}
+			for i := 0; i < typ.Results().Len(); i++ {
+				params = append(params, c.getTypeCode(typ.Results().At(i).Type()))
+			}
+			typeFields = []llvm.Value{
+				c.getTypeCode(types.NewPointer(typ)),
+				llvm.ConstInt(c.ctx.Int16Type(), uint64(typ.Params().Len()), false),
+				llvm.ConstInt(c.ctx.Int16Type(), numOut, false),
+				c.getReflectCallStub(typ),
+				llvm.ConstArray(c.dataPtrType, params),
+			}
 		}
 		// Prepend the common RawType field.
 		typeFields = append([]llvm.Value{
