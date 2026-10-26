@@ -9,7 +9,6 @@ package runtime
 import (
 	"internal/futex"
 	"math/bits"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -46,25 +45,36 @@ var (
 	pollTicks [numCPU]uint32
 )
 
+// spinLock is a futex mutex: 0 unlocked, 1 locked, 2 locked with waiters. A
+// waiter spins briefly, then sleeps in the kernel, since threads that only
+// yield to each other burn whole cores on a busy lock.
 type spinLock struct {
-	atomic.Uint32
+	futex.Futex
 }
 
 func (l *spinLock) Lock() {
-	for spins := 0; !l.Uint32.CompareAndSwap(0, 1); spins++ {
-		if spins < 100 {
-			spinLoopWait()
-		} else {
-			sched_yield()
+	if l.CompareAndSwap(0, 1) {
+		return
+	}
+	for i := 0; i < 100; i++ {
+		spinLoopWait()
+		if l.Load() == 0 && l.CompareAndSwap(0, 1) {
+			return
 		}
+	}
+	for l.Swap(2) != 0 {
+		l.Futex.Wait(2)
 	}
 }
 
 func (l *spinLock) Unlock() {
-	if schedulerAsserts && l.Uint32.Load() != 1 {
+	old := l.Swap(0)
+	if schedulerAsserts && old == 0 {
 		runtimeFatal("unlock of unlocked spinlock")
 	}
-	l.Uint32.Store(0)
+	if old == 2 {
+		l.Futex.Wake()
+	}
 }
 
 type epollMutex = spinLock
@@ -244,9 +254,6 @@ func tinygo_cores_signal(thread threadID)
 //export tinygo_cores_spin
 func tinygo_cores_spin()
 
-//export sched_yield
-func sched_yield() int32
-
 //export eventfd
 func libc_eventfd(initval uint32, flags int32) int32
 
@@ -270,7 +277,13 @@ const epollPollers = numCPU
 
 func epollPoller() int { return int(currentCPU()) }
 
-// spinLoopYield gives the CPU to another thread during a long spin.
-func spinLoopYield() {
-	sched_yield()
+// coresSysWait sleeps while *addr == cmp, for a scheduler that waits on a
+// task futex and has no task to park.
+func coresSysWait(addr *uint32, cmp uint32) {
+	(*futex.Futex)(unsafe.Pointer(addr)).Wait(cmp)
+}
+
+// coresSysWake wakes the schedulers sleeping in coresSysWait on addr.
+func coresSysWake(addr *uint32) {
+	(*futex.Futex)(unsafe.Pointer(addr)).WakeAll()
 }

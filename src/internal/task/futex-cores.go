@@ -13,6 +13,9 @@ type Futex struct {
 	Uint32
 
 	waiters Stack
+
+	// Schedulers sleeping on the value, which have no task to park.
+	sysWaiters Uint32
 }
 
 // Atomically check for cmp to still be equal to the futex value and if so, go
@@ -30,14 +33,16 @@ func (f *Futex) Wait(cmp uint32) (awoken bool) {
 	if t == nil {
 		// The scheduler runs timer callbacks without a task to park, so it
 		// spins until the value changes.
+		f.sysWaiters.Add(1)
 		unlockFutex(mask)
 		for i := 0; f.Uint32.Load() == cmp; i++ {
 			if i < 100 {
 				spinWait()
 			} else {
-				spinYield()
+				sysWait(&f.Uint32, cmp)
 			}
 		}
+		f.sysWaiters.Add(^uint32(0))
 		return false
 	}
 
@@ -56,6 +61,9 @@ func (f *Futex) Wait(cmp uint32) (awoken bool) {
 
 // Wake a single waiter.
 func (f *Futex) Wake() {
+	if f.sysWaiters.Load() != 0 {
+		sysWake(&f.Uint32)
+	}
 	mask := lockFutex()
 	t := f.waiters.Pop()
 	unlockFutex(mask)
@@ -66,6 +74,9 @@ func (f *Futex) Wake() {
 
 // Wake all waiters.
 func (f *Futex) WakeAll() {
+	if f.sysWaiters.Load() != 0 {
+		sysWake(&f.Uint32)
+	}
 	mask := lockFutex()
 	waiters := f.waiters.Queue()
 	unlockFutex(mask)
@@ -83,5 +94,8 @@ func unlockFutex(interrupt.State)
 //go:linkname spinWait runtime.spinLoopWait
 func spinWait()
 
-//go:linkname spinYield runtime.spinLoopYield
-func spinYield()
+//go:linkname sysWait runtime.coresSysWait
+func sysWait(addr *Uint32, cmp uint32)
+
+//go:linkname sysWake runtime.coresSysWake
+func sysWake(addr *Uint32)
