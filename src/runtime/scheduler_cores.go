@@ -145,7 +145,7 @@ func assignCore(core int) {
 }
 
 func addTimer(tn *timerNode) {
-	schedulerLock.Lock()
+	lockSchedulerWithTimerRoom()
 	timerQueueAdd(tn)
 	interruptSleepTicksMulticore(tn.whenTicks())
 	schedulerLock.Unlock()
@@ -154,7 +154,7 @@ func addTimer(tn *timerNode) {
 // reAddTimer finishes firing a timer. It re-adds periodic timers unless they
 // were stopped or reset while the callback was running.
 func reAddTimer(tn *timerNode) {
-	schedulerLock.Lock()
+	lockSchedulerWithTimerRoom()
 
 	// Remove the timer from the firing list before re-adding it to the queue,
 	// so that another core popping it off the queue can't insert it into the
@@ -442,5 +442,33 @@ func printunlock() {
 
 	if !interrupt.In() {
 		printLock.Unlock()
+	}
+}
+
+// lockSchedulerWithTimerRoom takes the scheduler lock once the timer queue
+// has room for one more timer. Growing the queue allocates, and an allocation
+// can wake a task, which takes the scheduler lock, so it must happen unlocked.
+func lockSchedulerWithTimerRoom() {
+	for {
+		schedulerLock.Lock()
+		if timerQueue != nil && len(timerQueue.nodes) < cap(timerQueue.nodes) {
+			return
+		}
+		n := 16
+		if timerQueue != nil {
+			n = 2 * cap(timerQueue.nodes)
+		}
+		schedulerLock.Unlock()
+
+		h := new(timerHeap)
+		nodes := make([]*timerNode, 0, n)
+		schedulerLock.Lock()
+		if timerQueue == nil {
+			timerQueue = h
+		}
+		if cap(timerQueue.nodes) < n && len(timerQueue.nodes) <= n {
+			timerQueue.nodes = append(nodes, timerQueue.nodes...)
+		}
+		schedulerLock.Unlock()
 	}
 }
