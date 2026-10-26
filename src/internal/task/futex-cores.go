@@ -26,8 +26,19 @@ func (f *Futex) Wait(cmp uint32) (awoken bool) {
 		return false
 	}
 
+	t := Current()
+	if t == nil {
+		// The scheduler runs timer callbacks without a task to park, so it
+		// spins until the value changes.
+		unlockFutex(mask)
+		for f.Uint32.Load() == cmp {
+			spinWait()
+		}
+		return false
+	}
+
 	// Push the current goroutine onto the waiter stack.
-	f.waiters.Push(Current())
+	f.waiters.Push(t)
 
 	unlockFutex(mask)
 
@@ -64,3 +75,6 @@ func lockFutex() interrupt.State
 
 //go:linkname unlockFutex runtime.unlockFutex
 func unlockFutex(interrupt.State)
+
+//go:linkname spinWait runtime.spinLoopWait
+func spinWait()
