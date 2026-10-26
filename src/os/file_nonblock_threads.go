@@ -1,6 +1,10 @@
-//go:build scheduler.threads
+//go:build scheduler.threads && linux && !baremetal && !wasm_unknown && !nintendoswitch && !wasip1 && !wasip2 && !tinygo.wasm
 
 package os
 
-// pollBlocks lets waitIO block its thread in ppoll, as each goroutine has one.
-const pollBlocks = true
+import "time"
+
+// waitFD blocks the goroutine's own thread in ppoll.
+func waitFD(fd int32, write bool, timeout time.Duration) bool {
+	return ppollFD(fd, write, timeout)
+}

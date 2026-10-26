@@ -49,32 +49,17 @@ func (f *file) waitIO(h FileHandle, write bool) error {
 		}
 	}()
 
-	pfd := struct {
-		fd      int32
-		events  int16
-		revents int16
-	}{fd: int32(fd), events: pollIn}
-	if write {
-		pfd.events = pollOut
-	}
 	for {
 		// Wake periodically so a Close from another goroutine is noticed.
-		ts := syscall.NsecToTimespec(int64(50 * time.Millisecond))
-		if !pollBlocks {
-			ts = syscall.Timespec{}
-		}
-		n, _, e := syscall.Syscall6(syscall.SYS_PPOLL, uintptr(unsafe.Pointer(&pfd)), 1, uintptr(unsafe.Pointer(&ts)), 0, 0, 0)
+		ready := waitFD(int32(fd), write, 50*time.Millisecond)
 		s.mu.Lock()
 		closing := s.closing
 		s.mu.Unlock()
 		if closing {
 			return ErrClosed
 		}
-		if n > 0 || (e != 0 && e != syscall.EINTR) {
+		if ready {
 			return nil // ready, or let the retried call report the error
-		}
-		if !pollBlocks {
-			time.Sleep(time.Millisecond)
 		}
 	}
 }
@@ -93,3 +78,19 @@ const (
 	pollIn  = 0x1
 	pollOut = 0x4
 )
+
+// ppollFD waits up to timeout for fd and reports whether it is ready or the
+// poll failed, so the retried call reports the error.
+func ppollFD(fd int32, write bool, timeout time.Duration) bool {
+	pfd := struct {
+		fd      int32
+		events  int16
+		revents int16
+	}{fd: fd, events: pollIn}
+	if write {
+		pfd.events = pollOut
+	}
+	ts := syscall.NsecToTimespec(int64(timeout))
+	n, _, e := syscall.Syscall6(syscall.SYS_PPOLL, uintptr(unsafe.Pointer(&pfd)), 1, uintptr(unsafe.Pointer(&ts)), 0, 0, 0)
+	return n > 0 || (e != 0 && e != syscall.EINTR)
+}

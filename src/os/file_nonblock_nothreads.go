@@ -1,7 +1,15 @@
-//go:build !scheduler.threads
+//go:build !scheduler.threads && !scheduler.tasks && linux && !baremetal && !wasm_unknown && !nintendoswitch && !wasip1 && !wasip2 && !tinygo.wasm
 
 package os
 
-// pollBlocks is false where goroutines share a thread, so waitIO polls and
-// sleeps instead of blocking it.
-const pollBlocks = false
+import "time"
+
+// waitFD polls and sleeps, since goroutines share the thread and there is no
+// runtime poller.
+func waitFD(fd int32, write bool, timeout time.Duration) bool {
+	if ppollFD(fd, write, 0) {
+		return true
+	}
+	time.Sleep(time.Millisecond)
+	return false
+}

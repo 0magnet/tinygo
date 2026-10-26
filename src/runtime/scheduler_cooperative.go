@@ -216,6 +216,7 @@ func scheduler(returnAtDeadlock bool) {
 			tn.callback(tn, delay)
 		}
 
+		schedulerPollTick()
 		t := runqueue.Pop()
 		if t == nil {
 			// Run the pressure GC only when the scheduler is idle at the top level.

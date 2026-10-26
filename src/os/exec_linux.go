@@ -216,6 +216,7 @@ func startProcess(name string, argv []string, attr *ProcAttr) (p *Process, err e
 }
 
 func (p *Process) wait() (*ProcessState, error) {
+	waitChild(p.Pid)
 	if h := p.h; h != nil {
 		// Wait until the child is waitable without reaping it, then mark it
 		// done before its pid can be reused, as Go's os does.

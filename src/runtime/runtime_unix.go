@@ -263,6 +263,9 @@ func nanosecondsToTicks(ns int64) timeUnit {
 }
 
 func sleepTicks(d timeUnit) {
+	if epollIdle(d, false) {
+		return
+	}
 	until := ticks() + d
 
 	for {
@@ -549,6 +552,9 @@ func checkSignals() bool {
 }
 
 func waitForEvents() {
+	if epollIdle(0, true) {
+		return
+	}
 	if hasSignals {
 		// Wait as long as the futex value is 0.
 		// This can happen either before or during the call to Wait.
