@@ -31,8 +31,12 @@ func (f *Futex) Wait(cmp uint32) (awoken bool) {
 		// The scheduler runs timer callbacks without a task to park, so it
 		// spins until the value changes.
 		unlockFutex(mask)
-		for f.Uint32.Load() == cmp {
-			spinWait()
+		for i := 0; f.Uint32.Load() == cmp; i++ {
+			if i < 100 {
+				spinWait()
+			} else {
+				spinYield()
+			}
 		}
 		return false
 	}
@@ -78,3 +82,6 @@ func unlockFutex(interrupt.State)
 
 //go:linkname spinWait runtime.spinLoopWait
 func spinWait()
+
+//go:linkname spinYield runtime.spinLoopYield
+func spinYield()

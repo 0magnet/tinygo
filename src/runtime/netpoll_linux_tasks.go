@@ -49,22 +49,26 @@ func (e *epollEvent) setFD(fd int32) {
 	*(*int32)(unsafe.Pointer(&e.data[0])) = fd
 }
 
+// The waiter lists are linked through the waiters, and nothing under epollLock
+// allocates: an allocation can park the task while it holds the lock.
 type epollWaiter struct {
-	t     *task.Task
-	f     *epollFile
-	timer *timer
-	ready bool
-	done  bool
+	t          *task.Task
+	f          *epollFile
+	timer      *timer
+	prev, next *epollWaiter
+	write      bool
+	ready      bool
+	done       bool
 }
 
 type epollFile struct {
-	readers, writers []*epollWaiter
+	readers, writers *epollWaiter
 	registered       bool
 }
 
 var (
-	epollFD      int32 = -1
-	epollFiles   map[int32]*epollFile
+	epollFD      int32        = -1
+	epollFiles   []*epollFile // indexed by fd
 	epollWaiting atomic.Int32
 	epollSwitch  int
 	epollLock    epollMutex
@@ -93,7 +97,6 @@ func epollInit() {
 	if epollFD < 0 {
 		runtimeFatal("epoll_create1 failed")
 	}
-	epollFiles = make(map[int32]*epollFile)
 }
 
 // epollAdd watches fd for input for as long as it is open.
@@ -107,32 +110,29 @@ func epollAdd(fd int32) bool {
 // write) or timeout nanoseconds pass, waiting forever when timeout is
 // negative. It reports whether fd became ready.
 func epollWaitFD(fd int32, write bool, timeout int64) bool {
-	epollLock.Lock()
-	epollInit()
-	f := epollFiles[fd]
-	if f == nil {
-		f = &epollFile{}
-		epollFiles[fd] = f
+	w := &epollWaiter{t: task.Current(), write: write}
+	var tn *timerNode
+	if timeout >= 0 {
+		w.timer = &timer{when: nanotime() + timeout, arg: w}
+		tn = &timerNode{timer: w.timer, callback: epollTimeout}
 	}
-	w := &epollWaiter{t: task.Current(), f: f}
-	if write {
-		f.writers = append(f.writers, w)
-	} else {
-		f.readers = append(f.readers, w)
-	}
+	f := epollLockFile(fd)
+	w.f = f
+	epollPush(w)
 	if !epollArm(fd, f) {
 		// epoll refuses regular files, which are always ready.
-		f.readers = epollRemove(f.readers, w)
-		f.writers = epollRemove(f.writers, w)
+		epollUnlink(w)
 		epollLock.Unlock()
 		return true
 	}
 	epollWaiting.Add(1)
-	if timeout >= 0 {
-		w.timer = &timer{when: nanotime() + timeout, arg: w}
-		addTimer(&timerNode{timer: w.timer, callback: epollTimeout})
-	}
 	epollLock.Unlock()
+
+	// The timer goes in after the lock is released, since adding it may
+	// allocate. A timer that fires after a wakeup finds the waiter done.
+	if tn != nil {
+		addTimer(tn)
+	}
 
 	// A core that sees fd ready before this pause marks the task to resume
 	// at once.
@@ -140,14 +140,75 @@ func epollWaitFD(fd int32, write bool, timeout int64) bool {
 	return w.ready
 }
 
+// epollLockFile takes epollLock and returns the entry for fd, growing the
+// table with the lock released.
+func epollLockFile(fd int32) *epollFile {
+	for {
+		epollLock.Lock()
+		epollInit()
+		n := len(epollFiles)
+		if int(fd) < n && epollFiles[fd] != nil {
+			return epollFiles[fd]
+		}
+		epollLock.Unlock()
+
+		nf := &epollFile{}
+		var grown []*epollFile
+		if int(fd) >= n {
+			size := 2 * n
+			if size <= int(fd) {
+				size = int(fd) + 64
+			}
+			grown = make([]*epollFile, size)
+		}
+		epollLock.Lock()
+		if int(fd) >= len(epollFiles) && len(grown) > int(fd) {
+			copy(grown, epollFiles)
+			epollFiles = grown
+		}
+		if int(fd) < len(epollFiles) && epollFiles[fd] == nil {
+			epollFiles[fd] = nf
+		}
+		epollLock.Unlock()
+	}
+}
+
+// epollPush adds w to the readers or writers of its file.
+func epollPush(w *epollWaiter) {
+	head := &w.f.readers
+	if w.write {
+		head = &w.f.writers
+	}
+	w.next = *head
+	if w.next != nil {
+		w.next.prev = w
+	}
+	*head = w
+}
+
+// epollUnlink removes w from the list it is on.
+func epollUnlink(w *epollWaiter) {
+	if w.prev != nil {
+		w.prev.next = w.next
+	} else if w.write {
+		w.f.writers = w.next
+	} else {
+		w.f.readers = w.next
+	}
+	if w.next != nil {
+		w.next.prev = w.prev
+	}
+	w.prev, w.next = nil, nil
+}
+
 // epollArm (re)programs epoll for the waiters of fd, and reports false if
 // epoll cannot poll fd.
 func epollArm(fd int32, f *epollFile) bool {
 	var ev epollEvent
-	if len(f.readers) != 0 {
+	if f.readers != nil {
 		ev.events |= epollIn | epollRdHup
 	}
-	if len(f.writers) != 0 {
+	if f.writers != nil {
 		ev.events |= epollOut
 	}
 	if ev.events == 0 {
@@ -185,24 +246,12 @@ func epollWake(f *epollFile, w *epollWaiter, ready bool) {
 	}
 	w.done = true
 	w.ready = ready
-	f.readers = epollRemove(f.readers, w)
-	f.writers = epollRemove(f.writers, w)
+	epollUnlink(w)
 	if w.timer != nil && ready {
 		removeTimer(w.timer)
 	}
 	epollWaiting.Add(-1)
 	scheduleTask(w.t)
-}
-
-func epollRemove(ws []*epollWaiter, w *epollWaiter) []*epollWaiter {
-	for i, x := range ws {
-		if x == w {
-			copy(ws[i:], ws[i+1:])
-			ws[len(ws)-1] = nil
-			return ws[:len(ws)-1]
-		}
-	}
-	return ws
 }
 
 func epollTimeout(tn *timerNode, delta int64) {
@@ -234,19 +283,22 @@ func epollPoll(timeout int32) {
 			epollDrainWake()
 			continue
 		}
-		f := epollFiles[fd]
+		var f *epollFile
+		if fd >= 0 && int(fd) < len(epollFiles) {
+			f = epollFiles[fd]
+		}
 		if f == nil {
 			continue
 		}
 		hup := e.events&(epollErr|epollHup|epollRdHup) != 0
 		if hup || e.events&epollIn != 0 {
-			for len(f.readers) != 0 {
-				epollWake(f, f.readers[0], true)
+			for f.readers != nil {
+				epollWake(f, f.readers, true)
 			}
 		}
 		if hup || e.events&epollOut != 0 {
-			for len(f.writers) != 0 {
-				epollWake(f, f.writers[0], true)
+			for f.writers != nil {
+				epollWake(f, f.writers, true)
 			}
 		}
 		// EPOLLONESHOT disarmed fd, so re-arm it for the waiters left.

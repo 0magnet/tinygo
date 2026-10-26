@@ -8,7 +8,6 @@ package runtime
 
 import (
 	"internal/futex"
-	"internal/task"
 	"math/bits"
 	"sync/atomic"
 	"unsafe"
@@ -68,9 +67,7 @@ func (l *spinLock) Unlock() {
 	l.Uint32.Store(0)
 }
 
-// epollWaitFD allocates while it holds epollLock, and an allocation can park
-// the task, so the lock is a mutex that other tasks park on too.
-type epollMutex = task.Mutex
+type epollMutex = spinLock
 
 func spinLoopWait() {
 	tinygo_cores_spin()
@@ -272,3 +269,8 @@ func coresInitPoll() {
 const epollPollers = numCPU
 
 func epollPoller() int { return int(currentCPU()) }
+
+// spinLoopYield gives the CPU to another thread during a long spin.
+func spinLoopYield() {
+	sched_yield()
+}
