@@ -216,14 +216,18 @@ func epollPoll(timeout int32) {
 }
 
 // schedulerPollTick polls without waiting every epollPollEvery task switches,
-// so ready fds are served while goroutines keep the scheduler busy.
+// so ready fds are served while goroutines keep the scheduler busy. It also
+// delivers pending signals, which otherwise wait for an idle scheduler.
 func schedulerPollTick() {
-	if epollWaiting == 0 {
+	epollSwitch++
+	if epollSwitch < epollPollEvery {
 		return
 	}
-	epollSwitch++
-	if epollSwitch >= epollPollEvery {
-		epollSwitch = 0
+	epollSwitch = 0
+	if signalFutex.Swap(0) != 0 {
+		checkSignals()
+	}
+	if epollWaiting != 0 {
 		epollPoll(0)
 	}
 }
