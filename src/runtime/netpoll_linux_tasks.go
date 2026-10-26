@@ -259,6 +259,10 @@ func epollTimeout(tn *timerNode, delta int64) {
 	epollLock.Lock()
 	epollWake(w.f, w, false)
 	epollLock.Unlock()
+
+	// Finish firing, so the threads and cores schedulers drop tn from their
+	// list of firing timers.
+	reAddTimer(tn)
 }
 
 // epollPoll wakes the goroutines whose fds are ready, waiting up to timeout
