@@ -59,7 +59,7 @@ func markRoots(start, end uintptr) {
 }
 
 func markCurrentGoroutineStack(sp uintptr) {
-	if top := task.StackTop(); top != 0 {
+	if top := task.MappedStackTop(); top != 0 {
 		libgc_push_all_stack(sp, top) // a stack mapped outside the heap
 		return
 	}

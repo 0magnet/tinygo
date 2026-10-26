@@ -118,9 +118,9 @@ func unlinkStack(t *Task) {
 	}
 }
 
-// StackTop returns the end of the current goroutine's stack, or zero on the
+// MappedStackTop returns the end of the current goroutine's stack, or zero on the
 // system stack.
-func StackTop() uintptr {
+func MappedStackTop() uintptr {
 	if currentTask == nil {
 		return 0
 	}
@@ -135,4 +135,16 @@ func MarkParkedStacks(mark func(start, end uintptr)) {
 			mark(t.state.sp, t.state.stack.top)
 		}
 	}
+}
+
+// GoroutineStacks calls fn with the stack of every parked goroutine, innermost
+// first, and reports true. The slice is reused between calls.
+func GoroutineStacks(fn func(pcs []uintptr)) bool {
+	var buf [64]uintptr
+	for t := stackTasks; t != nil; t = t.state.stack.next {
+		if t != currentTask {
+			fn(buf[:walkStack(t.state.sp, t.state.stack.top, buf[:])])
+		}
+	}
+	return true
 }

@@ -701,7 +701,7 @@ func scanConservative(addr, len uintptr) {
 }
 
 func markCurrentGoroutineStack(sp uintptr) {
-	if top := task.StackTop(); top != 0 {
+	if top := task.MappedStackTop(); top != 0 {
 		markRoots(sp, top) // a stack mapped outside the heap
 		return
 	}

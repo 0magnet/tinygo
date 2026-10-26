@@ -21,10 +21,13 @@ func linkTask(t *Task) {}
 // unlinkStack does nothing here, since only asyncify keeps a list of stacks.
 func unlinkStack(t *Task) {}
 
-// StackTop returns zero: the GC finds the stack bounds from the heap.
-func StackTop() uintptr { return 0 }
+// MappedStackTop returns zero: the GC finds the stack bounds from the heap.
+func MappedStackTop() uintptr { return 0 }
 
 // MarkParkedStacks does nothing: parked stacks are heap objects.
 func MarkParkedStacks(mark func(start, end uintptr)) {}
 
 func canaryFor(stack unsafe.Pointer) *uintptr { return (*uintptr)(stack) }
+
+// GoroutineStacks reports false: stacks are not tracked here.
+func GoroutineStacks(fn func(pcs []uintptr)) bool { return false }
