@@ -93,6 +93,7 @@ func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 	}
 	f := NewFile(handle, name)
 	f.appendMode = (flag & O_APPEND) != 0
+	f.makePollable()
 	return f, nil
 }
 
@@ -350,6 +351,7 @@ type fd interface {
 func (f *File) Fd() uintptr {
 	handle, ok := f.handle.(fd)
 	if ok {
+		f.setBlocking()
 		return handle.Fd()
 	}
 	return ^uintptr(0)

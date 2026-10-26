@@ -94,6 +94,8 @@ func Pipe() (r *File, w *File, err error) {
 	}
 	r = NewFile(uintptr(p[0]), "|0")
 	w = NewFile(uintptr(p[1]), "|1")
+	r.makePollable()
+	w.makePollable()
 	return
 }
 

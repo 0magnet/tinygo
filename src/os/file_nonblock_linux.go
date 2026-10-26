@@ -16,6 +16,9 @@ type nbState struct {
 	mu      sync.Mutex
 	waiters int
 	closing bool
+
+	// madeNonblock is set when os made the fd non-blocking, which Fd undoes.
+	madeNonblock bool
 }
 
 // wouldBlock reports whether err means a non-blocking fd is not ready.
