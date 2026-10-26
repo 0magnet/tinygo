@@ -16,6 +16,9 @@ import (
 // writeGoroutines groups live goroutines by the function they started with,
 // which is as close to a stack as TinyGo can get without unwinding.
 func writeGoroutines(w io.Writer) error {
+	if ok, err := writeGoroutineStacks(w); ok {
+		return err
+	}
 	n := task.GoroutineStartPCs(nil)
 	buf := make([]uintptr, n+64)
 	n = task.GoroutineStartPCs(buf)
@@ -144,4 +147,62 @@ func loadBias(exe string) uint64 {
 		}
 	}
 	return 0
+}
+
+// writeGoroutineStacks groups goroutines by their stacks, walked through frame
+// pointers, where the scheduler keeps them. It reports false otherwise.
+func writeGoroutineStacks(w io.Writer) (bool, error) {
+	counts := map[string]int{}
+	var keys []string
+	total := 0
+	if !task.GoroutineStacks(func(pcs []uintptr) {
+		var b strings.Builder
+		for _, pc := range pcs {
+			b.WriteString(strconv.FormatUint(uint64(pc), 16))
+			b.WriteByte(' ')
+		}
+		k := b.String()
+		if counts[k] == 0 {
+			keys = append(keys, k)
+		}
+		counts[k]++
+		total++
+	}) {
+		return false, nil
+	}
+	sort.SliceStable(keys, func(i, j int) bool { return counts[keys[i]] > counts[keys[j]] })
+	stacks := make([][]uintptr, len(keys))
+	var all []uintptr
+	for i, k := range keys {
+		for _, f := range strings.Fields(k) {
+			pc, _ := strconv.ParseUint(f, 16, 64)
+			stacks[i] = append(stacks[i], uintptr(pc))
+			all = append(all, uintptr(pc)-1) // a return address can begin the next function
+		}
+	}
+	names := symbolize(all)
+	// The running goroutine is the one writing this profile.
+	if _, err := fmt.Fprintf(w, "goroutine profile: total %d\n\n", total+1); err != nil {
+		return true, err
+	}
+	for i, st := range stacks {
+		var line strings.Builder
+		fmt.Fprintf(&line, "%d @", counts[keys[i]])
+		for _, pc := range st {
+			fmt.Fprintf(&line, " %#x", pc)
+		}
+		line.WriteByte('\n')
+		for _, pc := range st {
+			name := names[pc-1]
+			if name == "" {
+				name = "?"
+			}
+			fmt.Fprintf(&line, "#\t%#x\t%s\n", pc, name)
+		}
+		line.WriteByte('\n')
+		if _, err := io.WriteString(w, line.String()); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
 }

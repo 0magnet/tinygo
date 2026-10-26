@@ -812,6 +812,9 @@ func (c *compilerContext) addStandardDefinedAttributes(llvmFn llvm.Value) {
 	}
 	if c.hasFramePointers() {
 		llvmFn.AddFunctionAttr(c.ctx.CreateStringAttribute("frame-pointer", "all"))
+		// A tail call drops its caller's frame, which Go stacks never do, so
+		// profiles and perf would miss callers.
+		llvmFn.AddFunctionAttr(c.ctx.CreateStringAttribute("disable-tail-calls", "true"))
 	}
 }
 
