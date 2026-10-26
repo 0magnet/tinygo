@@ -1,4 +1,4 @@
-//go:build scheduler.tasks && linux && !baremetal && amd64
+//go:build (scheduler.tasks || scheduler.cores) && linux && !baremetal && amd64
 
 package task
 

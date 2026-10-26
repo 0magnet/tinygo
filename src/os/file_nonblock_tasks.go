@@ -1,4 +1,4 @@
-//go:build scheduler.tasks && linux && !baremetal && !wasm_unknown && !nintendoswitch && !wasip1 && !wasip2 && !tinygo.wasm
+//go:build (scheduler.tasks || scheduler.cores) && linux && !baremetal && !wasm_unknown && !nintendoswitch && !wasip1 && !wasip2 && !tinygo.wasm
 
 package os
 

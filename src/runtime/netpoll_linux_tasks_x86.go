@@ -1,4 +1,4 @@
-//go:build linux && scheduler.tasks && !baremetal && !nintendoswitch && (amd64 || 386)
+//go:build linux && (scheduler.tasks || scheduler.cores) && !baremetal && !nintendoswitch && (amd64 || 386)
 
 package runtime
 

@@ -502,6 +502,7 @@ func tinygo_signal_handler(s int32) {
 		// goroutines.
 		signalFutex.WakeAll()
 	}
+	signalWakeScheduler()
 }
 
 // Task waiting for a signal to arrive, or nil if it is running or there are no

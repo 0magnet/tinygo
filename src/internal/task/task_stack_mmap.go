@@ -1,8 +1,11 @@
-//go:build scheduler.tasks && linux && !baremetal
+//go:build (scheduler.tasks || scheduler.cores) && linux && !baremetal
 
 package task
 
-import "unsafe"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
 // Goroutine stacks are mapped outside the GC heap, so untouched pages cost no
 // memory and the GC scans only the part of each stack in use. A guard page
@@ -27,6 +30,10 @@ type stackInfo struct {
 
 var (
 	stackTasks *Task // every task with a mapped stack
+
+	// stackLock guards the task list, the pool and unmapNext. Nothing
+	// allocates while holding it, so the GC can take it.
+	stackLock atomic.Uint32
 
 	// Released stacks for reuse, linked through a header at their bases. A
 	// header at the top would overwrite the exiting task's first frames.
@@ -58,6 +65,19 @@ func stackMunmap(addr unsafe.Pointer, length uintptr) int32
 //export mprotect
 func stackMprotect(addr unsafe.Pointer, len uintptr, prot int32) int32
 
+// LockStacks takes the lock on the stack list. The GC holds it while it scans
+// stacks with the world stopped.
+func LockStacks() {
+	for !stackLock.CompareAndSwap(0, 1) {
+		spinWait()
+	}
+}
+
+// UnlockStacks releases the lock taken by LockStacks.
+func UnlockStacks() {
+	stackLock.Store(0)
+}
+
 func flushUnmap() {
 	if unmapNext != 0 {
 		stackMunmap(unsafe.Pointer(unmapNext-stackGuard), unmapNextSize+stackGuard)
@@ -66,16 +86,19 @@ func flushUnmap() {
 }
 
 func allocStack(s *state, size uintptr) unsafe.Pointer {
+	LockStacks()
 	flushUnmap()
 	s.stack.size = size
 	for p := &pool; *p != nil; p = &(*p).next {
 		if ps := *p; ps.size == size {
 			*p = ps.next
 			poolCount--
+			UnlockStacks()
 			s.stack.top = uintptr(unsafe.Pointer(ps)) + size
 			return unsafe.Pointer(ps)
 		}
 	}
+	UnlockStacks()
 	m := stackMmap(nil, size+stackGuard, protRW, mapFlags, -1, 0)
 	if uintptr(m) == ^uintptr(0) {
 		runtimeFatal("cannot map goroutine stack")
@@ -87,16 +110,19 @@ func allocStack(s *state, size uintptr) unsafe.Pointer {
 }
 
 func linkTask(t *Task) {
+	LockStacks()
 	t.state.stack.next = stackTasks
 	if stackTasks != nil {
 		stackTasks.state.stack.prev = t
 	}
 	stackTasks = t
+	UnlockStacks()
 }
 
-// unlinkStack releases the stack of the exiting task, which is still running
-// on it. Nothing else runs on this thread before the task pauses for good.
+// unlinkStack removes the exiting task, which still runs on its stack, from
+// the list. Its stack is reused once nothing runs on it any more.
 func unlinkStack(t *Task) {
+	LockStacks()
 	si := &t.state.stack
 	if si.prev != nil {
 		si.prev.state.stack.next = si.next
@@ -107,6 +133,21 @@ func unlinkStack(t *Task) {
 		si.next.state.stack.prev = si.prev
 	}
 	si.prev, si.next = nil, nil
+	if !stackReleasedOnResume {
+		// Nothing else runs on this thread before the task pauses for good.
+		releaseStackLocked(si)
+	}
+	UnlockStacks()
+}
+
+// releaseStack pools or unmaps the stack of an exited task.
+func releaseStack(t *Task) {
+	LockStacks()
+	releaseStackLocked(&t.state.stack)
+	UnlockStacks()
+}
+
+func releaseStackLocked(si *stackInfo) {
 	flushUnmap()
 	if poolCount < maxPooled {
 		ps := (*pooledStack)(unsafe.Pointer(si.top - si.size))
@@ -121,17 +162,26 @@ func unlinkStack(t *Task) {
 // MappedStackTop returns the end of the current goroutine's stack, or zero on the
 // system stack.
 func MappedStackTop() uintptr {
-	if currentTask == nil {
+	t := Current()
+	if t == nil {
 		return 0
 	}
-	return currentTask.state.stack.top
+	return t.state.stack.top
 }
 
-// MarkParkedStacks passes the used part of every parked goroutine stack to mark.
-// The running goroutine's stack is scanned with its registers instead.
+// MappedStackOf returns the bounds of t's stack.
+func MappedStackOf(t *Task) (low, top uintptr) {
+	return t.state.stack.top - t.state.stack.size, t.state.stack.top
+}
+
+// MarkParkedStacks passes the used part of every goroutine stack but the
+// current one to mark, from where each was last parked. A goroutine running
+// on another core is scanned by that core as well. The caller holds
+// LockStacks when other cores run.
 func MarkParkedStacks(mark func(start, end uintptr)) {
+	current := Current()
 	for t := stackTasks; t != nil; t = t.state.stack.next {
-		if t != currentTask {
+		if t != current {
 			mark(t.state.sp, t.state.stack.top)
 		}
 	}
@@ -140,11 +190,40 @@ func MarkParkedStacks(mark func(start, end uintptr)) {
 // GoroutineStacks calls fn with the stack of every parked goroutine, innermost
 // first, and reports true. The slice is reused between calls.
 func GoroutineStacks(fn func(pcs []uintptr)) bool {
-	var buf [64]uintptr
-	for t := stackTasks; t != nil; t = t.state.stack.next {
-		if t != currentTask {
-			fn(buf[:walkStack(t.state.sp, t.state.stack.top, buf[:])])
+	if !stackReleasedOnResume {
+		var buf [64]uintptr
+		current := Current()
+		for t := stackTasks; t != nil; t = t.state.stack.next {
+			if t != current {
+				fn(buf[:walkStack(t.state.sp, t.state.stack.top, buf[:])])
+			}
 		}
+		return true
+	}
+
+	// Other cores start and end goroutines meanwhile, and fn allocates, so
+	// copy the stacks out under the lock and call fn after.
+	const depth = 32
+	LockStacks()
+	n := 0
+	for t := stackTasks; t != nil; t = t.state.stack.next {
+		n++
+	}
+	UnlockStacks()
+	n += n/8 + 16
+	pcs := make([]uintptr, n*depth)
+	lens := make([]uint8, n)
+	LockStacks()
+	i := 0
+	for t := stackTasks; t != nil && i < n; t = t.state.stack.next {
+		if t.RunState != RunStateRunning {
+			lens[i] = uint8(walkStack(t.state.sp, t.state.stack.top, pcs[i*depth:(i+1)*depth]))
+			i++
+		}
+	}
+	UnlockStacks()
+	for j := 0; j < i; j++ {
+		fn(pcs[j*depth : j*depth+int(lens[j])])
 	}
 	return true
 }

@@ -1,14 +1,16 @@
-//go:build linux && scheduler.tasks && !baremetal && !nintendoswitch
+//go:build linux && (scheduler.tasks || scheduler.cores) && !baremetal && !nintendoswitch
 
 package runtime
 
-// With the tasks scheduler every goroutine shares one thread, so a goroutine
-// that waits for a file descriptor parks here instead of blocking in a
-// syscall. The scheduler polls epoll when it is idle, and every
-// epollPollEvery task switches while goroutines are runnable.
+// Goroutines are tasks scheduled in user space, so a goroutine that waits for
+// a file descriptor parks here instead of blocking a thread in a syscall. The
+// scheduler polls epoll when it is idle, and every epollPollEvery task
+// switches while goroutines are runnable. Under the cores scheduler several
+// threads poll, so epollLock guards the waiter lists.
 
 import (
 	"internal/task"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -63,9 +65,13 @@ type epollFile struct {
 var (
 	epollFD      int32 = -1
 	epollFiles   map[int32]*epollFile
-	epollWaiting int
+	epollWaiting atomic.Int32
 	epollSwitch  int
-	epollEvents  [128]epollEvent
+	epollLock    epollMutex
+
+	// One event buffer per polling thread, since the scheduler must not
+	// allocate.
+	epollEvents [epollPollers][128]epollEvent
 )
 
 //export epoll_create1
@@ -77,17 +83,32 @@ func libc_epoll_ctl(epfd, op, fd int32, ev *epollEvent) int32
 //export epoll_wait
 func libc_epoll_wait(epfd int32, evs *epollEvent, max, timeout int32) int32
 
+// epollInit creates the epoll fd. It must be called with epollLock held or
+// before other cores start.
+func epollInit() {
+	if epollFD >= 0 {
+		return
+	}
+	epollFD = libc_epoll_create1(0x80000) // EPOLL_CLOEXEC
+	if epollFD < 0 {
+		runtimeFatal("epoll_create1 failed")
+	}
+	epollFiles = make(map[int32]*epollFile)
+}
+
+// epollAdd watches fd for input for as long as it is open.
+func epollAdd(fd int32) bool {
+	ev := epollEvent{events: epollIn}
+	ev.setFD(fd)
+	return libc_epoll_ctl(epollFD, epollCtlAdd, fd, &ev) == 0
+}
+
 // epollWaitFD parks the current goroutine until fd is readable (writable when
 // write) or timeout nanoseconds pass, waiting forever when timeout is
 // negative. It reports whether fd became ready.
 func epollWaitFD(fd int32, write bool, timeout int64) bool {
-	if epollFD < 0 {
-		epollFD = libc_epoll_create1(0x80000) // EPOLL_CLOEXEC
-		if epollFD < 0 {
-			runtimeFatal("epoll_create1 failed")
-		}
-		epollFiles = make(map[int32]*epollFile)
-	}
+	epollLock.Lock()
+	epollInit()
 	f := epollFiles[fd]
 	if f == nil {
 		f = &epollFile{}
@@ -99,16 +120,22 @@ func epollWaitFD(fd int32, write bool, timeout int64) bool {
 	} else {
 		f.readers = append(f.readers, w)
 	}
-	epollWaiting++
 	if !epollArm(fd, f) {
 		// epoll refuses regular files, which are always ready.
-		epollWake(f, w, true)
+		f.readers = epollRemove(f.readers, w)
+		f.writers = epollRemove(f.writers, w)
+		epollLock.Unlock()
 		return true
 	}
+	epollWaiting.Add(1)
 	if timeout >= 0 {
 		w.timer = &timer{when: nanotime() + timeout, arg: w}
 		addTimer(&timerNode{timer: w.timer, callback: epollTimeout})
 	}
+	epollLock.Unlock()
+
+	// A core that sees fd ready before this pause marks the task to resume
+	// at once.
 	task.Pause()
 	return w.ready
 }
@@ -150,7 +177,8 @@ func epollArm(fd int32, f *epollFile) bool {
 	}
 }
 
-// epollWake removes w from f and makes its goroutine runnable.
+// epollWake removes w from f and makes its goroutine runnable. It must be
+// called with epollLock held.
 func epollWake(f *epollFile, w *epollWaiter, ready bool) {
 	if w.done {
 		return
@@ -162,7 +190,7 @@ func epollWake(f *epollFile, w *epollWaiter, ready bool) {
 	if w.timer != nil && ready {
 		removeTimer(w.timer)
 	}
-	epollWaiting--
+	epollWaiting.Add(-1)
 	scheduleTask(w.t)
 }
 
@@ -179,22 +207,33 @@ func epollRemove(ws []*epollWaiter, w *epollWaiter) []*epollWaiter {
 
 func epollTimeout(tn *timerNode, delta int64) {
 	w := tn.timer.arg.(*epollWaiter)
+	epollLock.Lock()
 	epollWake(w.f, w, false)
+	epollLock.Unlock()
 }
 
 // epollPoll wakes the goroutines whose fds are ready, waiting up to timeout
 // milliseconds (forever when negative). A signal ends the wait early.
 func epollPoll(timeout int32) {
-	n := libc_epoll_wait(epollFD, &epollEvents[0], int32(len(epollEvents)), timeout)
-	if n < 0 {
-		if *libc_errno_location() == errEINTR && signalFutex.Swap(0) != 0 {
-			checkSignals()
-		}
+	events := &epollEvents[epollPoller()]
+	n := libc_epoll_wait(epollFD, &events[0], int32(len(events)), timeout)
+	if n < 0 && *libc_errno_location() != errEINTR {
 		return
 	}
+	if signalFutex.Swap(0) != 0 {
+		checkSignals()
+	}
+	if n <= 0 {
+		return
+	}
+	epollLock.Lock()
 	for i := int32(0); i < n; i++ {
-		e := &epollEvents[i]
+		e := &events[i]
 		fd := e.fd()
+		if fd == wakeFD {
+			epollDrainWake()
+			continue
+		}
 		f := epollFiles[fd]
 		if f == nil {
 			continue
@@ -213,6 +252,7 @@ func epollPoll(timeout int32) {
 		// EPOLLONESHOT disarmed fd, so re-arm it for the waiters left.
 		epollArm(fd, f)
 	}
+	epollLock.Unlock()
 }
 
 // schedulerPollTick polls without waiting every epollPollEvery task switches,
@@ -227,7 +267,7 @@ func schedulerPollTick() {
 	if signalFutex.Swap(0) != 0 {
 		checkSignals()
 	}
-	if epollWaiting != 0 {
+	if epollWaiting.Load() != 0 {
 		epollPoll(0)
 	}
 }
@@ -235,7 +275,7 @@ func schedulerPollTick() {
 // epollIdle waits up to d for fds when the scheduler has nothing to run, and
 // reports whether any goroutine waits on an fd.
 func epollIdle(d timeUnit, forever bool) bool {
-	if epollWaiting == 0 {
+	if epollWaiting.Load() == 0 {
 		return false
 	}
 	if signalFutex.Swap(0) != 0 {

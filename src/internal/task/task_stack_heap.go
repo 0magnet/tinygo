@@ -1,4 +1,4 @@
-//go:build (scheduler.tasks || scheduler.cores) && !(scheduler.tasks && linux && !baremetal)
+//go:build (scheduler.tasks || scheduler.cores) && !((scheduler.tasks || scheduler.cores) && linux && !baremetal)
 
 package task
 
@@ -20,6 +20,9 @@ func linkTask(t *Task) {}
 
 // unlinkStack does nothing here, since only asyncify keeps a list of stacks.
 func unlinkStack(t *Task) {}
+
+// releaseStack does nothing, since these stacks are on the heap.
+func releaseStack(t *Task) {}
 
 // MappedStackTop returns zero: the GC finds the stack bounds from the heap.
 func MappedStackTop() uintptr { return 0 }

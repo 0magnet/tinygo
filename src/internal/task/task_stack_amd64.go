@@ -1,10 +1,8 @@
-//go:build scheduler.tasks && amd64 && !windows && !uefi
+//go:build (scheduler.tasks || (scheduler.cores && linux)) && amd64 && !windows && !uefi
 
 package task
 
 import "unsafe"
-
-var systemStack uintptr
 
 // calleeSavedRegs is the list of registers that must be saved and restored when
 // switching between tasks. Also see task_stack_amd64.S that relies on the exact
@@ -45,17 +43,18 @@ func (s *state) archInit(r *calleeSavedRegs, fn uintptr, args unsafe.Pointer) {
 }
 
 func (s *state) resume() {
-	swapTask(s.sp, &systemStack)
+	swapTask(s.sp, systemStackSlot())
 }
 
 func (s *state) pause() {
-	newStack := systemStack
-	systemStack = 0
+	slot := systemStackSlot()
+	newStack := *slot
+	*slot = 0
 	swapTask(newStack, &s.sp)
 }
 
 // SystemStack returns the system stack pointer when called from a task stack.
 // When called from the system stack, it returns 0.
 func SystemStack() uintptr {
-	return systemStack
+	return *systemStackSlot()
 }

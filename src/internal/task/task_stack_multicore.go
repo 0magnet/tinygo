@@ -44,6 +44,10 @@ func (t *Task) Resume() {
 	t.gcData.swap()
 	t.state.resume()
 	t.gcData.swap()
+	if hasReleasableStack && t.Exited {
+		// The task has switched off its stack for good.
+		releaseStack(t)
+	}
 }
 
 //go:linkname lockScheduler runtime.lockScheduler

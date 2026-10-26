@@ -246,6 +246,8 @@ func run() {
 
 func scheduler(_ bool) {
 	for mainExited.Load() == 0 {
+		schedulerPollTickLocked()
+
 		var now timeUnit
 		if sleepQueue != nil || timerQueuePeek() != nil {
 			now = ticks()

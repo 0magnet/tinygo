@@ -455,6 +455,7 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 			"src/internal/futex/futex_linux.c",
 			"src/os/exec_linux.c",
 			"src/internal/task/task_threads.c",
+			"src/runtime/cores_linux.c",
 			"src/runtime/runtime_unix.c",
 			"src/runtime/signal.c")
 		if options.GOARCH == "amd64" || options.GOARCH == "386" {

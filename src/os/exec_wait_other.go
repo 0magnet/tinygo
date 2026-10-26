@@ -1,4 +1,4 @@
-//go:build linux && !scheduler.tasks && !baremetal && !tinygo.wasm && !nintendoswitch
+//go:build linux && !scheduler.tasks && !scheduler.cores && !baremetal && !tinygo.wasm && !nintendoswitch
 
 package os
 
