@@ -59,6 +59,10 @@ func markRoots(start, end uintptr) {
 }
 
 func markCurrentGoroutineStack(sp uintptr) {
+	if top := task.StackTop(); top != 0 {
+		libgc_push_all_stack(sp, top) // a stack mapped outside the heap
+		return
+	}
 	// Only mark the area of the stack that is currently in use.
 	// (This doesn't work for other goroutines, but at least it doesn't keep
 	// more pointers alive than needed on the current stack).

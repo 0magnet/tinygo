@@ -24,6 +24,9 @@ func markStack() {
 	// Scan the current stack, and all current registers.
 	scanCurrentStack()
 
+	// Scan the stacks of parked goroutines that live outside the heap.
+	task.MarkParkedStacks(markRoots)
+
 	if !task.OnSystemStack() {
 		// Mark system stack.
 		markRoots(task.SystemStack(), stackTop)
