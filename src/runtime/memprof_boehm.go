@@ -59,6 +59,15 @@ func memProfTake(ptr unsafe.Pointer, size, pc uintptr) {
 		memzero(t, unsafe.Sizeof(*memProfTable))
 		memProfSamples = (*[memProfSlots]memProfSample)(s)
 		memProfTable = (*[memProfSites]memProfSite)(t)
+		// Size the bdwgc disappearing link table for every slot now. A full
+		// table makes bdwgc collect before it grows, see GC_grow_table, and as
+		// most samples die that was a collection every thousand or so samples.
+		for i := range memProfSamples {
+			libgc_general_register_disappearing_link(unsafe.Pointer(&memProfSamples[i].obj), s)
+		}
+		for i := range memProfSamples {
+			libgc_unregister_disappearing_link(unsafe.Pointer(&memProfSamples[i].obj))
+		}
 	}
 	site := uintptr(memProfSites)
 	for i := uintptr(0); i < memProfSites; i++ {
@@ -138,6 +147,9 @@ func freeOSMemory() {
 
 //export GC_general_register_disappearing_link
 func libgc_general_register_disappearing_link(link, obj unsafe.Pointer) int32
+
+//export GC_unregister_disappearing_link
+func libgc_unregister_disappearing_link(link unsafe.Pointer) int32
 
 //export GC_get_free_space_divisor
 func libgc_get_free_space_divisor() uintptr
