@@ -35,6 +35,13 @@ type Value struct {
 	gcPtr *ref      // used to trigger the finalizer when the Value is not referenced any more
 }
 
+// A Value is kept alive across a call into JavaScript by its gcPtr, which is
+// what the finalizer hangs on: runtime.KeepAlive(v.gcPtr), not
+// runtime.KeepAlive(v). A Value does not fit in an interface's word on
+// wasm32, so passing the Value itself boxed a copy on the heap, and the
+// inline assembly KeepAlive is made of kept the box from being stack
+// allocated: every Get, Set and Call allocated one.
+
 const (
 	// the type flags need to be in sync with wasm_exec.js
 	typeFlagNone = iota
@@ -297,7 +304,7 @@ func (v Value) Get(p string) Value {
 		panic(&ValueError{"Value.Get", vType})
 	}
 	r, ok := valueGet(v.ref, p)
-	runtime.KeepAlive(v)
+	runtime.KeepAlive(v.gcPtr)
 	if !ok {
 		panic(Error{makeValue(r)})
 	}
@@ -321,10 +328,21 @@ func (v Value) Set(p string, x any) {
 	if vType := v.Type(); !vType.isObject() {
 		panic(&ValueError{"Value.Set", vType})
 	}
+	if s, isStr := x.(string); isStr {
+		// For the assignment alone, as storeArgs does for a call.
+		xr := stringVal(s)
+		r, ok := valueSet(v.ref, p, xr)
+		finalizeRef(xr)
+		runtime.KeepAlive(v.gcPtr)
+		if !ok {
+			panic(Error{makeValue(r)})
+		}
+		return
+	}
 	xv := ValueOf(x)
 	r, ok := valueSet(v.ref, p, xv.ref)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(xv)
+	runtime.KeepAlive(v.gcPtr)
+	runtime.KeepAlive(xv.gcPtr)
 	if !ok {
 		panic(Error{makeValue(r)})
 	}
@@ -348,7 +366,7 @@ func (v Value) Delete(p string) {
 		panic(&ValueError{"Value.Delete", vType})
 	}
 	r, ok := valueDelete(v.ref, p)
-	runtime.KeepAlive(v)
+	runtime.KeepAlive(v.gcPtr)
 	if !ok {
 		panic(Error{makeValue(r)})
 	}
@@ -372,7 +390,7 @@ func (v Value) Index(i int) Value {
 		panic(&ValueError{"Value.Index", vType})
 	}
 	r, ok := valueIndex(v.ref, i)
-	runtime.KeepAlive(v)
+	runtime.KeepAlive(v.gcPtr)
 	if !ok {
 		panic(Error{makeValue(r)})
 	}
@@ -389,10 +407,21 @@ func (v Value) SetIndex(i int, x any) {
 	if vType := v.Type(); !vType.isObject() {
 		panic(&ValueError{"Value.SetIndex", vType})
 	}
+	if s, isStr := x.(string); isStr {
+		// For the assignment alone, as storeArgs does for a call.
+		xr := stringVal(s)
+		r, ok := valueSetIndex(v.ref, i, xr)
+		finalizeRef(xr)
+		runtime.KeepAlive(v.gcPtr)
+		if !ok {
+			panic(Error{makeValue(r)})
+		}
+		return
+	}
 	xv := ValueOf(x)
 	r, ok := valueSetIndex(v.ref, i, xv.ref)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(xv)
+	runtime.KeepAlive(v.gcPtr)
+	runtime.KeepAlive(xv.gcPtr)
 	if !ok {
 		panic(Error{makeValue(r)})
 	}
@@ -424,12 +453,46 @@ func makeArgSlices(size int) (argVals []Value, argRefs []ref) {
 
 // storeArgs maps input args onto respective Value and ref slices.
 // It can be paired with makeArgSlices to make-and-store JavaScript arg slices.
-func storeArgs(args []any, argValsDst []Value, argRefsDst []ref) {
+//
+// A string is copied to JavaScript for the call alone. ValueOf would give it a
+// Value with a finalizer: a heap cell, a finalizer registered, and in time a
+// collection to run it, all for a reference nothing holds once the call has
+// returned. Its bit in transient says to release it then (releaseArgs).
+func storeArgs(args []any, argValsDst []Value, argRefsDst []ref) (transient uint32) {
 	// would go in makeArgs if the combined func was simple enough to inline
 	for i, arg := range args {
+		if s, ok := arg.(string); ok && i < 32 {
+			argRefsDst[i] = stringVal(s)
+			transient |= 1 << i
+			continue
+		}
 		v := ValueOf(arg)
 		argValsDst[i] = v
 		argRefsDst[i] = v.ref
+	}
+	return transient
+}
+
+// releaseArgs releases the references storeArgs made for the call alone.
+func releaseArgs(argRefs []ref, transient uint32) {
+	for i := 0; transient != 0; i++ {
+		if transient&1 != 0 {
+			finalizeRef(argRefs[i])
+		}
+		transient >>= 1
+	}
+}
+
+// keepArgsAlive keeps the arguments' Values alive until the call has
+// returned, so none is finalized while JavaScript still uses its reference.
+//
+// One by one, by the finalizer cell each holds, rather than
+// runtime.KeepAlive(argVals): converting the slice to an interface boxed it,
+// and the box escaped, and so did the array makeArgSlices had placed on the
+// stack. Every call allocated both.
+func keepArgsAlive(argVals []Value) {
+	for i := range argVals {
+		runtime.KeepAlive(argVals[i].gcPtr)
 	}
 }
 
@@ -440,7 +503,7 @@ func (v Value) Length() int {
 		panic(&ValueError{"Value.Length", vType})
 	}
 	r := valueLength(v.ref)
-	runtime.KeepAlive(v)
+	runtime.KeepAlive(v.gcPtr)
 	return r
 }
 
@@ -452,10 +515,11 @@ func valueLength(v ref) int
 // The arguments get mapped to JavaScript values according to the ValueOf function.
 func (v Value) Call(m string, args ...any) Value {
 	argVals, argRefs := makeArgSlices(len(args))
-	storeArgs(args, argVals, argRefs)
+	transient := storeArgs(args, argVals, argRefs)
 	res, ok := valueCall(v.ref, m, argRefs)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(argVals)
+	releaseArgs(argRefs, transient)
+	runtime.KeepAlive(v.gcPtr)
+	keepArgsAlive(argVals)
 	if !ok {
 		if vType := v.Type(); !vType.isObject() { // check here to avoid overhead in success case
 			panic(&ValueError{"Value.Call", vType})
@@ -485,10 +549,11 @@ func valueCall(v ref, m string, args []ref) (ref, bool)
 // The arguments get mapped to JavaScript values according to the ValueOf function.
 func (v Value) Invoke(args ...any) Value {
 	argVals, argRefs := makeArgSlices(len(args))
-	storeArgs(args, argVals, argRefs)
+	transient := storeArgs(args, argVals, argRefs)
 	res, ok := valueInvoke(v.ref, argRefs)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(argVals)
+	releaseArgs(argRefs, transient)
+	runtime.KeepAlive(v.gcPtr)
+	keepArgsAlive(argVals)
 	if !ok {
 		if vType := v.Type(); vType != TypeFunction { // check here to avoid overhead in success case
 			panic(&ValueError{"Value.Invoke", vType})
@@ -513,10 +578,11 @@ func valueInvoke(v ref, args []ref) (ref, bool)
 // The arguments get mapped to JavaScript values according to the ValueOf function.
 func (v Value) New(args ...any) Value {
 	argVals, argRefs := makeArgSlices(len(args))
-	storeArgs(args, argVals, argRefs)
+	transient := storeArgs(args, argVals, argRefs)
 	res, ok := valueNew(v.ref, argRefs)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(argVals)
+	releaseArgs(argRefs, transient)
+	runtime.KeepAlive(v.gcPtr)
+	keepArgsAlive(argVals)
 	if !ok {
 		if vType := v.Type(); vType != TypeFunction { // check here to avoid overhead in success case
 			panic(&ValueError{"Value.New", vType})
@@ -625,7 +691,7 @@ func (v Value) String() string {
 
 func jsString(v Value) string {
 	str, length := valuePrepareString(v.ref)
-	runtime.KeepAlive(v)
+	runtime.KeepAlive(v.gcPtr)
 	b := make([]byte, length)
 	valueLoadString(str, b)
 	finalizeRef(str)
@@ -647,8 +713,8 @@ func valueLoadString(v ref, b []byte)
 // InstanceOf reports whether v is an instance of type t according to JavaScript's instanceof operator.
 func (v Value) InstanceOf(t Value) bool {
 	r := valueInstanceOf(v.ref, t.ref)
-	runtime.KeepAlive(v)
-	runtime.KeepAlive(t)
+	runtime.KeepAlive(v.gcPtr)
+	runtime.KeepAlive(t.gcPtr)
 	return r
 }
 
@@ -672,7 +738,7 @@ func (e *ValueError) Error() string {
 // It returns the number of bytes copied, which will be the minimum of the lengths of src and dst.
 func CopyBytesToGo(dst []byte, src Value) int {
 	n, ok := copyBytesToGo(dst, src.ref)
-	runtime.KeepAlive(src)
+	runtime.KeepAlive(src.gcPtr)
 	if !ok {
 		panic("syscall/js: CopyBytesToGo: expected src to be a Uint8Array or Uint8ClampedArray")
 	}
@@ -693,7 +759,7 @@ func copyBytesToGo(dst []byte, src ref) (int, bool)
 // It returns the number of bytes copied, which will be the minimum of the lengths of src and dst.
 func CopyBytesToJS(dst Value, src []byte) int {
 	n, ok := copyBytesToJS(dst.ref, src)
-	runtime.KeepAlive(dst)
+	runtime.KeepAlive(dst.gcPtr)
 	if !ok {
 		panic("syscall/js: CopyBytesToJS: expected dst to be a Uint8Array or Uint8ClampedArray")
 	}
@@ -708,3 +774,13 @@ func CopyBytesToJS(dst Value, src []byte) int {
 //go:wasmimport gojs syscall/js.copyBytesToJS
 //go:noescape
 func copyBytesToJS(dst ref, src []byte) (int, bool)
+
+// releaseRef gives up a reference read without a Value around it, for one
+// used only for the moment. A value that is not reference counted (a number,
+// undefined, null, a boolean) is left alone, as makeValue leaves it without a
+// finalizer.
+func releaseRef(r ref) {
+	if typeFlag := (r >> 32) & 7; (r>>32)&nanHead == nanHead && typeFlag != typeFlagNone {
+		finalizeRef(r)
+	}
+}

@@ -86,8 +86,12 @@ func init() {
 // handleEvent retrieves the pending event (window._pendingEvent) and calls the js.Func on it.
 // It returns true if an event was handled.
 func handleEvent() bool {
-	// Retrieve the event from js
-	cb := jsGo.Get("_pendingEvent")
+	// Retrieve the event from js. The event object and its argument list are
+	// read as bare references and released before returning: nothing past
+	// this function holds them, and as Values each registered a finalizer,
+	// on every call from JavaScript, that only a collection would run.
+	r, _ := valueGet(jsGo.ref, "_pendingEvent")
+	cb := Value{ref: r}
 	if cb.IsNull() {
 		return false
 	}
@@ -104,19 +108,23 @@ func handleEvent() bool {
 	funcsMu.Unlock()
 	if !ok {
 		Global().Get("console").Call("error", "call to released function")
+		releaseRef(cb.ref)
 		return true
 	}
 
 	// Call the js.Func with arguments
 	this := cb.Get("this")
-	argsObj := cb.Get("args")
+	ar, _ := valueGet(cb.ref, "args")
+	argsObj := Value{ref: ar}
 	args := make([]Value, argsObj.Length())
 	for i := range args {
 		args[i] = argsObj.Index(i)
 	}
+	releaseRef(ar)
 	result := f(this, args)
 
 	// Return the result to js
 	cb.Set("result", result)
+	releaseRef(cb.ref)
 	return true
 }
