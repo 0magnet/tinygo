@@ -32,8 +32,32 @@ int tinygo_runtime_bdwgc_threads_init(void) {
     GC_word bitmap = 0;
     GC_make_descriptor(&bitmap, 1);
 
+    // GOGC sets how far the heap grows between collections, as
+    // debug.SetGCPercent does.
+    const char *s = getenv("GOGC");
+    long n;
+    if (s != NULL && (n = atol(s)) > 0) {
+        GC_set_free_space_divisor(n >= 200 ? 1 : 200 / n);
+    }
+
+    // By default a collection marks in one parallel pause.
+    // TINYGO_GC_INCREMENTAL=1 marks in steps of TINYGO_GC_PAUSE_MS with the
+    // world stopped and the rest while it runs, then finishes in one pause
+    // that marks the dirty pages again on one thread.
+    s = getenv("TINYGO_GC_INCREMENTAL");
+    if (s != NULL && s[0] == '1') {
+        long ms = 10;
+        if ((s = getenv("TINYGO_GC_PAUSE_MS")) != NULL) {
+            ms = atol(s);
+        }
+        GC_set_time_limit(ms > 0 ? (unsigned long)ms : GC_TIME_UNLIMITED);
+        // Finish each collection in one pause rather than retry in steps.
+        GC_set_max_prior_attempts(0);
+        GC_enable_incremental();
+    }
+
     // TINYGO_GC_TRACE=1 prints the length of each world stop.
-    const char *s = getenv("TINYGO_GC_TRACE");
+    s = getenv("TINYGO_GC_TRACE");
     return s != NULL && s[0] == '1';
 }
 
