@@ -444,12 +444,14 @@ const maxStackArgs = 16
 // callArgs makes JavaScript arguments of args and calls method m of v with
 // them (callMethod), v itself (callInvoke) or new v (callNew).
 //
-// It allocates nothing for up to maxStackArgs arguments. The two arrays are
-// this function's own and go nowhere but to the imports, which keep nothing
-// (go:noescape). They used to come from a helper that was to be inlined to
-// put them on the stack; TinyGo did not inline it, so it returned them from
-// the heap, on every call, and runtime.KeepAlive(argVals) boxed the slice
-// besides.
+// It allocates nothing for up to maxStackArgs arguments. The arrays are
+// declared here and handed to callArgsWith on a path of their own: TinyGo's
+// escape analysis follows a pointer into the function it is passed to, but
+// takes any value that merges two pointers (a phi, as "stack array if small,
+// else make" compiles to) as an escape. The helper this replaces merged them
+// like that and returned them besides, so its stack arrays were allocated on
+// the heap on every call, and runtime.KeepAlive(argVals) boxed the slice
+// too.
 //
 // A string is copied to JavaScript for the call alone and released after it.
 // ValueOf would give it a Value with a finalizer: a heap cell, a finalizer
@@ -461,15 +463,16 @@ const maxStackArgs = 16
 // cell each holds, which, unlike the Value, fits in an interface without
 // being boxed.
 func callArgs(kind int, v ref, m string, args []any) (ref, bool) {
+	if len(args) > maxStackArgs {
+		return callArgsWith(kind, v, m, args, make([]Value, len(args)), make([]ref, len(args)))
+	}
 	var valsBuf [maxStackArgs]Value
 	var refsBuf [maxStackArgs]ref
-	var argVals []Value
-	var argRefs []ref
-	if len(args) <= maxStackArgs {
-		argVals, argRefs = valsBuf[:len(args)], refsBuf[:len(args)]
-	} else {
-		argVals, argRefs = make([]Value, len(args)), make([]ref, len(args))
-	}
+	return callArgsWith(kind, v, m, args, valsBuf[:len(args)], refsBuf[:len(args)])
+}
+
+// callArgsWith is callArgs with the arrays to use, one per argument.
+func callArgsWith(kind int, v ref, m string, args []any, argVals []Value, argRefs []ref) (ref, bool) {
 	var transient uint32
 	for i, arg := range args {
 		if s, isStr := arg.(string); isStr && i < 32 {
