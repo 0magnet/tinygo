@@ -71,6 +71,8 @@ var BoehmGC = Library{
 			// queue, so the 3 ms polling for lost signals is not needed.
 			"-DGC_USESIGRT_SIGNALS",
 			"-DNO_RETRY_SIGNALS",
+			// Mark on every processor while the world is stopped.
+			"-DPARALLEL_MARK",
 			// Kinds 4 and 5 are the typed object and typed array kinds, made
 			// first by tinygo_runtime_bdwgc_threads_init. Give them local free lists.
 			"-DTHREAD_FREELISTS_KINDS=6",
