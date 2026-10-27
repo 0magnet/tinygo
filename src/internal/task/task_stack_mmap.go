@@ -159,6 +159,35 @@ func releaseStackLocked(si *stackInfo) {
 	}
 }
 
+//export madvise
+func stackMadvise(addr unsafe.Pointer, length uintptr, advice int32) int32
+
+//export getpagesize
+func stackPageSize() int32
+
+const madvDontNeed = 4
+
+// ReleaseIdleStackPages gives back the pages of each parked stack below where
+// it was parked, and of each pooled stack but its header, as Go shrinks stacks
+// in the GC. The world must be stopped. onCore reports goroutines on a core.
+func ReleaseIdleStackPages(onCore func(*Task) bool) {
+	page := uintptr(stackPageSize())
+	for t := stackTasks; t != nil; t = t.state.stack.next {
+		if t.RunState != RunStatePaused || onCore(t) {
+			continue
+		}
+		low := t.state.stack.top - t.state.stack.size
+		if end := (t.state.sp - 128) &^ (page - 1); end > low {
+			stackMadvise(unsafe.Pointer(low), end-low, madvDontNeed)
+		}
+	}
+	for ps := pool; ps != nil; ps = ps.next {
+		if base := uintptr(unsafe.Pointer(ps)); ps.size > page {
+			stackMadvise(unsafe.Pointer(base+page), ps.size-page, madvDontNeed)
+		}
+	}
+}
+
 // MappedStackTop returns the end of the current goroutine's stack, or zero on the
 // system stack.
 func MappedStackTop() uintptr {

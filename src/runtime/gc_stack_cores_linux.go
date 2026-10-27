@@ -22,7 +22,14 @@ var (
 	// interrupted on, and its system stack while it ran a goroutine.
 	gcCoreLow, gcCoreTop [numCPU]uintptr
 	gcSysLow, gcSysTop   [numCPU]uintptr
+	gcCoreTask           [numCPU]*task.Task
+
+	gcResumes uint32
 )
+
+// Idle stack pages are released every few collections, since each stack costs
+// a system call while the world is stopped.
+const gcReleaseStacksEvery = 8
 
 func gcMarkReachable() {
 	if secondaryCoresReady.Load() == 0 {
@@ -74,6 +81,11 @@ func gcResumeWorld() {
 	if gcStopped.Load() == 0 {
 		return
 	}
+	if gcResumes++; gcResumes%gcReleaseStacksEvery == 0 {
+		me := currentCPU()
+		gcCoreTask[me] = task.Current()
+		task.ReleaseIdleStackPages(gcOnCore)
+	}
 	gcStopped.Store(0)
 	task.UnlockStacks()
 	gcGen.Add(1)
@@ -95,6 +107,7 @@ func coresGCPause(sig int32) {
 		}
 	}
 	gcCoreLow[core], gcCoreTop[core] = low, top
+	gcCoreTask[core] = task.Current()
 	gcSysLow[core] = 0
 	if ss := task.SystemStack(); top != coreStackTop(core) && ss != 0 && ss < coreStackTop(core) {
 		gcSysLow[core], gcSysTop[core] = ss, coreStackTop(core)
@@ -105,6 +118,17 @@ func coresGCPause(sig int32) {
 	for gcGen.Load() == gen {
 		gcGen.Wait(gen)
 	}
+}
+
+// gcOnCore reports whether t was the current goroutine of a core when the world
+// stopped. Its saved stack pointer is stale then.
+func gcOnCore(t *task.Task) bool {
+	for i := range gcCoreTask {
+		if gcCoreTask[i] == t {
+			return true
+		}
+	}
+	return false
 }
 
 // markSystemStack marks the scheduler stack of core while a goroutine runs on
