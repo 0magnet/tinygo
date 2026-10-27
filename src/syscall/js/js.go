@@ -329,7 +329,7 @@ func (v Value) Set(p string, x any) {
 		panic(&ValueError{"Value.Set", vType})
 	}
 	if s, isStr := x.(string); isStr {
-		// For the assignment alone, as storeArgs does for a call.
+		// For the assignment alone, as callArgs does for a call.
 		xr := stringVal(s)
 		r, ok := valueSet(v.ref, p, xr)
 		finalizeRef(xr)
@@ -408,7 +408,7 @@ func (v Value) SetIndex(i int, x any) {
 		panic(&ValueError{"Value.SetIndex", vType})
 	}
 	if s, isStr := x.(string); isStr {
-		// For the assignment alone, as storeArgs does for a call.
+		// For the assignment alone, as callArgs does for a call.
 		xr := stringVal(s)
 		r, ok := valueSetIndex(v.ref, i, xr)
 		finalizeRef(xr)
@@ -430,70 +430,77 @@ func (v Value) SetIndex(i int, x any) {
 //go:wasmimport gojs syscall/js.valueTrySetIndex
 func valueSetIndex(v ref, i int, x ref) (ref, bool)
 
-// makeArgSlices makes two slices to hold JavaScript arg data.
-// It can be paired with storeArgs to make-and-store JavaScript arg slices.
-// However, the two functions are separated to ensure makeArgSlices is inlined
-// which will prevent the slices from being heap allocated for small (<=16)
-// numbers of args.
-func makeArgSlices(size int) (argVals []Value, argRefs []ref) {
-	// value chosen for being power of two, and enough to handle all web APIs
-	// in particular, note that WebGL2's texImage2D takes up to 10 arguments
-	const maxStackArgs = 16
-	if size <= maxStackArgs {
-		// as long as makeArgs is inlined, these will be stack-allocated
-		argVals = make([]Value, size, maxStackArgs)
-		argRefs = make([]ref, size, maxStackArgs)
-	} else {
-		// allocates on the heap, but exceeding maxStackArgs should be rare
-		argVals = make([]Value, size)
-		argRefs = make([]ref, size)
-	}
-	return
-}
+// What callArgs does with its arguments.
+const (
+	callMethod = iota
+	callInvoke
+	callNew
+)
 
-// storeArgs maps input args onto respective Value and ref slices.
-// It can be paired with makeArgSlices to make-and-store JavaScript arg slices.
+// maxStackArgs is how many arguments a call takes without allocating: a power
+// of two, and enough for every web API (WebGL2's texImage2D takes up to 10).
+const maxStackArgs = 16
+
+// callArgs makes JavaScript arguments of args and calls method m of v with
+// them (callMethod), v itself (callInvoke) or new v (callNew).
 //
-// A string is copied to JavaScript for the call alone. ValueOf would give it a
-// Value with a finalizer: a heap cell, a finalizer registered, and in time a
-// collection to run it, all for a reference nothing holds once the call has
-// returned. Its bit in transient says to release it then (releaseArgs).
-func storeArgs(args []any, argValsDst []Value, argRefsDst []ref) (transient uint32) {
-	// would go in makeArgs if the combined func was simple enough to inline
+// It allocates nothing for up to maxStackArgs arguments. The two arrays are
+// this function's own and go nowhere but to the imports, which keep nothing
+// (go:noescape). They used to come from a helper that was to be inlined to
+// put them on the stack; TinyGo did not inline it, so it returned them from
+// the heap, on every call, and runtime.KeepAlive(argVals) boxed the slice
+// besides.
+//
+// A string is copied to JavaScript for the call alone and released after it.
+// ValueOf would give it a Value with a finalizer: a heap cell, a finalizer
+// registered, and in time a collection to run it, for a reference nothing
+// holds once the call has returned.
+//
+// The other arguments' Values are kept alive until the call returns, so none
+// is finalized while JavaScript still uses its reference: by the finalizer
+// cell each holds, which, unlike the Value, fits in an interface without
+// being boxed.
+func callArgs(kind int, v ref, m string, args []any) (ref, bool) {
+	var valsBuf [maxStackArgs]Value
+	var refsBuf [maxStackArgs]ref
+	var argVals []Value
+	var argRefs []ref
+	if len(args) <= maxStackArgs {
+		argVals, argRefs = valsBuf[:len(args)], refsBuf[:len(args)]
+	} else {
+		argVals, argRefs = make([]Value, len(args)), make([]ref, len(args))
+	}
+	var transient uint32
 	for i, arg := range args {
-		if s, ok := arg.(string); ok && i < 32 {
-			argRefsDst[i] = stringVal(s)
+		if s, isStr := arg.(string); isStr && i < 32 {
+			argRefs[i] = stringVal(s)
 			transient |= 1 << i
 			continue
 		}
-		v := ValueOf(arg)
-		argValsDst[i] = v
-		argRefsDst[i] = v.ref
+		val := ValueOf(arg)
+		argVals[i] = val
+		argRefs[i] = val.ref
 	}
-	return transient
-}
-
-// releaseArgs releases the references storeArgs made for the call alone.
-func releaseArgs(argRefs []ref, transient uint32) {
+	var res ref
+	var ok bool
+	switch kind {
+	case callMethod:
+		res, ok = valueCall(v, m, argRefs)
+	case callInvoke:
+		res, ok = valueInvoke(v, argRefs)
+	default:
+		res, ok = valueNew(v, argRefs)
+	}
 	for i := 0; transient != 0; i++ {
 		if transient&1 != 0 {
 			finalizeRef(argRefs[i])
 		}
 		transient >>= 1
 	}
-}
-
-// keepArgsAlive keeps the arguments' Values alive until the call has
-// returned, so none is finalized while JavaScript still uses its reference.
-//
-// One by one, by the finalizer cell each holds, rather than
-// runtime.KeepAlive(argVals): converting the slice to an interface boxed it,
-// and the box escaped, and so did the array makeArgSlices had placed on the
-// stack. Every call allocated both.
-func keepArgsAlive(argVals []Value) {
 	for i := range argVals {
 		runtime.KeepAlive(argVals[i].gcPtr)
 	}
+	return res, ok
 }
 
 // Length returns the JavaScript property "length" of v.
@@ -514,12 +521,8 @@ func valueLength(v ref) int
 // It panics if v has no method m.
 // The arguments get mapped to JavaScript values according to the ValueOf function.
 func (v Value) Call(m string, args ...any) Value {
-	argVals, argRefs := makeArgSlices(len(args))
-	transient := storeArgs(args, argVals, argRefs)
-	res, ok := valueCall(v.ref, m, argRefs)
-	releaseArgs(argRefs, transient)
+	res, ok := callArgs(callMethod, v.ref, m, args)
 	runtime.KeepAlive(v.gcPtr)
-	keepArgsAlive(argVals)
 	if !ok {
 		if vType := v.Type(); !vType.isObject() { // check here to avoid overhead in success case
 			panic(&ValueError{"Value.Call", vType})
@@ -548,12 +551,8 @@ func valueCall(v ref, m string, args []ref) (ref, bool)
 // It panics if v is not a JavaScript function.
 // The arguments get mapped to JavaScript values according to the ValueOf function.
 func (v Value) Invoke(args ...any) Value {
-	argVals, argRefs := makeArgSlices(len(args))
-	transient := storeArgs(args, argVals, argRefs)
-	res, ok := valueInvoke(v.ref, argRefs)
-	releaseArgs(argRefs, transient)
+	res, ok := callArgs(callInvoke, v.ref, "", args)
 	runtime.KeepAlive(v.gcPtr)
-	keepArgsAlive(argVals)
 	if !ok {
 		if vType := v.Type(); vType != TypeFunction { // check here to avoid overhead in success case
 			panic(&ValueError{"Value.Invoke", vType})
@@ -577,12 +576,8 @@ func valueInvoke(v ref, args []ref) (ref, bool)
 // It panics if v is not a JavaScript function.
 // The arguments get mapped to JavaScript values according to the ValueOf function.
 func (v Value) New(args ...any) Value {
-	argVals, argRefs := makeArgSlices(len(args))
-	transient := storeArgs(args, argVals, argRefs)
-	res, ok := valueNew(v.ref, argRefs)
-	releaseArgs(argRefs, transient)
+	res, ok := callArgs(callNew, v.ref, "", args)
 	runtime.KeepAlive(v.gcPtr)
-	keepArgsAlive(argVals)
 	if !ok {
 		if vType := v.Type(); vType != TypeFunction { // check here to avoid overhead in success case
 			panic(&ValueError{"Value.New", vType})
