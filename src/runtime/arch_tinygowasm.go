@@ -98,9 +98,9 @@ const growHeapMinPages = 16
 // memory can never be given back, so the size it reaches is the size it
 // keeps, and doubling made one busy moment permanent: chaosrack's page had
 // doubled itself to 79 MB within a second of starting, to hold 10 MB of live
-// data ever after. Grown a quarter at a time it stays at 29 MB. alloc calls this again until a request fits, so a large one is
-// still met; the cost is an extra collection or two while a program is still
-// growing.
+// data ever after; grown a quarter at a time it stays at 29 MB. alloc calls
+// this again until a request fits, so a large one is still met; the cost is
+// an extra collection or two while a program is still growing.
 func growHeap() bool {
 	memorySize := wasm_memory_size(wasmMemoryIndex)
 	step := memorySize / 4
