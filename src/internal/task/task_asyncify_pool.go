@@ -23,7 +23,8 @@ const stackPoolMax = 8
 
 var (
 	// stackPool holds the kept stacks. It is a root for the GC, which is
-	// what keeps them allocated; their contents are not scanned (stackLayout).
+	// what keeps them allocated. Only a conservative collector scans what is
+	// in them (stackLayout), and they are cleared for it (putStack).
 	stackPool     [stackPoolMax]unsafe.Pointer
 	stackPoolSize [stackPoolMax]uintptr
 	stackPoolLen  int
