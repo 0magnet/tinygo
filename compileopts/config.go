@@ -140,6 +140,9 @@ func (c *Config) BuildTags() []string {
 		"gc." + c.GC(), "scheduler." + c.Scheduler(), // used inside the runtime package
 		"tinygo.unwind." + c.PanicUnwind(),
 		"serial." + c.Serial()}...) // used inside the machine package
+	if c.BoehmThreads() {
+		tags = append(tags, "boehm.threads")
+	}
 	switch c.Scheduler() {
 	case "threads", "cores":
 	default:
@@ -162,6 +165,14 @@ func (c *Config) GC() string {
 		return c.Target.GC
 	}
 	return "conservative"
+}
+
+// BoehmThreads reports whether bdwgc is built with its own thread support,
+// which the cores scheduler on Linux uses for thread local allocation and
+// parallel marking.
+func (c *Config) BoehmThreads() bool {
+	return c.GC() == "boehm" && c.Scheduler() == "cores" && c.GOOS() == "linux" &&
+		c.Target.Libc == "musl" && !slices.Contains(c.Target.BuildTags, "baremetal")
 }
 
 // NeedsStackObjects returns true if the compiler should insert stack objects
@@ -358,6 +369,9 @@ func (c *Config) LibraryPath(name string) string {
 	options := ""
 	if c.LibcNeedsMalloc() {
 		options += "+malloc"
+	}
+	if name == "bdwgc" && c.BoehmThreads() {
+		options += "+threads"
 	}
 	if c.TrimPath() {
 		options += "+trimpath-v1"
@@ -566,6 +580,9 @@ func (c *Config) ExtraFiles() []string {
 	files := c.Target.ExtraFiles
 	if c.GC() == "boehm" && !slices.Contains(files, "src/runtime/gc_boehm.c") {
 		files = append(slices.Clone(files), "src/runtime/gc_boehm.c")
+	}
+	if c.BoehmThreads() {
+		files = append(slices.Clone(files), "src/runtime/gc_boehm_threads.c")
 	}
 	return files
 }

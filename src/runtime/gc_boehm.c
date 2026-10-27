@@ -11,15 +11,23 @@
 
 void tinygo_runtime_bdwgc_callback(void);
 
+// The descriptor cache is read without a lock, since bdwgc may allocate on
+// several threads at once. Entries never change once published, and a grown
+// table gets copies of them, so a reader never follows a relinked chain.
 struct descriptor_cache_entry {
     uintptr_t layout;
     GC_descr descriptor;
     struct descriptor_cache_entry *next;
 };
 
-static struct descriptor_cache_entry **descriptor_cache;
-static size_t descriptor_cache_capacity;
-static size_t descriptor_cache_count;
+struct descriptor_cache_table {
+    size_t capacity;
+    size_t count;
+    struct descriptor_cache_entry *buckets[];
+};
+
+static struct descriptor_cache_table *descriptor_cache;
+static char descriptor_cache_lock;
 
 static size_t descriptor_cache_index(uintptr_t layout, size_t capacity) {
 #if UINTPTR_MAX > UINT32_MAX
@@ -31,37 +39,65 @@ static size_t descriptor_cache_index(uintptr_t layout, size_t capacity) {
     return layout & (capacity - 1);
 }
 
-static int grow_descriptor_cache(void) {
-    size_t new_capacity =
-        descriptor_cache_capacity == 0 ? 64 : descriptor_cache_capacity * 2;
-    struct descriptor_cache_entry **new_cache;
-    size_t i;
+static GC_descr descriptor_cache_find(struct descriptor_cache_table *table,
+                                      uintptr_t layout) {
+    struct descriptor_cache_entry *entry;
 
-    new_cache =
-        GC_malloc_atomic_uncollectable(new_capacity * sizeof(*new_cache));
-    if (new_cache == NULL) {
+    if (table == NULL) {
         return 0;
     }
-    memset(new_cache, 0, new_capacity * sizeof(*new_cache));
-
-    for (i = 0; i < descriptor_cache_capacity; i++) {
-        struct descriptor_cache_entry *entry = descriptor_cache[i];
-        while (entry != NULL) {
-            struct descriptor_cache_entry *next = entry->next;
-            size_t index =
-                descriptor_cache_index(entry->layout, new_capacity);
-
-            entry->next = new_cache[index];
-            new_cache[index] = entry;
-            entry = next;
+    entry = __atomic_load_n(
+        &table->buckets[descriptor_cache_index(layout, table->capacity)],
+        __ATOMIC_ACQUIRE);
+    for (; entry != NULL; entry = entry->next) {
+        if (entry->layout == layout) {
+            return entry->descriptor;
         }
     }
+    return 0;
+}
 
-    if (descriptor_cache != NULL) {
-        GC_free(descriptor_cache);
+static int descriptor_cache_add(struct descriptor_cache_table *table,
+                                uintptr_t layout, GC_descr descriptor) {
+    struct descriptor_cache_entry *entry;
+    size_t index = descriptor_cache_index(layout, table->capacity);
+
+    entry = GC_malloc_atomic_uncollectable(sizeof(*entry));
+    if (entry == NULL) {
+        return 0;
     }
-    descriptor_cache = new_cache;
-    descriptor_cache_capacity = new_capacity;
+    entry->layout = layout;
+    entry->descriptor = descriptor;
+    entry->next = table->buckets[index];
+    __atomic_store_n(&table->buckets[index], entry, __ATOMIC_RELEASE);
+    table->count++;
+    return 1;
+}
+
+// grow_descriptor_cache publishes a table twice as large. The old table and
+// its entries stay, as readers may still use them.
+static int grow_descriptor_cache(void) {
+    struct descriptor_cache_table *old = descriptor_cache, *table;
+    size_t capacity = old == NULL ? 64 : old->capacity * 2;
+    size_t size = sizeof(*table) + capacity * sizeof(table->buckets[0]);
+    size_t i;
+
+    table = GC_malloc_atomic_uncollectable(size);
+    if (table == NULL) {
+        return 0;
+    }
+    memset(table, 0, size);
+    table->capacity = capacity;
+    for (i = 0; old != NULL && i < old->capacity; i++) {
+        struct descriptor_cache_entry *entry;
+        for (entry = old->buckets[i]; entry != NULL; entry = entry->next) {
+            if (!descriptor_cache_add(table, entry->layout, entry->descriptor)) {
+                GC_free(table);
+                return 0;
+            }
+        }
+    }
+    __atomic_store_n(&descriptor_cache, table, __ATOMIC_RELEASE);
     return 1;
 }
 
@@ -88,31 +124,12 @@ void tinygo_runtime_bdwgc_init(void) {
 #endif
 }
 
-GC_descr tinygo_runtime_bdwgc_make_descriptor(uintptr_t layout) {
-    struct descriptor_cache_entry *entry;
+static GC_descr make_descriptor(uintptr_t layout) {
     GC_word inline_bitmap;
     GC_word *bitmap;
-    size_t index;
     size_t bit_count;
     size_t word_count;
     GC_descr descriptor;
-
-    if (descriptor_cache_count >= descriptor_cache_capacity * 2 &&
-        !grow_descriptor_cache()) {
-        return 0;
-    }
-
-    index = descriptor_cache_index(layout, descriptor_cache_capacity);
-    for (entry = descriptor_cache[index]; entry != NULL; entry = entry->next) {
-        if (entry->layout == layout) {
-            return entry->descriptor;
-        }
-    }
-
-    entry = GC_malloc_atomic_uncollectable(sizeof(*entry));
-    if (entry == NULL) {
-        return 0;
-    }
 
     if (layout & 1) {
         const size_t size_bits = 4 + sizeof(uintptr_t) / 4;
@@ -129,7 +146,6 @@ GC_descr tinygo_runtime_bdwgc_make_descriptor(uintptr_t layout) {
         word_count = (bit_count + GC_WORDSZ - 1) / GC_WORDSZ;
         bitmap = GC_malloc_atomic_uncollectable(word_count * sizeof(GC_word));
         if (bitmap == NULL) {
-            GC_free(entry);
             return 0;
         }
         memset(bitmap, 0, word_count * sizeof(GC_word));
@@ -144,15 +160,32 @@ GC_descr tinygo_runtime_bdwgc_make_descriptor(uintptr_t layout) {
     if (!(layout & 1)) {
         GC_free(bitmap);
     }
-    if (descriptor == 0) {
-        GC_free(entry);
-        return 0;
+    return descriptor;
+}
+
+GC_descr tinygo_runtime_bdwgc_make_descriptor(uintptr_t layout) {
+    struct descriptor_cache_table *table;
+    GC_descr descriptor;
+
+    descriptor = descriptor_cache_find(
+        __atomic_load_n(&descriptor_cache, __ATOMIC_ACQUIRE), layout);
+    if (descriptor != 0) {
+        return descriptor;
     }
 
-    entry->layout = layout;
-    entry->descriptor = descriptor;
-    entry->next = descriptor_cache[index];
-    descriptor_cache[index] = entry;
-    descriptor_cache_count++;
+    // Misses are rare, one per layout, so writers just spin.
+    while (__atomic_test_and_set(&descriptor_cache_lock, __ATOMIC_ACQUIRE)) {
+    }
+    table = descriptor_cache;
+    descriptor = descriptor_cache_find(table, layout);
+    if (descriptor == 0 &&
+        ((table != NULL && table->count < table->capacity * 2) ||
+         grow_descriptor_cache())) {
+        descriptor = make_descriptor(layout);
+        if (descriptor != 0 && !descriptor_cache_add(descriptor_cache, layout, descriptor)) {
+            descriptor = 0;
+        }
+    }
+    __atomic_clear(&descriptor_cache_lock, __ATOMIC_RELEASE);
     return descriptor;
 }

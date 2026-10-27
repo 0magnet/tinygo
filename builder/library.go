@@ -28,6 +28,11 @@ type Library struct {
 	// cflags returns the C flags specific to this library
 	cflags func(target, headerPath string) []string
 
+	// configFlags and configSources add flags and files for a build
+	// configuration. The configuration must also show in LibraryPath.
+	configFlags   func(config *compileopts.Config) []string
+	configSources func(config *compileopts.Config) []string
+
 	// cflagsForFile returns additional C flags for a particular source file.
 	cflagsForFile func(path string) []string
 
@@ -137,6 +142,9 @@ func (l *Library) load(config *compileopts.Config, tmpdir string) (job *compileJ
 	// reproducible. Otherwise the temporary directory is stored in the archive
 	// itself, which varies each run.
 	args := append(l.cflags(target, headerPath), "-c", "-Oz", "-gdwarf-4", "-ffunction-sections", "-fdata-sections", "-Wno-macro-redefined", "--target="+compileopts.ClangTriple(target), "-fdebug-prefix-map="+dir+"="+remapDir)
+	if l.configFlags != nil {
+		args = append(args, l.configFlags(config)...)
+	}
 	resourceDir := goenv.ClangResourceDir(config.TrimPath())
 	if config.TrimPath() {
 		args = append(args,
@@ -241,6 +249,9 @@ func (l *Library) load(config *compileopts.Config, tmpdir string) (job *compileJ
 	// Create jobs to compile all sources. These jobs are depended upon by the
 	// archive job above, so must be run first.
 	paths, err := l.librarySources(target, config.LibcNeedsMalloc())
+	if err == nil && l.configSources != nil {
+		paths = append(paths, l.configSources(config)...)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

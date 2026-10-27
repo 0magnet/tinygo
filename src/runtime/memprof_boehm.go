@@ -39,6 +39,11 @@ func memProfRecord(ptr unsafe.Pointer, size, pc uintptr) {
 		return
 	}
 	memProfLeft = memProfRate
+	memProfTake(ptr, size, pc)
+}
+
+// memProfTake records one allocation in the heap profile, with gcLock held.
+func memProfTake(ptr unsafe.Pointer, size, pc uintptr) {
 	weight := uintptr(memProfRate)
 	if size > weight {
 		weight = size

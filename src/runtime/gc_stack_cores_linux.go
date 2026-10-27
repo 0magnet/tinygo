@@ -2,22 +2,15 @@
 
 package runtime
 
-// The GC stops the other cores with a signal. Each stopped core records where
-// its stacks are in use, with its registers in the signal frame above that
-// point, and sleeps until the GC resumes the world. The GC core scans
-// those ranges itself, since the GC library may ask for the roots more than
-// once in one collection.
+// The GC stops the other cores with a signal, its own or the bdwgc suspend
+// signal. Each stopped core records where its stacks are in use, with its
+// registers in the signal frame above that point, and sleeps until the GC
+// resumes the world. The GC core scans those ranges itself, since the GC
+// library may ask for the roots more than once in one collection.
 
-import (
-	"internal/futex"
-	"internal/task"
-)
+import "internal/task"
 
 var (
-	gcStopped futex.Futex // 1 between the stop and gcResumeWorld
-	gcAcks    futex.Futex // cores that have stopped
-	gcGen     futex.Futex // bumped by every resume
-
 	// The in-use stack ranges of each stopped core: the stack it was
 	// interrupted on, and its system stack while it ran a goroutine.
 	gcCoreLow, gcCoreTop [numCPU]uintptr
@@ -31,73 +24,9 @@ var (
 // a system call while the world is stopped.
 const gcReleaseStacksEvery = 8
 
-func gcMarkReachable() {
-	if secondaryCoresReady.Load() == 0 {
-		scanCurrentStack()
-		task.MarkParkedStacks(markRoots)
-		markSystemStack(currentCPU())
-		markGlobals()
-		return
-	}
-
-	me := currentCPU()
-	if gcStopped.Load() == 0 {
-		// No core may start or end a goroutine while their stacks are
-		// scanned. The lock is held until gcResumeWorld.
-		task.LockStacks()
-		gcAcks.Store(0)
-		gcStopped.Store(1)
-		for i := uint32(0); i < numCPU; i++ {
-			if i != me {
-				tinygo_cores_signal(coreThreads[i])
-			}
-		}
-		for {
-			n := gcAcks.Load()
-			if n == numCPU-1 {
-				break
-			}
-			gcAcks.Wait(n)
-		}
-	}
-
-	for i := uint32(0); i < numCPU; i++ {
-		if i == me {
-			continue
-		}
-		markRoots(gcCoreLow[i], gcCoreTop[i])
-		if gcSysLow[i] != 0 {
-			markRoots(gcSysLow[i], gcSysTop[i])
-		}
-	}
-	scanCurrentStack()
-	task.MarkParkedStacks(markRoots)
-	markSystemStack(me)
-	markGlobals()
-}
-
-// gcResumeWorld resumes the cores stopped by gcMarkReachable, if any.
-func gcResumeWorld() {
-	if gcStopped.Load() == 0 {
-		return
-	}
-	if gcResumes++; gcResumes%gcReleaseStacksEvery == 0 {
-		me := currentCPU()
-		gcCoreTask[me] = task.Current()
-		task.ReleaseIdleStackPages(gcOnCore)
-	}
-	gcStopped.Store(0)
-	task.UnlockStacks()
-	gcGen.Add(1)
-	gcGen.WakeAll()
-}
-
-//export tinygo_cores_gc_pause
-func coresGCPause(sig int32) {
-	gen := gcGen.Load()
-	if gcStopped.Load() == 0 {
-		return
-	}
+// gcRecordCore saves the stack ranges in use on the current core. It runs in
+// the signal handler that stops the core.
+func gcRecordCore() {
 	core := currentCPU()
 	sp := uintptr(stacksave())
 	low, top := sp, coreStackTop(core)
@@ -112,11 +41,23 @@ func coresGCPause(sig int32) {
 	if ss := task.SystemStack(); top != coreStackTop(core) && ss != 0 && ss < coreStackTop(core) {
 		gcSysLow[core], gcSysTop[core] = ss, coreStackTop(core)
 	}
+}
 
-	gcAcks.Add(1)
-	gcAcks.Wake()
-	for gcGen.Load() == gen {
-		gcGen.Wait(gen)
+// markStoppedCore marks the stack ranges recorded by a stopped core.
+func markStoppedCore(core uint32) {
+	markRoots(gcCoreLow[core], gcCoreTop[core])
+	if gcSysLow[core] != 0 {
+		markRoots(gcSysLow[core], gcSysTop[core])
+	}
+}
+
+// gcReleaseIdleStacks gives back idle stack pages every few collections. The
+// world must be stopped.
+func gcReleaseIdleStacks() {
+	if gcResumes++; gcResumes%gcReleaseStacksEvery == 0 {
+		me := currentCPU()
+		gcCoreTask[me] = task.Current()
+		task.ReleaseIdleStackPages(gcOnCore)
 	}
 }
 

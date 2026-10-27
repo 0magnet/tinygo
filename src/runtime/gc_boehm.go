@@ -3,18 +3,15 @@
 // This is the Boehm-Demers-Weiser conservative garbage collector, integrated
 // into TinyGo.
 //
-// Note that we use a special way of dealing with threads:
+// Without bdwgc thread support, threads are handled this way:
 //   * All calls to the bdwgc library are serialized using locks.
 //   * When the bdwgc library wants to push GC roots, all other threads that are
 //     running are stopped.
 //   * After returning from a bdwgc library call, the caller checks whether
 //     other threads were stopped (meaning a GC cycle happened) and resumes the
 //     world.
-// This is not exactly the most efficient way to do this. We can likely speed
-// things up by using bdwgc-native wrappers for starting/stopping threads (and
-// also to resume the world while sweeping). Also, thread local allocation might
-// help. But we don't do any of these right now, it is left as a possible future
-// improvement.
+// The cores scheduler on Linux uses bdwgc thread support instead, see
+// gc_boehm_threads.go.
 
 package runtime
 
@@ -32,10 +29,9 @@ const (
 	boehmNormalKind  = 1
 )
 
-var (
-	gcLock    task.PMutex
-	gcMallocs uint64
-)
+// gcLock serializes the runtime state kept next to bdwgc, and every bdwgc call
+// unless bdwgc has its own thread support.
+var gcLock task.PMutex
 
 func initHeap() {
 	libgc_init()
@@ -43,6 +39,7 @@ func initHeap() {
 	// Call GC_set_push_other_roots(gcCallback) in C because of function
 	// signature differences that do matter in WebAssembly.
 	gcInit()
+	gcInitThreads()
 }
 
 //export tinygo_runtime_bdwgc_init
@@ -80,8 +77,8 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		return alloc_zero(size, layout)
 	}
 
-	gcLock.Lock()
-	gcMallocs++
+	gcAllocLock()
+	gcCountMalloc()
 	var ptr unsafe.Pointer
 	var needsZero bool
 	switch layout {
@@ -128,10 +125,9 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		}
 	}
 	if ptr != nil {
-		memProfRecord(ptr, size, uintptr(returnAddress(0)))
+		gcProfileAlloc(ptr, size, uintptr(returnAddress(0)))
 	}
-	gcResumeWorld()
-	gcLock.Unlock()
+	gcAllocUnlock()
 	if ptr == nil {
 		runtimeFatal("gc: out of memory")
 		return nil
@@ -205,17 +201,18 @@ func ReadMemStats(m *MemStats) {
 	m.Alloc = m.HeapAlloc
 	m.GCSys = 0 // not provided by bdwgc
 	m.TotalAlloc = uint64(gcMemStats.allocd_bytes_before_gc + gcMemStats.bytes_allocd_since_gc)
-	m.Mallocs = gcMallocs
+	m.Mallocs = gcMallocCount()
 	m.Frees = 0 // not provided by bdwgc
 	m.Sys = uint64(gcMemStats.obtained_from_os_bytes)
 	m.NumGC = uint32(gcMemStats.gc_no)
+	gcReadPauses(m)
 
 	gcLock.Unlock()
 }
 
 func mallocs() uint64 {
 	gcLock.Lock()
-	mallocs := gcMallocs
+	mallocs := gcMallocCount()
 	gcLock.Unlock()
 	return mallocs
 }

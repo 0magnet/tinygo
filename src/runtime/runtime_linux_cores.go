@@ -98,7 +98,7 @@ func coreStackTop(core uint32) uintptr {
 // startSecondaryCores starts a thread for every core but the first.
 func startSecondaryCores() {
 	coresInitPoll()
-	tinygo_cores_init(&coreThreads[0])
+	coresInitGC()
 	for i := uint32(1); i < numCPU; i++ {
 		if tinygo_cores_start(i, coreStackSize, &coreTops[i], &coreThreads[i]) != 0 {
 			runtimeFatal("cannot start a scheduler thread")
@@ -108,6 +108,7 @@ func startSecondaryCores() {
 
 //export tinygo_cores_run
 func coresRun(cpu uint32) {
+	coresRegisterGC(cpu)
 	waitForSecondaryCoresReady()
 	schedulerLock.Lock()
 	scheduler(false)

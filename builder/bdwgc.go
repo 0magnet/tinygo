@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/goenv"
 )
 
@@ -53,14 +54,39 @@ var BoehmGC = Library{
 			// Assertions can be enabled while debugging GC issues.
 			//"-DGC_ASSERTIONS",
 
-			// We use our own way of dealing with threads (that is a bit hacky).
-			// See src/runtime/gc_boehm.go.
-			//"-DGC_THREADS",
-			//"-DTHREAD_LOCAL_ALLOC",
-
 			"-I" + libdir + "/include",
 		}
 		return flags
+	},
+	configFlags: func(config *compileopts.Config) []string {
+		if !config.BoehmThreads() {
+			return nil
+		}
+		// The cores scheduler registers its threads with bdwgc, which stops
+		// them for a collection. See src/runtime/gc_boehm_threads.go.
+		return []string{
+			"-DGC_THREADS",
+			"-DTHREAD_LOCAL_ALLOC",
+			// Stop with SIGRTMIN+6 and restart with SIGRTMIN+5. Real time signals
+			// queue, so the 3 ms polling for lost signals is not needed.
+			"-DGC_USESIGRT_SIGNALS",
+			"-DNO_RETRY_SIGNALS",
+			// Kinds 4 and 5 are the typed object and typed array kinds, made
+			// first by tinygo_runtime_bdwgc_threads_init. Give them local free lists.
+			"-DTHREAD_FREELISTS_KINDS=6",
+		}
+	},
+	configSources: func(config *compileopts.Config) []string {
+		if !config.BoehmThreads() {
+			return nil
+		}
+		return []string{
+			"mallocx.c",
+			"pthread_start.c",
+			"pthread_stop_world.c",
+			"pthread_support.c",
+			"thread_local_alloc.c",
+		}
 	},
 	needsLibc: true,
 	sourceDir: func() string {
