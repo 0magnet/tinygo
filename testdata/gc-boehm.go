@@ -2,7 +2,9 @@ package main
 
 import (
 	"runtime"
+	"time"
 	"unsafe"
+	"weak"
 )
 
 type falseRootObject struct {
@@ -23,7 +25,7 @@ type externalFalseRoot struct {
 var inlineRoot *inlineFalseRoot
 var externalRoot *externalFalseRoot
 var repeatedRoots []inlineFalseRoot
-var falseRootAddress uintptr
+var falseRootObjectRef weak.Pointer[falseRootObject]
 var frameSum uintptr
 
 //go:noinline
@@ -54,7 +56,7 @@ func makeFalseRoot(depth int, setRoot func(uintptr)) {
 	object := newFalseRootObject(depth)
 	address := uintptr(unsafe.Pointer(object))
 	setRoot(address)
-	falseRootAddress = address
+	falseRootObjectRef = weak.Make(object)
 }
 
 func expectCollected(depth int, setRoot func(uintptr)) {
@@ -64,14 +66,32 @@ func expectCollected(depth int, setRoot func(uintptr)) {
 		close(done)
 	}()
 	<-done
-	runtime.GC()
-	for i := 0; i < 100000; i++ {
-		object := new(falseRootObject)
-		if uintptr(unsafe.Pointer(object)) == falseRootAddress {
+	// A freed object may be reused on another thread, so check the object
+	// itself rather than wait for its address to come back. A stale word on
+	// an OS thread stack may hold it for a collection or two, so retry.
+	for i := 0; i < 10; i++ {
+		runtime.GC()
+		if falseRootCollected() {
 			return
 		}
+		clearStack()
+		time.Sleep(time.Millisecond)
 	}
 	panic("non-pointer field retained allocation")
+}
+
+// falseRootCollected leaves the pointer Value returns in a frame that
+// clearStack overwrites.
+//
+//go:noinline
+func falseRootCollected() bool {
+	return falseRootObjectRef.Value() == nil
+}
+
+//go:noinline
+func clearStack() {
+	var frame [256]uintptr
+	fillFrame(frame[:])
 }
 
 func expectRepeatedPointersLive() {
