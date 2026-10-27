@@ -43,10 +43,46 @@ var (
 	gcPauseTotal uint64
 	gcLastGC     uint64
 	gcTrace      bool
+	gcStopAllocd uintptr
+
+	// gcGrow is set after each collection, for gcGrowHeap.
+	gcGrow                 atomic.Uint32
+	gcStopHeap, gcStopFree uintptr // heap state when the world stopped
 )
 
-func gcAllocLock()   {}
-func gcAllocUnlock() {}
+func gcAllocLock() {}
+
+func gcAllocUnlock() {
+	if gcGrow.Load() != 0 {
+		gcGrowHeap()
+	}
+}
+
+// gcGrowHeap grows the heap after a collection to what the live heap may reach
+// before the next one. Without incremental mode bdwgc collects when the heap
+// is full, and grows it by at most MAXHINCR blocks (8 MB) and then collects
+// again, so a GB heap took hundreds of collections to build.
+func gcGrowHeap() {
+	if !gcGrow.CompareAndSwap(1, 0) {
+		return
+	}
+	// Garbage is about what was allocated since the previous collection.
+	used := gcStopHeap - gcStopFree
+	if used <= gcStopAllocd {
+		return
+	}
+	live := used - gcStopAllocd
+	want := live + 2*live/libgc_get_free_space_divisor()
+	var heap, free, unmapped, sinceGC, total uintptr
+	libgc_get_heap_usage_safe(&heap, &free, &unmapped, &sinceGC, &total)
+	// Unmapped blocks are mapped again before the heap grows.
+	if have := heap + unmapped; want > have {
+		libgc_expand_hp(want - have)
+		if gcTrace {
+			println("gc grow live", int(live>>20), "MB heap", int(want>>20), "MB")
+		}
+	}
+}
 
 func gcCountMalloc() {
 	gcCounters[currentCPU()].mallocs++
@@ -105,6 +141,9 @@ func gcEvent(event int32) {
 	switch event {
 	case gcEventPreStopWorld:
 		gcStopStart = tinygo_runtime_bdwgc_clock(0)
+		gcStopAllocd = libgc_get_bytes_since_gc()
+		gcStopHeap = libgc_get_heap_size()
+		gcStopFree = libgc_get_free_bytes()
 		// No core may start or end a goroutine while their stacks are
 		// scanned. Nothing allocates while holding this lock.
 		task.LockStacks()
@@ -116,11 +155,12 @@ func gcEvent(event int32) {
 		gcWorldStopped = false
 		task.UnlockStacks()
 	case gcEventPostStartWorld:
+		gcGrow.Store(1)
 		d := tinygo_runtime_bdwgc_clock(0) - gcStopStart
 		gcPauseTotal += d
 		gcLastGC = tinygo_runtime_bdwgc_clock(1)
 		if gcTrace {
-			println("gc pause", d/1000, "us")
+			println("gc pause", d/1000, "us heap", int(libgc_get_heap_size()>>20), "MB free", int(libgc_get_free_bytes()>>20), "MB allocd", int(gcStopAllocd>>20), "MB divisor", int(libgc_get_free_space_divisor()))
 		}
 	}
 }
@@ -162,6 +202,21 @@ func gcResumeWorld() {}
 type libgc_stack_base struct {
 	mem_base uintptr
 }
+
+//export GC_get_heap_usage_safe
+func libgc_get_heap_usage_safe(heap, free, unmapped, sinceGC, total *uintptr)
+
+//export GC_expand_hp
+func libgc_expand_hp(bytes uintptr) int32
+
+//export GC_get_heap_size
+func libgc_get_heap_size() uintptr
+
+//export GC_get_free_bytes
+func libgc_get_free_bytes() uintptr
+
+//export GC_get_bytes_since_gc
+func libgc_get_bytes_since_gc() uintptr
 
 //export GC_allow_register_threads
 func libgc_allow_register_threads()
