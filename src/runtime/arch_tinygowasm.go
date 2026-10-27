@@ -88,12 +88,26 @@ func saveStackPointer() {
 	savedStackPointer = getCurrentStackPointer()
 }
 
+// growHeapMinPages is the least growHeap adds: 1 MB of 64 KB pages.
+const growHeapMinPages = 16
+
 // growHeap tries to grow the heap size. It returns true if it succeeds, false
 // otherwise.
+//
+// It grows by a quarter of the memory, not by all of it. A wasm module's
+// memory can never be given back, so the size it reaches is the size it
+// keeps, and doubling made one busy moment permanent: chaosrack's page grew
+// from 40 MB to 79 MB in one step while it booted, to hold 10 MB of live data
+// ever after. alloc calls this again until a request fits, so a large one is
+// still met; the cost is an extra collection or two while a program is still
+// growing.
 func growHeap() bool {
-	// Grow memory by the available size, which means the heap size is doubled.
 	memorySize := wasm_memory_size(wasmMemoryIndex)
-	result := wasm_memory_grow(wasmMemoryIndex, memorySize)
+	step := memorySize / 4
+	if step < growHeapMinPages {
+		step = growHeapMinPages
+	}
+	result := wasm_memory_grow(wasmMemoryIndex, step)
 	if result == -1 {
 		// Grow failed.
 		return false
