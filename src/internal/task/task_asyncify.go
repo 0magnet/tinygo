@@ -87,7 +87,7 @@ func (s *state) initialize(fn uintptr, args unsafe.Pointer, stackSize uintptr) {
 	s.args = args
 
 	// Create a stack.
-	stack := runtime_alloc(stackSize, stackLayout())
+	stack := takeStack(stackSize)
 	s.stackBase = uintptr(stack)
 
 	// Set up the stack canary, a random number that should be checked when
@@ -240,7 +240,7 @@ func (t *Task) Resume() {
 		runtimeFatal("goroutine stack overflow; build with a larger -stack-size")
 	}
 	if t.Exited {
-		runtime_freeTaskStack(t.state.stackBase)
+		putStack(unsafe.Pointer(t.state.stackBase), uintptr(t.state.top)-t.state.stackBase)
 		t.state = state{}
 		t.gcData = gcData{}
 		t.DeferFrame = nil
