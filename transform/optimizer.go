@@ -53,6 +53,9 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		}
 	}
 
+	// Before any dead code elimination, which would remove the method tables.
+	LowerReflectMethods(mod)
+
 	if speedLevel > 0 {
 		// Run some preparatory passes for the Go optimizer.
 		po := llvm.NewPassBuilderOptions()

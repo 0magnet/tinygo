@@ -62,6 +62,10 @@ type Config struct {
 	Nobounds           bool // Whether to skip bounds checks
 	PanicStrategy      string
 	PanicUnwind        string
+
+	// ReflectMethods emits the method tables reflect.Value.Method needs. It is
+	// set only when the program refers to Method or MethodByName.
+	ReflectMethods bool `json:",omitempty"`
 }
 
 // compilerContext contains function-independent data that should still be
@@ -105,6 +109,7 @@ type compilerContext struct {
 	packageDir       string          // directory for this package
 	runtimePkg       *types.Package
 	localTypeNames   typeutil.Map // *types.Named (synthetic local from generic instantiation) -> string
+	reflectTypes     []types.Type // types that get a $reflectmethods table
 }
 
 // newCompilerContext returns a new compiler context ready for use, most
@@ -362,6 +367,9 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 	irbuilder := c.ctx.NewBuilder()
 	defer irbuilder.Dispose()
 	c.createPackage(irbuilder, ssaPkg)
+	if c.ReflectMethods {
+		c.createReflectMethodTables()
+	}
 
 	// see: https://reviews.llvm.org/D18355
 	if c.Debug {
