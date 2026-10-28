@@ -24,6 +24,7 @@ func newcoro(f func(*coro)) *coro {
 		if inBubble {
 			synctestTaskBlockEnd(current, false)
 		}
+		task.SetWaitReason(task.WaitCoroutine)
 		task.Pause()
 		defer coroexit(c)
 		f(c)
@@ -48,5 +49,6 @@ func coroswitch(c *coro) {
 	if inBubble {
 		synctestTaskBlockEnd(current, false)
 	}
+	task.SetWaitReason(task.WaitCoroutine)
 	task.Pause()
 }

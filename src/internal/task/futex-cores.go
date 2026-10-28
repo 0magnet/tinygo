@@ -26,6 +26,7 @@ func (f *Futex) Wait(cmp uint32) (awoken bool) {
 
 	if f.Uint32.Load() != cmp {
 		unlockFutex(mask)
+		SetWaitReason(WaitNone)
 		return false
 	}
 

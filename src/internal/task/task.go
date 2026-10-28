@@ -40,6 +40,10 @@ type Task struct {
 	// It fits in the padding before DeferFrame, and is empty for other schedulers.
 	Affinity Affinity
 
+	// WaitReason is why the task is paused, for the goroutine profile. It
+	// also fits in the padding.
+	WaitReason WaitReason
+
 	// DeferFrame stores a pointer to the (stack allocated) defer frame of the
 	// goroutine that is used for the recover builtin.
 	DeferFrame unsafe.Pointer

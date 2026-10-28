@@ -26,6 +26,7 @@ func (s *Semaphore) Wait() {
 			// Semaphore unlocked!
 			return
 		}
+		SetWaitReason(WaitSemacquire)
 		s.futex.Wait(value)
 		value = s.futex.Load()
 	}

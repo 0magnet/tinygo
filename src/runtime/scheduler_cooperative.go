@@ -58,6 +58,9 @@ func deadlock() {
 	// GC roots, but never put them back on the runnable queue.
 	current := task.Current()
 	synctestTaskBlock(current)
+	if current.WaitReason == task.WaitNone {
+		current.WaitReason = task.WaitSelectNoCases
+	}
 	deadlockedTasks.Push(current)
 	task.Pause()
 	runtimeFatal("unreachable")
@@ -96,11 +99,13 @@ func scheduleTask(t *task.Task) {
 }
 
 func scheduleTaskNoWake(t *task.Task) {
+	t.WaitReason = task.WaitRunnable
 	runqueue.Push(t)
 }
 
 func Gosched() {
 	runqueue.Push(task.Current())
+	task.SetWaitReason(task.WaitRunnable)
 	task.Pause()
 }
 
@@ -305,6 +310,7 @@ func sleep(duration int64) {
 		return
 	}
 	addSleepTask(task.Current(), nanosecondsToTicks(duration))
+	task.SetWaitReason(task.WaitSleep)
 	task.Pause()
 }
 

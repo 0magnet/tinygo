@@ -228,6 +228,7 @@ func synctestSleep(duration int64) bool {
 	if wake != nil {
 		scheduleTask(wake)
 	}
+	task.SetWaitReason(task.WaitSleep)
 	task.Pause()
 	return true
 }
@@ -459,6 +460,7 @@ func synctest_run(f func()) {
 		}
 		bubble.rootSleeping = true
 		bubble.lock.Unlock()
+		task.SetWaitReason(task.WaitSynctest)
 		task.Pause()
 		bubble.lock.Lock()
 		bubble.active--
@@ -501,6 +503,7 @@ func synctest_wait() {
 		scheduleTask(wake)
 	}
 
+	task.SetWaitReason(task.WaitSynctest)
 	task.Pause()
 
 	bubble.lock.Lock()

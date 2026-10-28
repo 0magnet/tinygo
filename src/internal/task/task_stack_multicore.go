@@ -31,6 +31,7 @@ func PauseLocked() {
 	if current.RunState == RunStateResuming {
 		// Another core already marked this goroutine as ready to resume.
 		current.RunState = RunStateRunning
+		current.WaitReason = WaitNone
 		unlockScheduler()
 		return
 	}
@@ -41,6 +42,7 @@ func PauseLocked() {
 // Resume the task until it pauses or completes.
 // This may only be called from the scheduler.
 func (t *Task) Resume() {
+	t.WaitReason = WaitNone
 	t.gcData.swap()
 	t.state.resume()
 	t.gcData.swap()

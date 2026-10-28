@@ -41,6 +41,7 @@ func runtime_Semacquire(addr *uint32) {
 		semaLock.Unlock()
 
 		if atomic.LoadUint32(addr) == 0 {
+			task.SetWaitReason(task.WaitSemacquire)
 			w.gen.Wait(gen)
 		}
 

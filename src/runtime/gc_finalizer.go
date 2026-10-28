@@ -439,6 +439,7 @@ func finalizerRunner() {
 		// instead of losing the wakeup (at worst one harmless spurious re-drain).
 		val := finalizerFutex.Load()
 		drainFinalizers()
+		task.SetWaitReason(task.WaitFinalizer)
 		finalizerFutex.Wait(val)
 	}
 }

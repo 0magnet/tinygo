@@ -72,7 +72,7 @@ func (p *Profile) WriteTo(w io.Writer, debug int) error {
 	}
 	switch p.name {
 	case "goroutine":
-		return writeGoroutines(w)
+		return writeGoroutines(w, debug)
 	case "threadcreate":
 		_, err := fmt.Fprintf(w, "%s profile: total %d\n# stacks are not available in TinyGo builds\n", p.name, p.Count())
 		return err

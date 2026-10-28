@@ -34,6 +34,9 @@ var (
 func deadlock() {
 	// Call yield without requesting a wakeup.
 	synctestTaskBlock(task.Current())
+	if t := task.Current(); t.WaitReason == task.WaitNone {
+		t.WaitReason = task.WaitSelectNoCases
+	}
 	task.Pause()
 	trap()
 }
@@ -55,6 +58,7 @@ func scheduleTaskNoWake(t *task.Task) {
 	case task.RunStatePaused:
 		// Paused, state is saved on the stack.
 		// Add it to the runqueue...
+		t.WaitReason = task.WaitRunnable
 		runqueue.Push(t)
 		// ...and wake up a sleeping core, if there is one.
 		// (If all cores are already busy, this is a no-op).
@@ -102,6 +106,7 @@ func addSleepTask(t *task.Task, wakeup timeUnit) {
 func Gosched() {
 	schedulerLock.Lock()
 	runqueue.Push(task.Current())
+	task.SetWaitReason(task.WaitRunnable)
 	task.PauseLocked()
 }
 
@@ -213,6 +218,7 @@ func sleep(duration int64) {
 	// - let the scheduler handle it from there
 	schedulerLock.Lock()
 	addSleepTask(task.Current(), wakeup)
+	task.SetWaitReason(task.WaitSleep)
 	task.PauseLocked()
 }
 

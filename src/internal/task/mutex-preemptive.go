@@ -42,6 +42,7 @@ func (m *Mutex) Lock() {
 	// unlocking).
 	for m.futex.Swap(2) != 0 {
 		// Wait until we get resumed in Unlock.
+		SetWaitReason(WaitMutexLock)
 		m.futex.Wait(2)
 	}
 }

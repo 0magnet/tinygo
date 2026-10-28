@@ -1,0 +1,12 @@
+true true
+true
+chan receive true true
+chan send true true
+sleep true true
+sync.Mutex.Lock true true
+sync.RWMutex.RLock true true
+select true true
+select (no cases) true true
+sync.WaitGroup.Wait true true
+running true true
+true true

@@ -33,4 +33,4 @@ func MarkParkedStacks(mark func(start, end uintptr)) {}
 func canaryFor(stack unsafe.Pointer) *uintptr { return (*uintptr)(stack) }
 
 // GoroutineStacks reports false: stacks are not tracked here.
-func GoroutineStacks(fn func(pcs []uintptr)) bool { return false }
+func GoroutineStacks(fn func(reason WaitReason, pcs []uintptr)) bool { return false }

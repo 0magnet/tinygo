@@ -3,7 +3,7 @@
 package task
 
 // GoroutineStacks reports false: stacks are not tracked here.
-func GoroutineStacks(fn func(pcs []uintptr)) bool { return false }
+func GoroutineStacks(fn func(reason WaitReason, pcs []uintptr)) bool { return false }
 
 // MappedStackTop returns zero: the GC finds the stack bounds without the task.
 func MappedStackTop() uintptr { return 0 }

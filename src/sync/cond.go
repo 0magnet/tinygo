@@ -93,6 +93,7 @@ func (c *Cond) Wait() {
 	} else if !dataPtr.CompareAndSwap(condCommitting, condBlocked) {
 		return
 	}
+	task.SetWaitReason(task.WaitCondWait)
 	task.Pause()
 }
 

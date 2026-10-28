@@ -3,6 +3,7 @@
 package task
 
 import (
+	"runtime/volatile"
 	"sync/atomic"
 	"unsafe"
 )
@@ -217,22 +218,25 @@ func MarkParkedStacks(mark func(start, end uintptr)) {
 	}
 }
 
-// GoroutineStacks calls fn with the stack of every parked goroutine, innermost
-// first, and reports true. The slice is reused between calls.
-func GoroutineStacks(fn func(pcs []uintptr)) bool {
+// GoroutineStacks calls fn with why each goroutine waits and its stack,
+// innermost first, and reports true. A goroutine running on a core, the
+// caller among them, has no stack. The slice is reused between calls.
+func GoroutineStacks(fn func(reason WaitReason, pcs []uintptr)) bool {
 	if !stackReleasedOnResume {
 		var buf [64]uintptr
 		current := Current()
+		fn(WaitRunning, nil)
 		for t := stackTasks; t != nil; t = t.state.stack.next {
 			if t != current {
-				fn(buf[:walkStack(t.state.sp, t.state.stack.top, buf[:])])
+				fn(t.WaitReason, buf[:walkStack(t.state.sp, t.state.stack.top, buf[:])])
 			}
 		}
 		return true
 	}
 
 	// Other cores start and end goroutines meanwhile, and fn allocates, so
-	// copy the stacks out under the lock and call fn after.
+	// copy the stacks out under the lock and call fn after. The lock keeps
+	// every stack mapped, so a walk reads only memory of the stack it walks.
 	const depth = 32
 	LockStacks()
 	n := 0
@@ -243,17 +247,25 @@ func GoroutineStacks(fn func(pcs []uintptr)) bool {
 	n += n/8 + 16
 	pcs := make([]uintptr, n*depth)
 	lens := make([]uint8, n)
+	reasons := make([]WaitReason, n)
 	LockStacks()
 	i := 0
 	for t := stackTasks; t != nil && i < n; t = t.state.stack.next {
-		if t.RunState != RunStateRunning {
-			lens[i] = uint8(walkStack(t.state.sp, t.state.stack.top, pcs[i*depth:(i+1)*depth]))
-			i++
+		reasons[i], lens[i] = WaitRunning, 0
+		if sp := parkedSP(t); volatile.LoadUint8(&t.RunState) == RunStatePaused {
+			r := t.WaitReason
+			l := walkStack(sp, t.state.stack.top, pcs[i*depth:(i+1)*depth])
+			// A goroutine another core resumed during the walk may have
+			// changed its frames, so it counts as running.
+			if volatile.LoadUint8(&t.RunState) == RunStatePaused && parkedSP(t) == sp {
+				reasons[i], lens[i] = r, uint8(l)
+			}
 		}
+		i++
 	}
 	UnlockStacks()
 	for j := 0; j < i; j++ {
-		fn(pcs[j*depth : j*depth+int(lens[j])])
+		fn(reasons[j], pcs[j*depth:j*depth+int(lens[j])])
 	}
 	return true
 }
@@ -275,3 +287,11 @@ func clearReusedStack(base, size uintptr) {
 
 //go:linkname memzero runtime.memzero
 func memzero(ptr unsafe.Pointer, size uintptr)
+
+// parkedSP reads where t was last parked, which another core may change.
+func parkedSP(t *Task) uintptr {
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		return uintptr(volatile.LoadUint64((*uint64)(unsafe.Pointer(&t.state.sp))))
+	}
+	return uintptr(volatile.LoadUint32((*uint32)(unsafe.Pointer(&t.state.sp))))
+}

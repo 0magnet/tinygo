@@ -22,12 +22,13 @@ func (s *rwSem) release(n uint32) {
 }
 
 // acquire consumes one permit, waiting for one to appear if there are none.
-func (s *rwSem) acquire() {
+func (s *rwSem) acquire(reason task.WaitReason) {
 	for {
 		v := s.permits.Load()
 		if v == 0 {
 			// A release between the load and the wait changes the futex word,
 			// and the futex compares the word before it sleeps.
+			task.SetWaitReason(reason)
 			s.permits.Wait(0)
 			continue
 		}
@@ -77,7 +78,7 @@ func (rw *RWMutex) Lock() {
 	// Wait for those readers. The last one to leave hands the lock over
 	// through writerSem.
 	if r != 0 && int32(rw.readerWait.Add(uint32(r))) != 0 {
-		rw.writerSem.acquire()
+		rw.writerSem.acquire(task.WaitRWMutexLock)
 	}
 }
 
@@ -134,7 +135,7 @@ func (rw *RWMutex) RLock() {
 	if int32(rw.readers.Add(1)) < 0 {
 		// A writer holds the lock or waits for one, so queue up. Unlock hands
 		// over a permit, which the next writer cannot take back.
-		rw.readerSem.acquire()
+		rw.readerSem.acquire(task.WaitRWMutexRLock)
 	}
 }
 

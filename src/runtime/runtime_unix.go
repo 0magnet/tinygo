@@ -444,6 +444,7 @@ func startSignalWatcher() {
 func signalWatcher() {
 	for {
 		// Block until the signal handler bumps the futex from 0 to 1.
+		task.SetWaitReason(task.WaitSyscall)
 		signalFutex.Wait(0)
 		if signalFutex.Swap(0) != 0 {
 			checkSignals()
@@ -525,6 +526,7 @@ func signal_recv() uint32 {
 			if receivedSignals.Load() != 0 && signalRecvWaiter.Swap(nil) != nil {
 				continue
 			}
+			task.SetWaitReason(task.WaitSyscall)
 			task.Pause()
 			continue
 		}

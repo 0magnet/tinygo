@@ -173,6 +173,7 @@ func (wg *WaitGroup) Wait() {
 	}
 	wg.lock.Unlock()
 
+	task.SetWaitReason(task.WaitGroupWait)
 	task.Pause()
 
 	wg.lock.Lock()
@@ -194,6 +195,7 @@ func (wg *WaitGroup) waitPlain() {
 		if counter == 0 {
 			return // everything already finished
 		}
+		task.SetWaitReason(task.WaitGroupWait)
 		if wg.futex.Wait(counter) {
 			// Successfully woken by WakeAll (in wg.Add).
 			return

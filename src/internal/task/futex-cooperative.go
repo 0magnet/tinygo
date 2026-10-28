@@ -17,6 +17,7 @@ type Futex struct {
 // WakeAll, and false if we can't be sure of that.
 func (f *Futex) Wait(cmp uint32) (awoken bool) {
 	if f.Uint32.v != cmp {
+		SetWaitReason(WaitNone)
 		return false
 	}
 

@@ -136,6 +136,7 @@ func epollWaitFD(fd int32, write bool, timeout int64) bool {
 
 	// A core that sees fd ready before this pause marks the task to resume
 	// at once.
+	task.SetWaitReason(task.WaitIO)
 	task.Pause()
 	return w.ready
 }

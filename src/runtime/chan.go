@@ -249,6 +249,7 @@ func (ch *channel) trySend(value unsafe.Pointer) (sent bool, wake *task.Task) {
 func chanSend(ch *channel, value unsafe.Pointer, op *channelOp) {
 	if ch == nil {
 		// A nil channel blocks forever. Do not schedule this goroutine again.
+		task.SetWaitReason(task.WaitChanSendNil)
 		deadlock()
 	}
 	ch.checkSynctest("send on")
@@ -282,6 +283,7 @@ func chanSend(ch *channel, value unsafe.Pointer, op *channelOp) {
 	// Wait until this goroutine is resumed.
 	// It might be resumed after Unlock() and before Pause(). In that case,
 	// because we use semaphores, the Pause() will continue immediately.
+	t.WaitReason = task.WaitChanSend
 	task.Pause()
 
 	// Check whether the sent happened normally (not because the channel was
@@ -333,6 +335,7 @@ func (ch *channel) tryRecv(value unsafe.Pointer) (received, ok bool, wake *task.
 func chanRecv(ch *channel, value unsafe.Pointer, op *channelOp) bool {
 	if ch == nil {
 		// A nil channel blocks forever. Do not schedule this goroutine again.
+		task.SetWaitReason(task.WaitChanReceiveNil)
 		deadlock()
 	}
 	ch.checkSynctest("receive on")
@@ -364,6 +367,7 @@ func chanRecv(ch *channel, value unsafe.Pointer, op *channelOp) bool {
 	interrupt.Restore(mask)
 
 	// Wait until the goroutine is resumed.
+	t.WaitReason = task.WaitChanReceive
 	task.Pause()
 
 	// Return whether the receive happened from a closed channel.
@@ -627,6 +631,7 @@ func chanSelect(recvbuf unsafe.Pointer, states []chanSelectState, ops []channelO
 	unlockAllStates(states)
 	chanSelectLock.Unlock()
 	interrupt.Restore(mask)
+	t.WaitReason = task.WaitSelect
 	task.Pause()
 
 	// Resumed, so one channel operation must have progressed.
