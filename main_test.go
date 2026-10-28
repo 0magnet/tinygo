@@ -462,6 +462,13 @@ func TestBuild(t *testing.T) {
 			runTestWithConfig("gc-boehm-heapprof.go", t, opts, nil, nil)
 		})
 
+		t.Run("gc=boehm-slice-growth", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("", sema)
+			opts.GC = "boehm"
+			runTestWithConfig("gc-boehm-slicegrow.go", t, opts, nil, nil)
+		})
+
 		// Regression test: at -opt=0 the compiler does not always remove a
 		// local escaping through a pointer cast, so printitf used to
 		// allocate on the panic path. printitf is //go:noheap, so a
