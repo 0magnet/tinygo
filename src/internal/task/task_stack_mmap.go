@@ -94,6 +94,7 @@ func allocStack(s *state, size uintptr) unsafe.Pointer {
 			*p = ps.next
 			poolCount--
 			UnlockStacks()
+			clearReusedStack(uintptr(unsafe.Pointer(ps)), size)
 			s.stack.top = uintptr(unsafe.Pointer(ps)) + size
 			return unsafe.Pointer(ps)
 		}
@@ -256,3 +257,21 @@ func GoroutineStacks(fn func(pcs []uintptr)) bool {
 	}
 	return true
 }
+
+// reusedStackClear is how much of the top of a pooled stack is cleared when a
+// new goroutine takes it, where its frames will be.
+const reusedStackClear = 64 * 1024
+
+// clearReusedStack clears the top of a pooled stack. The GC scans a parked
+// stack conservatively from its sp, so words the exited goroutine left in
+// slots the new one never writes would keep what they point at alive.
+func clearReusedStack(base, size uintptr) {
+	n := uintptr(reusedStackClear)
+	if limit := size - unsafe.Sizeof(pooledStack{}); n > limit {
+		n = limit
+	}
+	memzero(unsafe.Pointer(base+size-n), n)
+}
+
+//go:linkname memzero runtime.memzero
+func memzero(ptr unsafe.Pointer, size uintptr)
