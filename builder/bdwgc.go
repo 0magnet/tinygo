@@ -93,7 +93,6 @@ var BoehmGC = Library{
 			return nil
 		}
 		return []string{
-			"mallocx.c",
 			"pthread_start.c",
 			"pthread_stop_world.c",
 			"pthread_support.c",
@@ -115,6 +114,7 @@ var BoehmGC = Library{
 			"headers.c",
 			"mach_dep.c",
 			"malloc.c",
+			"mallocx.c", // GC_get_kind_and_size, for the heap profile census
 			"mark.c",
 			"mark_rts.c",
 			"misc.c",
@@ -127,7 +127,6 @@ var BoehmGC = Library{
 			// Due to how the linker on Windows works (that doesn't allow
 			// undefined functions), we need to include these extra files.
 			sources = append(sources,
-				"mallocx.c",
 				"ptr_chck.c",
 			)
 		}

@@ -462,6 +462,17 @@ func TestBuild(t *testing.T) {
 			runTestWithConfig("gc-boehm-heapprof.go", t, opts, nil, nil)
 		})
 
+		t.Run("gc=boehm-heap-profile-tasks", func(t *testing.T) {
+			if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+				t.Skip("heap profile stacks need linux frame pointers")
+			}
+			t.Parallel()
+			opts := optionsFromTarget("", sema)
+			opts.GC = "boehm"
+			opts.Scheduler = "tasks"
+			runTestWithConfig("gc-boehm-heapprof.go", t, opts, nil, nil)
+		})
+
 		t.Run("goroutine-profile-cores", func(t *testing.T) {
 			if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
 				t.Skip("goroutine stacks need linux frame pointers")
