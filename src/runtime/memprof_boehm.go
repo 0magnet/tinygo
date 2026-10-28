@@ -5,13 +5,14 @@ package runtime
 import "unsafe"
 
 // A sampling heap profile. About every memProfRate bytes one allocation is
-// recorded with its call site. Boehm clears the sample's object pointer when
+// recorded with its call stack. Boehm clears the sample's object pointer when
 // the object is freed, so the samples still set are the live ones.
 
 const (
 	memProfRate  = 512 << 10
 	memProfSlots = 1 << 14
-	memProfSites = 1 << 12
+	memProfSites = 1 << 13
+	memProfDepth = 8
 )
 
 type memProfSample struct {
@@ -21,7 +22,7 @@ type memProfSample struct {
 }
 
 type memProfSite struct {
-	pc    uintptr
+	pcs   [memProfDepth]uintptr
 	alloc uintptr
 }
 
@@ -69,11 +70,17 @@ func memProfTake(ptr unsafe.Pointer, size, pc uintptr) {
 			libgc_unregister_disappearing_link(unsafe.Pointer(&memProfSamples[i].obj))
 		}
 	}
+	var pcs [memProfDepth]uintptr
+	memProfCallers(pc, &pcs)
+	h := uintptr(0)
+	for _, p := range pcs {
+		h = (h ^ p>>2) * 0x9e3779b1
+	}
 	site := uintptr(memProfSites)
 	for i := uintptr(0); i < memProfSites; i++ {
-		j := (pc>>2 + i) % memProfSites
-		if e := &memProfTable[j]; e.pc == pc || e.pc == 0 {
-			e.pc = pc
+		j := (h + i) % memProfSites
+		if e := &memProfTable[j]; e.pcs == pcs || e.pcs[0] == 0 {
+			e.pcs = pcs
 			e.alloc += weight
 			site = j
 			break
@@ -99,16 +106,17 @@ func memProfTake(ptr unsafe.Pointer, size, pc uintptr) {
 	}
 }
 
-// readMemProfile fills pcs, inuse and alloc (each memProfSites long) with the
-// sampled bytes per call site. It is used by runtime/pprof.
+// readMemProfile fills inuse and alloc (each memProfSites long) and pcs
+// (memProfDepth per site, innermost first) with the sampled bytes per stack.
+// It is used by runtime/pprof.
 func readMemProfile(pcs, inuse, alloc []uintptr) int {
-	if len(pcs) < memProfSites || len(inuse) < memProfSites || len(alloc) < memProfSites {
+	if len(pcs) < memProfSites*memProfDepth || len(inuse) < memProfSites || len(alloc) < memProfSites {
 		return memProfSites
 	}
 	gcLock.Lock()
 	if memProfTable != nil {
 		for i := range memProfTable {
-			pcs[i] = memProfTable[i].pc
+			copy(pcs[i*memProfDepth:], memProfTable[i].pcs[:])
 			alloc[i] = memProfTable[i].alloc
 			inuse[i] = 0
 		}
@@ -165,3 +173,6 @@ func libgc_get_gc_no() uintptr
 
 // poolGCCount is the number of collections so far, for sync.Pool.
 func poolGCCount() uint32 { return uint32(libgc_get_gc_no()) }
+
+// readMemProfileDepth is the number of pcs per site in readMemProfile.
+func readMemProfileDepth() int { return memProfDepth }

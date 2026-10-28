@@ -189,3 +189,22 @@ GC_descr tinygo_runtime_bdwgc_make_descriptor(uintptr_t layout) {
     __atomic_clear(&descriptor_cache_lock, __ATOMIC_RELEASE);
     return descriptor;
 }
+
+#if defined(__x86_64__) || defined(__aarch64__)
+// tinygo_runtime_walk_frames stores up to n return addresses, its caller's
+// first, by following frame pointers while they stay below top.
+__attribute__((noinline))
+size_t tinygo_runtime_walk_frames(uintptr_t *pcs, size_t n, uintptr_t top) {
+    uintptr_t fp = (uintptr_t)__builtin_frame_address(0);
+    size_t i = 0;
+    while (i < n && fp % sizeof(uintptr_t) == 0 && fp + 2 * sizeof(uintptr_t) <= top) {
+        uintptr_t next = ((uintptr_t *)fp)[0];
+        pcs[i++] = ((uintptr_t *)fp)[1];
+        if (next <= fp) {
+            break;
+        }
+        fp = next;
+    }
+    return i;
+}
+#endif

@@ -451,6 +451,17 @@ func TestBuild(t *testing.T) {
 			runTestWithConfig("gc-boehm-opt0.go", t, opts, nil, nil)
 		})
 
+		t.Run("gc=boehm-heap-profile-stacks", func(t *testing.T) {
+			if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+				t.Skip("heap profile stacks need linux frame pointers")
+			}
+			t.Parallel()
+			opts := optionsFromTarget("", sema)
+			opts.GC = "boehm"
+			opts.Scheduler = "cores"
+			runTestWithConfig("gc-boehm-heapprof.go", t, opts, nil, nil)
+		})
+
 		// Regression test: at -opt=0 the compiler does not always remove a
 		// local escaping through a pointer cast, so printitf used to
 		// allocate on the panic path. printitf is //go:noheap, so a
