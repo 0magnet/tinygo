@@ -15,6 +15,9 @@ import (
 	"unsafe"
 )
 
+// Collections an empty block stays mapped, MUNMAP_THRESHOLD in builder/bdwgc.go.
+const gcUnmapAfter = 3
+
 // Collection events, see GC_EventType in lib/bdwgc/include/gc/gc.h.
 const (
 	gcEventPreStopWorld   = 6
@@ -48,6 +51,15 @@ var (
 	// gcGrow is set after each collection, for gcGrowHeap.
 	gcGrow                 atomic.Uint32
 	gcStopHeap, gcStopFree uintptr // heap state when the world stopped
+
+	// The divisor from GOGC or SetGCPercent, and the one bdwgc uses.
+	gcBaseDivisor, gcDivisor uintptr
+	gcUnmapNow               uintptr = gcUnmapAfter
+	// The heap size bdwgc may not grow past, or zero.
+	gcHeapCap       uintptr
+	gcOOMCollecting atomic.Uint32
+	// The last pause, and the time from the end of the pause before it.
+	gcLastPause, gcLastCycle, gcPrevEnd uint64
 )
 
 func gcAllocLock() {}
@@ -58,23 +70,94 @@ func gcAllocUnlock() {
 	}
 }
 
-// gcGrowHeap grows the heap after a collection to what the live heap may reach
-// before the next one. Without incremental mode bdwgc collects when the heap
-// is full, and grows it by at most MAXHINCR blocks (8 MB) and then collects
-// again, so a GB heap took hundreds of collections to build.
+// gcGrowHeap sizes the heap after a collection, on the first allocation after
+// it. Without incremental mode bdwgc collects when the heap is full, and
+// grows it by at most MAXHINCR blocks (8 MB) and then collects again, so a GB
+// heap took hundreds of collections to build. It also applies the memory
+// limit, which bdwgc does not have.
 func gcGrowHeap() {
 	if !gcGrow.CompareAndSwap(1, 0) {
 		return
 	}
 	// Garbage is about what was allocated since the previous collection.
 	used := gcStopHeap - gcStopFree
-	if used <= gcStopAllocd {
-		return
+	live := used / 2
+	if used > gcStopAllocd {
+		live = used - gcStopAllocd
 	}
-	live := used - gcStopAllocd
-	want := live + 2*live/libgc_get_free_space_divisor()
+	base := gcBaseDivisor
+	want := live + 2*live/base
 	var heap, free, unmapped, sinceGC, total uintptr
 	libgc_get_heap_usage_safe(&heap, &free, &unmapped, &sinceGC, &total)
+
+	div, unmapAfter := base, uintptr(gcUnmapAfter)
+	capHeap := uintptr(0)
+	if limit := gcMemoryLimit; limit != maxMemoryLimit {
+		// What is not heap, such as goroutine stacks, counts against the
+		// limit as well, as in Go.
+		rss := tinygo_runtime_bdwgc_rss()
+		other := uintptr(0)
+		if rss > heap {
+			other = rss - heap
+		}
+		room := uintptr(0)
+		if uint64(limit) > uint64(other) {
+			room = uintptr(limit) - other
+		}
+		if want > room {
+			want = room
+			if want < live {
+				want = live
+			}
+			// bdwgc collects after about 2*live/divisor bytes. Collect once
+			// the room left is used, unless collections already take more
+			// than gcLimitPause percent of the time. Go allows its GC half the
+			// CPU, but here a collection stops every core.
+			extra := want - live
+			if extra < live/64 {
+				extra = live / 64
+			}
+			div = 2 * live / (extra + 1)
+			if div > 128 {
+				div = 128
+			}
+			if gcPauseFraction() > float64(gcLimitPause)/100 {
+				div = gcDivisor / 2
+			}
+			if div < base {
+				div = base
+			}
+		}
+		// Cap the heap at the room left so that bdwgc collects rather than
+		// grow, see gcOutOfMemory, unless collections already take more than
+		// gcLimitPause percent of the time.
+		capHeap = room
+		if floor := live + live/16; capHeap < floor {
+			capHeap = floor
+		}
+		if gcPauseFraction() > float64(gcLimitPause)/100 {
+			capHeap = 0
+		}
+		if heap+other > uintptr(limit)/10*9 {
+			// Give empty blocks back after one collection, not three.
+			unmapAfter = 1
+		}
+		if gcTrace {
+			println("gc limit", int(limit>>20), "MB rss", int(rss>>20), "MB other", int(other>>20), "MB live", int(live>>20), "MB target", int(want>>20), "MB divisor", int(div))
+		}
+	}
+	if capHeap != gcHeapCap {
+		gcHeapCap = capHeap
+		libgc_set_max_heap_size(capHeap)
+	}
+	if div != gcDivisor {
+		gcDivisor = div
+		libgc_set_free_space_divisor(div)
+	}
+	if unmapAfter != gcUnmapNow {
+		gcUnmapNow = unmapAfter
+		tinygo_runtime_bdwgc_set_unmap_threshold(uint32(unmapAfter))
+	}
 	// Unmapped blocks are mapped again before the heap grows.
 	if have := heap + unmapped; want > have {
 		libgc_expand_hp(want - have)
@@ -82,6 +165,50 @@ func gcGrowHeap() {
 			println("gc grow live", int(live>>20), "MB heap", int(want>>20), "MB")
 		}
 	}
+}
+
+// gcOutOfMemory is called when bdwgc returns nil. The memory limit caps the
+// heap, so collect, and then lift the cap, since the limit is soft.
+func gcOutOfMemory(attempt int) bool {
+	if gcHeapCap == 0 {
+		return false
+	}
+	if attempt == 0 {
+		// One core collects. The others retry, and wait for it in bdwgc.
+		if gcOOMCollecting.CompareAndSwap(0, 1) {
+			libgc_gcollect()
+			gcOOMCollecting.Store(0)
+		}
+		return true
+	}
+	gcHeapCap = 0
+	libgc_set_max_heap_size(0)
+	return attempt == 1
+}
+
+//go:extern tinygo_runtime_bdwgc_limit_pause
+var gcLimitPause int32
+
+// gcPauseFraction is the share of the last collection cycle the world was
+// stopped.
+func gcPauseFraction() float64 {
+	if gcLastCycle == 0 {
+		return 0
+	}
+	return float64(gcLastPause) / float64(gcLastCycle)
+}
+
+// gcSetDivisor sets the free space divisor chosen by GOGC or SetGCPercent.
+// The memory limit may raise the divisor bdwgc uses above it.
+func gcSetDivisor(d uintptr) uintptr {
+	old := gcBaseDivisor
+	gcBaseDivisor, gcDivisor = d, d
+	libgc_set_free_space_divisor(d)
+	return old
+}
+
+func gcGetDivisor() uintptr {
+	return gcBaseDivisor
 }
 
 func gcCountMalloc() {
@@ -113,6 +240,11 @@ func gcProfileAlloc(ptr unsafe.Pointer, size, pc uintptr) {
 func gcInitThreads() {
 	libgc_allow_register_threads()
 	gcTrace = tinygo_runtime_bdwgc_threads_init() != 0
+	gcBaseDivisor = libgc_get_free_space_divisor()
+	gcDivisor = gcBaseDivisor
+	if limit := tinygo_runtime_bdwgc_memory_limit(); limit >= 0 {
+		gcMemoryLimit = limit
+	}
 	for i := range gcCounters {
 		gcCounters[i].profile = memProfRate
 	}
@@ -156,7 +288,13 @@ func gcEvent(event int32) {
 		task.UnlockStacks()
 	case gcEventPostStartWorld:
 		gcGrow.Store(1)
-		d := tinygo_runtime_bdwgc_clock(0) - gcStopStart
+		end := tinygo_runtime_bdwgc_clock(0)
+		d := end - gcStopStart
+		gcLastPause = d
+		if gcPrevEnd != 0 {
+			gcLastCycle = end - gcPrevEnd
+		}
+		gcPrevEnd = end
 		gcPauseTotal += d
 		gcLastGC = tinygo_runtime_bdwgc_clock(1)
 		if gcTrace {
@@ -226,6 +364,18 @@ func libgc_register_my_thread(*libgc_stack_base) int32
 
 //export tinygo_runtime_bdwgc_threads_init
 func tinygo_runtime_bdwgc_threads_init() int32
+
+//export GC_set_max_heap_size
+func libgc_set_max_heap_size(uintptr)
+
+//export tinygo_runtime_bdwgc_rss
+func tinygo_runtime_bdwgc_rss() uintptr
+
+//export tinygo_runtime_bdwgc_memory_limit
+func tinygo_runtime_bdwgc_memory_limit() int64
+
+//export tinygo_runtime_bdwgc_set_unmap_threshold
+func tinygo_runtime_bdwgc_set_unmap_threshold(n uint32)
 
 //export tinygo_runtime_bdwgc_clock
 func tinygo_runtime_bdwgc_clock(realtime int32) uint64

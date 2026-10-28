@@ -30,3 +30,15 @@ func gcProfileAlloc(ptr unsafe.Pointer, size, pc uintptr) {
 func gcInitThreads() {}
 
 func gcReadPauses(m *MemStats) {}
+
+func gcSetDivisor(d uintptr) uintptr {
+	old := libgc_get_free_space_divisor()
+	libgc_set_free_space_divisor(d)
+	return old
+}
+
+func gcGetDivisor() uintptr {
+	return libgc_get_free_space_divisor()
+}
+
+func gcOutOfMemory(attempt int) bool { return false }

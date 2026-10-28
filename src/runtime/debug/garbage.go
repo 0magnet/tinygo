@@ -42,6 +42,11 @@ func WriteHeapDump(fd uintptr) {}
 func SetTraceback(level string) {
 }
 
+// SetMemoryLimit sets a soft limit on the memory of the runtime. Only the Boehm
+// GC under the cores scheduler on Linux applies it.
 func SetMemoryLimit(limit int64) int64 {
-	return limit
+	return setMemoryLimit(limit)
 }
+
+//go:linkname setMemoryLimit runtime.setMemoryLimit
+func setMemoryLimit(int64) int64

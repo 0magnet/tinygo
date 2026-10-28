@@ -81,6 +81,29 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 	gcCountMalloc()
 	var ptr unsafe.Pointer
 	var needsZero bool
+	for attempt := 0; ; attempt++ {
+		ptr, needsZero = boehmMalloc(size, layout)
+		if ptr != nil || !gcOutOfMemory(attempt) {
+			break
+		}
+	}
+	if ptr != nil {
+		gcProfileAlloc(ptr, size, uintptr(returnAddress(0)))
+	}
+	gcAllocUnlock()
+	if ptr == nil {
+		runtimeFatal("gc: out of memory")
+		return nil
+	}
+	if needsZero {
+		memzero(ptr, size)
+	}
+	return ptr
+}
+
+// boehmMalloc allocates size bytes of the bdwgc kind for layout. It returns nil
+// when bdwgc is out of memory.
+func boehmMalloc(size uintptr, layout unsafe.Pointer) (ptr unsafe.Pointer, needsZero bool) {
 	switch layout {
 	case gclayout.NoPtrs.AsPtr():
 		// This object is entirely pointer free, for example make([]int, ...).
@@ -124,18 +147,7 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 			)
 		}
 	}
-	if ptr != nil {
-		gcProfileAlloc(ptr, size, uintptr(returnAddress(0)))
-	}
-	gcAllocUnlock()
-	if ptr == nil {
-		runtimeFatal("gc: out of memory")
-		return nil
-	}
-	if needsZero {
-		memzero(ptr, size)
-	}
-	return ptr
+	return
 }
 
 func boehmLayoutElementWords(layout unsafe.Pointer) uintptr {
