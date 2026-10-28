@@ -53,6 +53,7 @@ var BoehmGC = Library{
 			//"-DGC_ASSERTIONS",
 
 			"-I" + libdir + "/include",
+			"-I" + libdir, // for gc_boehm_allchblk.c
 		}
 		return flags
 	},
@@ -105,7 +106,8 @@ var BoehmGC = Library{
 	},
 	librarySources: func(target string, _ bool) ([]string, error) {
 		sources := []string{
-			"allchblk.c",
+			// allchblk.c, with a cheaper GC_merge_unmapped.
+			"../../src/runtime/gc_boehm_allchblk.c",
 			"alloc.c",
 			"blacklst.c",
 			"dbg_mlc.c",
