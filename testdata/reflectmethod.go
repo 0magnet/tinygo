@@ -22,6 +22,7 @@ func main() {
 
 	v := reflect.ValueOf(&msg{Field: "x"})
 	println("Value.MethodByName valid:", v.MethodByName("String").IsValid())
+	println("Value.MethodByName call:", v.MethodByName("String").Call(nil)[0].String())
 	for i := 0; i < v.NumMethod(); i++ {
 		println("Value.Method valid:", v.Method(i).IsValid())
 	}

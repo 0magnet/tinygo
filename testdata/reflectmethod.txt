@@ -2,9 +2,10 @@ MethodByName found: false
 NumMethod: 2
 Method index: 0
 Method index: 1
-Value.MethodByName valid: false
-Value.Method valid: false
-Value.Method valid: false
+Value.MethodByName valid: true
+Value.MethodByName call: x
+Value.Method valid: true
+Value.Method valid: true
 Field by name: x
 func NumIn NumOut IsVariadic: 1 1 false
 func String: func(int) error

@@ -350,6 +350,7 @@ func TestBuild(t *testing.T) {
 		"promoted.go",
 		"reflect.go",
 		"reflectmethod.go",
+		"reflectmethodcall.go",
 		"signal.go",
 		"signalnotify.go",
 		"slice.go",
@@ -804,11 +805,15 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// is still covered by larger targets such as riscv-qemu.
 			continue
 		}
+		if options.Target == "cortex-m-qemu" && name == "reflectmethodcall.go" {
+			// text/template exceeds the LM3S6965's 256KiB flash.
+			continue
+		}
 		if options.Target == "simavr" {
 			// Not all tests are currently supported on AVR.
 			// Skip the ones that aren't.
 			switch name {
-			case "reflect.go", "reflectmethod.go":
+			case "reflect.go", "reflectmethod.go", "reflectmethodcall.go":
 				// Reflect tests do not run correctly, probably because of the
 				// limited amount of memory.
 				continue

@@ -261,6 +261,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	if err != nil {
 		return result, err
 	}
+	compilerConfig.ReflectMethods = lprogram.UsesReflectMethod()
 
 	// Embed module build information so runtime/debug.ReadBuildInfo() works,
 	// mirroring what the standard `go build` toolchain does. We fill
