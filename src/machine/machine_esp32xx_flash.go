@@ -1,9 +1,8 @@
-//go:build esp32c3
+//go:build esp32c3 || esp32s3
 
 package machine
 
 import (
-	"runtime/interrupt"
 	"unsafe"
 )
 
@@ -39,6 +38,7 @@ func (f flashBlockDevice) ReadAt(p []byte, off int64) (n int, err error) {
 
 // WriteAt writes the given number of bytes to the block device.
 // Only word (32 bits) length data can be programmed.
+// It must not be called from an interrupt or with interrupts disabled.
 // If the length of p is not long enough it will be padded with 0xFF bytes.
 // This method assumes that the destination is already erased.
 func (f flashBlockDevice) WriteAt(p []byte, off int64) (n int, err error) {
@@ -75,6 +75,7 @@ func (f flashBlockDevice) EraseBlockSize() int64 {
 // transparently coalesce ranges of blocks into larger bundles if the chip
 // supports this. The start and len parameters are in block numbers, use
 // EraseBlockSize to map addresses to blocks.
+// It must not be called from an interrupt or with interrupts disabled.
 func (f flashBlockDevice) EraseBlocks(start, length int64) error {
 	return f.eraseBlocks(start, length)
 }
@@ -84,12 +85,48 @@ func readAddress(off int64) uintptr {
 	return FlashDataStart() + uintptr(off)
 }
 
-const flashDROMStart = 0x3C000000
+// Physical flash offset of FlashDataStart, set by the linker script.
+//
+//go:extern __flash_data_phys
+var flashDataPhys [0]byte
 
 // return the correct physical address to be used for write/erase
 func writeAddress(off int64) uint32 {
-	// DROM maps 1:1 with flash physical offset, starting at 0x3C000000.
-	return uint32(readAddress(off) - flashDROMStart)
+	return uint32(uintptr(unsafe.Pointer(&flashDataPhys))) + uint32(off)
+}
+
+// romSpiflashChip matches esp_rom_spiflash_chip_t in esp-idf
+// components/esp_rom/include/esp_rom_spiflash.h.
+type romSpiflashChip struct {
+	deviceID   uint32
+	chipSize   uint32
+	blockSize  uint32
+	sectorSize uint32
+	pageSize   uint32
+	statusMask uint32
+}
+
+//go:extern rom_spiflash_legacy_data
+var romSpiflashLegacyData *romSpiflashChip
+
+var flashSizeSet bool
+
+// setFlashSize gives the ROM flash routines the chip size from the image
+// header, as update_flash_config in the esp-idf bootloader does.
+func setFlashSize() {
+	if flashSizeSet {
+		return
+	}
+	flashSizeSet = true
+	var header uint32
+	if C.esp_rom_spiflash_read(0, (*C.uint32_t)(unsafe.Pointer(&header)), 4) != 0 {
+		return
+	}
+	// The upper nibble of byte 3 is the flash size, 0 is 1 MB.
+	size := header >> 28
+	if byte(header) == 0xE9 && size <= 7 {
+		romSpiflashLegacyData.chipSize = 1 << 20 << size
+	}
 }
 
 func (f flashBlockDevice) writeAt(p []byte, off int64) (n int, err error) {
@@ -100,9 +137,10 @@ func (f flashBlockDevice) writeAt(p []byte, off int64) (n int, err error) {
 	address := writeAddress(off)
 	padded := flashPad(p, int(f.WriteBlockSize()))
 
-	state := interrupt.Disable()
-	defer interrupt.Restore(state)
+	state, multicore := flashSafeEnter()
+	defer flashSafeExit(state, multicore)
 
+	setFlashSize()
 	C.esp_rom_spiflash_unlock()
 	res := C.esp_rom_spiflash_write(C.uint32_t(address), (*C.uint32_t)(unsafe.Pointer(&padded[0])), C.uint32_t(len(padded)))
 	C.Cache_Invalidate_Addr(C.uint32_t(readAddress(off)), C.uint32_t(len(padded)))
@@ -115,13 +153,14 @@ func (f flashBlockDevice) writeAt(p []byte, off int64) (n int, err error) {
 
 func (f flashBlockDevice) eraseBlocks(start, length int64) error {
 	address := writeAddress(start * f.EraseBlockSize())
-	if uintptr(unsafe.Add(unsafe.Pointer(uintptr(address)+flashDROMStart), length*f.EraseBlockSize())) > FlashDataEnd() {
+	if readAddress((start+length)*f.EraseBlockSize()) > FlashDataEnd() {
 		return errFlashCannotErasePastEOF
 	}
 
-	state := interrupt.Disable()
-	defer interrupt.Restore(state)
+	state, multicore := flashSafeEnter()
+	defer flashSafeExit(state, multicore)
 
+	setFlashSize()
 	C.esp_rom_spiflash_unlock()
 	sector := address / uint32(f.EraseBlockSize())
 
