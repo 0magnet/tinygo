@@ -3,14 +3,27 @@
 // bdwgc's allchblk.c, built in its place by builder/bdwgc.go. GC_merge_unmapped
 // walks the free lists once rather than again after every merge, and only when
 // GC_freehblk left a free block next to another since the last walk.
+// GC_unmap_old and GC_allochblk keep the resident heap near what the next
+// cycle needs, see below.
+
+#include <time.h>
 
 #define GC_merge_unmapped GC_merge_unmapped_bdwgc
 #define GC_freehblk GC_freehblk_bdwgc
+#define GC_unmap_old GC_unmap_old_bdwgc
+#define GC_allochblk GC_allochblk_bdwgc
 #include "allchblk.c"
 #undef GC_merge_unmapped
 #undef GC_freehblk
+#undef GC_unmap_old
+#undef GC_allochblk
 
 GC_INNER void GC_freehblk(struct hblk *hbp);
+GC_INNER struct hblk *GC_allochblk(size_t lb_adjusted, int kind,
+                                  unsigned flags, size_t align_m1);
+#ifdef USE_MUNMAP
+GC_INNER void GC_unmap_old(unsigned threshold);
+#endif
 
 #if defined(USE_MUNMAP) && !defined(CHERI_PURECAP)
 
@@ -144,12 +157,165 @@ GC_merge_unmapped(void)
   return merged;
 }
 
+// Without incremental mode bdwgc collects only when an allocation finds no
+// free block, so after a burst it uses the whole of the larger heap between
+// collections, faulting released pages in again. Once a collection is due
+// and the mapped free blocks are used up, fail so that it collects instead.
+GC_INNER struct hblk *
+GC_allochblk(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
+{
+  word unmapped = GC_unmapped_bytes;
+  size_t size = OBJ_SZ_TO_BLOCKS(lb_adjusted) * HBLKSIZE;
+  struct hblk *h;
+
+  if (!GC_dont_gc && !GC_incremental
+      && GC_large_free_bytes - GC_unmapped_bytes < size + align_m1
+      && GC_should_collect())
+    return NULL;
+  h = GC_allochblk_bdwgc(lb_adjusted, kind, flags, align_m1);
+  // bdwgc maps the whole of an unmapped block to split it. Give the rest,
+  // which nothing touched, back again.
+  if (h != NULL && GC_unmapped_bytes < unmapped
+      && unmapped - GC_unmapped_bytes > size) {
+    struct hblk *rest = (struct hblk *)((ptr_t)h + size);
+    hdr *rhdr;
+
+    GET_HDR(rest, rhdr);
+    if (rhdr != NULL && HBLK_IS_FREE(rhdr) && IS_MAPPED(rhdr)
+        && rhdr->hb_sz <= unmapped - GC_unmapped_bytes - size) {
+      GC_adjust_num_unmapped(rest, rhdr);
+      GC_unmap((ptr_t)rest, rhdr->hb_sz);
+      rhdr->hb_flags |= WAS_UNMAPPED;
+    }
+  }
+  return h;
+}
+
+// Time spent giving free blocks back per call of GC_unmap_old, in ns.
+#  define RELEASE_BUDGET_NS 10000000
+
+static long long
+release_clock(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+// Put the mapped blocks of free list i before the unmapped ones, so that
+// GC_allochblk_nth, which takes the first block that fits, reuses resident
+// memory before it faults released pages in again.
+static void
+mapped_first(size_t i)
+{
+  struct hblk *h = GC_hblkfreelist[i];
+  struct hblk *head[2] = { NULL, NULL }, *tail[2] = { NULL, NULL };
+
+  while (h != NULL) {
+    hdr *hhdr = HDR(h);
+    struct hblk *next = hhdr->hb_next;
+    int u = !IS_MAPPED(hhdr);
+
+    hhdr->hb_prev = tail[u];
+    hhdr->hb_next = NULL;
+    if (tail[u] != NULL)
+      HDR(tail[u])->hb_next = h;
+    else
+      head[u] = h;
+    tail[u] = h;
+    h = next;
+  }
+  if (tail[0] != NULL) {
+    HDR(tail[0])->hb_next = head[1];
+    if (head[1] != NULL)
+      HDR(head[1])->hb_prev = tail[0];
+    GC_hblkfreelist[i] = head[0];
+  } else {
+    GC_hblkfreelist[i] = head[1];
+  }
+}
+
+// What stays mapped for the next cycle: bdwgc's trigger, as min_bytes_allocd
+// in alloc.c computes it, or a quarter of the marked bytes if more.
+static word
+release_keep(void)
+{
+  word live = GC_composite_in_use + GC_atomic_in_use;
+  word stack = 0, keep;
+
+#  ifdef THREADS
+  if (GC_need_to_lock)
+    stack = GC_total_stacksize;
+#  endif
+  keep = (2 * GC_composite_in_use + GC_atomic_in_use / 4 + 2 * stack
+          + GC_root_size)
+         / GC_free_space_divisor;
+  if (keep < GC_get_min_bytes_allocd())
+    keep = GC_get_min_bytes_allocd();
+  if (live / 4 > keep)
+    keep = live / 4;
+  return keep;
+}
+
+// Give mapped free blocks back to the OS, largest first, until no more than
+// what the next cycle may allocate stays mapped, or the time budget is spent.
+static void
+release_free(void)
+{
+  word keep = release_keep();
+  word mapped = GC_large_free_bytes - GC_unmapped_bytes;
+  long long start = release_clock();
+  size_t i = N_HBLK_FLS + 1;
+
+  while (i-- > 0) {
+    struct hblk *h;
+    hdr *hhdr;
+
+    for (h = GC_hblkfreelist[i]; h != NULL && mapped > keep;
+         h = hhdr->hb_next) {
+      hhdr = HDR(h);
+      if (!IS_MAPPED(hhdr))
+        continue;
+      if (release_clock() - start > RELEASE_BUDGET_NS) {
+        keep = mapped;
+        break;
+      }
+      GC_adjust_num_unmapped(h, hhdr);
+      GC_unmap((ptr_t)h, hhdr->hb_sz);
+      hhdr->hb_flags |= WAS_UNMAPPED;
+      mapped -= hhdr->hb_sz;
+    }
+    mapped_first(i);
+  }
+}
+
+// bdwgc unmaps a free block once it has been free for GC_unmap_threshold
+// collections, but GC_freehblk makes a block young again whenever a freed
+// neighbour joins it, so in a heap with churn nearly every free block is
+// young and nothing goes back. Before the heap grows it unmaps every free
+// block instead, which then faults back in. Here both calls give back what
+// the next cycle will not need, in a bounded time.
+GC_INNER void
+GC_unmap_old(unsigned threshold)
+{
+  if (threshold > 0)
+    GC_unmap_old_bdwgc(threshold);
+  release_free();
+}
+
 #else
 
 GC_INNER void
 GC_freehblk(struct hblk *hbp)
 {
   GC_freehblk_bdwgc(hbp);
+}
+
+GC_INNER struct hblk *
+GC_allochblk(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
+{
+  return GC_allochblk_bdwgc(lb_adjusted, kind, flags, align_m1);
 }
 
 #  ifdef USE_MUNMAP
@@ -159,6 +325,12 @@ GC_INNER GC_bool
 GC_merge_unmapped(void)
 {
   return GC_merge_unmapped_bdwgc();
+}
+
+GC_INNER void
+GC_unmap_old(unsigned threshold)
+{
+  GC_unmap_old_bdwgc(threshold);
 }
 #  endif
 
