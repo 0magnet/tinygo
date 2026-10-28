@@ -208,3 +208,37 @@ size_t tinygo_runtime_walk_frames(uintptr_t *pcs, size_t n, uintptr_t top) {
     return i;
 }
 #endif
+
+// A census of the objects marked by the last collection, by kind and by
+// power of two size class.
+#define CENSUS_KINDS 8
+#define CENSUS_SIZES 32
+
+struct tinygo_runtime_census {
+    uintptr_t kind_bytes[CENSUS_KINDS];
+    uintptr_t kind_objects[CENSUS_KINDS];
+    uintptr_t size_bytes[CENSUS_SIZES];
+    uintptr_t size_objects[CENSUS_SIZES];
+};
+
+static void GC_CALLBACK census_object(void *obj, size_t bytes, void *data) {
+    struct tinygo_runtime_census *c = data;
+    int kind = GC_get_kind_and_size(obj, NULL);
+    int class = 0;
+    if (kind < 0 || kind >= CENSUS_KINDS) {
+        kind = CENSUS_KINDS - 1;
+    }
+    while (class < CENSUS_SIZES - 1 && ((size_t)2 << class) <= bytes) {
+        class++;
+    }
+    c->kind_bytes[kind] += bytes;
+    c->kind_objects[kind]++;
+    c->size_bytes[class] += bytes;
+    c->size_objects[class]++;
+}
+
+// tinygo_runtime_bdwgc_census fills c. The caller holds the allocator lock.
+void tinygo_runtime_bdwgc_census(struct tinygo_runtime_census *c) {
+    memset(c, 0, sizeof(*c));
+    GC_enumerate_reachable_objects_inner(census_object, c);
+}

@@ -42,3 +42,6 @@ func gcGetDivisor() uintptr {
 }
 
 func gcOutOfMemory(attempt int) bool { return false }
+
+func gcAllocatorLock()   {}
+func gcAllocatorUnlock() {}

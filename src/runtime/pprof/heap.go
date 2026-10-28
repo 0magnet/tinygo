@@ -14,6 +14,9 @@ func readMemProfile(pcs, inuse, alloc []uintptr) int
 //go:linkname readMemProfileDepth runtime.readMemProfileDepth
 func readMemProfileDepth() int
 
+//go:linkname readLiveCensus runtime.readLiveCensus
+func readLiveCensus(c []uintptr) bool
+
 type heapSite struct {
 	pcs          []uintptr
 	inuse, alloc uintptr
@@ -23,6 +26,9 @@ type heapSite struct {
 // that called the allocator, which is often a runtime helper for append, maps
 // and string building, then by call stack.
 func writeHeapSites(w io.Writer) error {
+	if err := writeLiveCensus(w); err != nil {
+		return err
+	}
 	n := readMemProfile(nil, nil, nil)
 	if n == 0 {
 		return nil
@@ -99,6 +105,42 @@ func writeSites(w io.Writer, sites []heapSite, label func(heapSite) string) erro
 	for _, s := range sites {
 		if _, err := fmt.Fprintf(w, "%d %d %s\n", s.inuse, s.alloc, label(s)); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// writeLiveCensus lists what the last collection marked, by bdwgc kind (0 is
+// pointer free, 1 is scanned) and by size class, where class c holds objects
+// of [2^c, 2^(c+1)) bytes.
+func writeLiveCensus(w io.Writer) error {
+	var c [80]uintptr
+	if !readLiveCensus(c[:]) {
+		return nil
+	}
+	var bytes, objects uintptr
+	for k := 0; k < 8; k++ {
+		bytes += c[k]
+		objects += c[8+k]
+	}
+	if _, err := fmt.Fprintf(w, "\n# live census of the last collection: %d bytes in %d objects\n# kind bytes objects\n", bytes, objects); err != nil {
+		return err
+	}
+	for k := 0; k < 8; k++ {
+		if c[8+k] != 0 {
+			if _, err := fmt.Fprintf(w, "kind %d %d %d\n", k, c[k], c[8+k]); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintf(w, "# size_class bytes objects\n"); err != nil {
+		return err
+	}
+	for s := 0; s < 32; s++ {
+		if c[48+s] != 0 {
+			if _, err := fmt.Fprintf(w, "size %d %d %d\n", 1<<s, c[16+s], c[48+s]); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -382,3 +382,15 @@ func tinygo_runtime_bdwgc_clock(realtime int32) uint64
 
 //export tinygo_runtime_bdwgc_chain_suspend
 func tinygo_runtime_bdwgc_chain_suspend(thread *threadID)
+
+// gcAllocatorLock takes the bdwgc allocator lock, which keeps a collection
+// from starting.
+func gcAllocatorLock() { libgc_alloc_lock() }
+
+func gcAllocatorUnlock() { libgc_alloc_unlock() }
+
+//export GC_alloc_lock
+func libgc_alloc_lock()
+
+//export GC_alloc_unlock
+func libgc_alloc_unlock()

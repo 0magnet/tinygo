@@ -176,3 +176,28 @@ func poolGCCount() uint32 { return uint32(libgc_get_gc_no()) }
 
 // readMemProfileDepth is the number of pcs per site in readMemProfile.
 func readMemProfileDepth() int { return memProfDepth }
+
+// gcCensus mirrors struct tinygo_runtime_census in gc_boehm.c.
+type gcCensus struct {
+	kindBytes, kindObjects [8]uintptr
+	sizeBytes, sizeObjects [32]uintptr
+}
+
+// readLiveCensus fills c, 80 words, with the bytes and objects marked by the
+// last collection per bdwgc kind and per power of two size class.
+func readLiveCensus(c []uintptr) bool {
+	var g gcCensus
+	if len(c) < int(unsafe.Sizeof(g)/unsafe.Sizeof(uintptr(0))) {
+		return false
+	}
+	gcLock.Lock()
+	gcAllocatorLock()
+	tinygo_runtime_bdwgc_census(&g)
+	gcAllocatorUnlock()
+	gcLock.Unlock()
+	copy(c, (*[80]uintptr)(unsafe.Pointer(&g))[:])
+	return true
+}
+
+//export tinygo_runtime_bdwgc_census
+func tinygo_runtime_bdwgc_census(c *gcCensus)
