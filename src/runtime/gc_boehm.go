@@ -35,6 +35,7 @@ var gcLock task.PMutex
 
 func initHeap() {
 	libgc_init()
+	metricsStart = nanotime()
 
 	// Call GC_set_push_other_roots(gcCallback) in C because of function
 	// signature differences that do matter in WebAssembly.
@@ -203,19 +204,23 @@ func ReadMemStats(m *MemStats) {
 
 	libgc_get_prof_stats(&gcMemStats, unsafe.Sizeof(gcMemStats))
 
-	// Fill in MemStats as well as we can, given the information that bdwgc
-	// provides to us.
-	m.HeapIdle = uint64(gcMemStats.free_bytes_full - gcMemStats.unmapped_bytes)
-	m.HeapInuse = uint64(gcMemStats.heapsize_full - gcMemStats.unmapped_bytes)
-	m.HeapReleased = uint64(gcMemStats.unmapped_bytes)
-	m.HeapSys = uint64(m.HeapInuse + m.HeapIdle)
-	m.HeapAlloc = uint64(gcMemStats.heapsize_full - gcMemStats.free_bytes_full)
+	// The heap splits as in runtime/metrics. bdwgc does not keep objects
+	// apart from its free lists, so HeapInuse is HeapAlloc.
+	objects, free, released, total := boehmHeapClasses(&gcMemStats)
+	m.HeapAlloc = objects
+	m.HeapInuse = objects
+	m.HeapIdle = free + released
+	m.HeapReleased = released
+	m.HeapSys = objects + free + released
 	m.Alloc = m.HeapAlloc
 	m.GCSys = 0 // not provided by bdwgc
 	m.TotalAlloc = uint64(gcMemStats.allocd_bytes_before_gc + gcMemStats.bytes_allocd_since_gc)
 	m.Mallocs = gcMallocCount()
 	m.Frees = 0 // not provided by bdwgc
-	m.Sys = uint64(gcMemStats.obtained_from_os_bytes)
+	m.Sys = total
+	live, trigger := gcMarked()
+	m.NextGC = boehmHeapGoal(live, trigger)
+	m.GCCPUFraction = gcCPUFraction()
 	m.NumGC = uint32(gcMemStats.gc_no)
 	gcReadPauses(m)
 

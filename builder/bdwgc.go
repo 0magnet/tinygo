@@ -122,6 +122,8 @@ var BoehmGC = Library{
 			"os_dep.c",
 			"reclaim.c",
 			"typd_mlc.c", // typed allocation support
+			// Reads bdwgc counters for runtime/metrics, so it needs these flags.
+			"../../src/runtime/gc_boehm_lib.c",
 		}
 		if strings.Split(target, "-")[2] == "windows" {
 			// Due to how the linker on Windows works (that doesn't allow

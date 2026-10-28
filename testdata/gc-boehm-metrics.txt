@@ -1,0 +1,12 @@
+live true true true
+goal true
+limit true
+cycles true
+pauses true true true
+sched pauses true
+cpu true true true
+memory true true
+goroutines true
+unknown true
+memstats true true true true true
+all true

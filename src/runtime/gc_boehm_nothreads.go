@@ -45,3 +45,19 @@ func gcOutOfMemory(attempt int) bool { return false }
 
 func gcAllocatorLock()   {}
 func gcAllocatorUnlock() {}
+
+const gcProcs = 1
+
+// gcMarked returns what the last collection marked and what bdwgc allocates
+// before the next one. Every bdwgc call holds gcLock, as the caller does.
+func gcMarked() (live, trigger uintptr) {
+	live = libgc_marked(&trigger)
+	return
+}
+
+func gcHeapCapBytes() uintptr { return 0 }
+
+// gcReadPauseHist reports false: pauses are only timed with thread support.
+func gcReadPauseHist(pauses []uint64) (uint64, bool) { return 0, false }
+
+func gcCPUFraction() float64 { return 0 }

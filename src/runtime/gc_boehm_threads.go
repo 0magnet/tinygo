@@ -20,6 +20,7 @@ const gcUnmapAfter = 3
 
 // Collection events, see GC_EventType in lib/bdwgc/include/gc/gc.h.
 const (
+	gcEventReclaimEnd     = 4
 	gcEventPreStopWorld   = 6
 	gcEventPostStopWorld  = 7
 	gcEventPreStartWorld  = 8
@@ -60,6 +61,10 @@ var (
 	gcOOMCollecting atomic.Uint32
 	// The last pause, and the time from the end of the pause before it.
 	gcLastPause, gcLastCycle, gcPrevEnd uint64
+	// What the last collection marked, and what bdwgc allocates before the
+	// next, for runtime/metrics.
+	gcLiveBytes, gcTriggerBytes uintptr
+	gcPauseHist                 [gcPauseBuckets]uint64
 )
 
 func gcAllocLock() {}
@@ -271,6 +276,8 @@ func coresRegisterGC(cpu uint32) {
 //export tinygo_runtime_bdwgc_event
 func gcEvent(event int32) {
 	switch event {
+	case gcEventReclaimEnd:
+		gcLiveBytes = libgc_marked(&gcTriggerBytes)
 	case gcEventPreStopWorld:
 		gcStopStart = tinygo_runtime_bdwgc_clock(0)
 		gcStopAllocd = libgc_get_bytes_since_gc()
@@ -296,6 +303,7 @@ func gcEvent(event int32) {
 		}
 		gcPrevEnd = end
 		gcPauseTotal += d
+		gcPauseHist[gcPauseBucket(d)]++
 		gcLastGC = tinygo_runtime_bdwgc_clock(1)
 		if gcTrace {
 			println("gc pause", d/1000, "us heap", int(libgc_get_heap_size()>>20), "MB free", int(libgc_get_free_bytes()>>20), "MB allocd", int(gcStopAllocd>>20), "MB divisor", int(libgc_get_free_space_divisor()))
@@ -394,3 +402,32 @@ func libgc_alloc_lock()
 
 //export GC_alloc_unlock
 func libgc_alloc_unlock()
+
+// gcProcs is how many cores run goroutines, which all stop for a pause.
+const gcProcs = numCPU
+
+// gcMarked returns what the last collection marked and what bdwgc allocates
+// before the next one, as recorded when it finished sweeping.
+func gcMarked() (live, trigger uintptr) {
+	return gcLiveBytes, gcTriggerBytes
+}
+
+func gcHeapCapBytes() uintptr { return gcHeapCap }
+
+// gcReadPauseHist copies the pause histogram to pauses and returns the total
+// pause time.
+func gcReadPauseHist(pauses []uint64) (uint64, bool) {
+	gcAllocatorLock()
+	copy(pauses, gcPauseHist[:])
+	total := gcPauseTotal
+	gcAllocatorUnlock()
+	return total, true
+}
+
+// gcCPUFraction is the share of the available CPU time spent in pauses.
+func gcCPUFraction() float64 {
+	if d := nanotime() - metricsStart; d > 0 {
+		return float64(gcPauseTotal) / float64(d)
+	}
+	return 0
+}

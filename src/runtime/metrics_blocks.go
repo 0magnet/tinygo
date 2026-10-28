@@ -2,11 +2,19 @@
 
 package runtime
 
-// metricsHeapLive reports the heap bytes in use after the last collection,
-// for /gc/heap/live:bytes in runtime/metrics.
-func metricsHeapLive() (uint64, bool) {
+import "internal/task"
+
+func readMetrics(v []uint64, pauses []uint64) uint64 {
+	if len(v) < metricCount {
+		return 0
+	}
 	gcLock.Lock()
-	n := gcLastLive
+	v[metricHeapLive] = gcLastLive
 	gcLock.Unlock()
-	return n, true
+	v[metricGoroutines] = uint64(task.NumGoroutine())
+	return 1<<metricHeapLive | 1<<metricGoroutines
 }
+
+func metricsPauseBuckets(b []float64) int { return 0 }
+
+func metricsPauseBucketCount() int { return 0 }
