@@ -148,26 +148,39 @@ var tinygo_caught_signal int32
 //
 //export tinygo_sigpanic
 func tinygo_sigpanic() {
-	sig := tinygo_caught_signal
+	// Take the signal details of this thread before anything can overwrite
+	// them, so the trace shows where the fault happened.
+	sig := int32(tinygo_take_signal_info(0))
+	code := tinygo_take_signal_info(1)
+	fault := tinygo_take_signal_info(2)
+	pc := tinygo_take_signal_info(3)
+	if sig == 0 {
+		sig = tinygo_caught_signal
+	}
 	switch sig {
 	case sig_SIGSEGV, sig_SIGBUS:
-		runtimePanic(errNilPointer)
+		runtimePanicFrom(pc, errNilPointer, sig, code, fault)
 	case sig_SIGFPE:
-		runtimePanic(errDivideByZero)
+		runtimePanicFrom(pc, errDivideByZero, sig, code, fault)
 	default:
 		runtimeFatal("signal")
 	}
 }
 
+//export tinygo_take_signal_info
+func tinygo_take_signal_info(i int32) uintptr
+
 // A thread ran into the guard page below its stack. The signal is raised again
 // for its default action, as in tinygo_handle_fatal_signal.
 //
 //export tinygo_handle_stack_overflow
-func tinygo_handle_stack_overflow(sig int32) {
+func tinygo_handle_stack_overflow(sig, code int32, fault, pc, fp uintptr) {
 	if panicStrategy() == tinygo.PanicStrategyTrap {
 		trap()
 	}
+	crashing = true
 	println("fatal error: goroutine stack overflow; build with a larger -stack-size")
+	printSignalTrace(uintptr(sig), uintptr(code), fault, pc, fp)
 	raise(sig)
 }
 
@@ -177,7 +190,7 @@ func tinygo_handle_stack_overflow(sig int32) {
 // information.
 //
 //export tinygo_handle_fatal_signal
-func tinygo_handle_fatal_signal(sig int32, addr uintptr) {
+func tinygo_handle_fatal_signal(sig, code int32, fault, addr, fp uintptr) {
 	if panicStrategy() == tinygo.PanicStrategyTrap {
 		trap()
 	}
@@ -201,9 +214,7 @@ func tinygo_handle_fatal_signal(sig int32, addr uintptr) {
 	default:
 		println(sig)
 	}
-
-	// TODO: it might be interesting to also print the invalid address for
-	// SIGSEGV and SIGBUS.
+	printSignalTrace(uintptr(sig), uintptr(code), fault, addr, fp)
 
 	// Do *not* abort here, instead raise the same signal again. The signal is
 	// registered with SA_RESETHAND which means it executes only once. So when

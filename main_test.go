@@ -1748,6 +1748,68 @@ func TestRuntimeFatal(t *testing.T) {
 	}
 }
 
+// Test that a fatal panic prints the stack recorded where it started, named
+// from the symbol table of a build without debug information, and that a
+// recovered panic prints nothing more.
+func TestPanicTrace(t *testing.T) {
+	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("panic traces need linux frame pointers")
+	}
+	t.Parallel()
+
+	cases := []struct {
+		arg  string
+		env  []string
+		want []string
+	}{
+		{"goroutine", nil, []string{"[signal SIGSEGV: segmentation violation", "main.faultInGoroutine+", "main.main$1+"}},
+		{"main", nil, []string{"[signal SIGSEGV", "pc=", "main.faultInMain+", "main.main+"}},
+		{"defer", nil, []string{"[signal SIGSEGV", "main.faultInDefer+", "main.main$2+"}},
+		{"nilcheck", nil, []string{"main.nilCheckInGoroutine+", "main.main$3+"}},
+		{"explicit", nil, []string{"panic: explicit panic here", "main.explicitPanic+", "main.main+"}},
+		{"all", []string{"TINYGO_PANIC_ALL=1"}, []string{"main.faultInMain+", "[chan receive]:", "main.blockedReceiver+"}},
+	}
+	for _, scheduler := range []string{"cores", "tasks"} {
+		t.Run(scheduler, func(t *testing.T) {
+			t.Parallel()
+			options := optionsFromTarget("", sema)
+			options.GC = "boehm"
+			options.Scheduler = scheduler
+			options.Debug = false
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := builder.Build("testdata/panic-trace.go", "", t.TempDir(), config)
+			if err != nil {
+				t.Fatal("failed to build binary:", err)
+			}
+			for _, tc := range cases {
+				cmd := exec.Command(result.Binary, tc.arg)
+				cmd.Env = append(os.Environ(), tc.env...)
+				out, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Errorf("%s: program unexpectedly exited successfully:\n%s", tc.arg, out)
+					continue
+				}
+				for _, want := range tc.want {
+					if !strings.Contains(string(out), want) {
+						t.Errorf("%s: output does not contain %q:\n%s", tc.arg, want, out)
+					}
+				}
+			}
+
+			out, err := exec.Command(result.Binary, "recover").CombinedOutput()
+			if err != nil {
+				t.Fatalf("recover: %v:\n%s", err, out)
+			}
+			if strings.Contains(string(out), "goroutine") || !strings.HasSuffix(string(out), "done\n") {
+				t.Errorf("recover: recovered panics printed a trace:\n%s", out)
+			}
+		})
+	}
+}
+
 // Test that the program can read stdin when the caller supplies it.
 func TestStdin(t *testing.T) {
 	t.Parallel()

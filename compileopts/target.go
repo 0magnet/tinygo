@@ -456,6 +456,7 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 			"src/os/exec_linux.c",
 			"src/internal/task/task_threads.c",
 			"src/runtime/cores_linux.c",
+			"src/runtime/panic_trace_linux.c",
 			"src/runtime/runtime_unix.c",
 			"src/runtime/signal.c")
 		if options.GOARCH == "amd64" || options.GOARCH == "386" {

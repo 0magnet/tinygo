@@ -54,6 +54,7 @@ const (
 // Builtin function panic(msg), used as a compiler intrinsic.
 func _panic(message interface{}) {
 	clearPanicReplay()
+	capturePanicTrace(uintptr(returnAddress(0)), 0, 0, 0)
 	panicOrGoexit(message, panicTrue)
 }
 
@@ -99,6 +100,7 @@ func panicOrGoexit(message interface{}, panicking panicState) {
 	if rewindPanic() {
 		return
 	}
+	printPanicTrace()
 	abort()
 }
 
@@ -119,14 +121,23 @@ func runtimeFatal(msg string) {
 	printstring("fatal error: ")
 	printstring(msg)
 	printnl()
+	printFatalTrace()
 	abort()
 }
 
 func runtimePanicAt(addr unsafe.Pointer, err Error) {
+	runtimePanicFrom(uintptr(addr), err, 0, 0, 0)
+}
+
+// runtimePanicFrom raises a runtime error at pc, which is a return address,
+// or the faulting pc of signal sig with si_code code and si_addr fault.
+func runtimePanicFrom(pc uintptr, err Error, sig int32, code, fault uintptr) {
 	clearPanicReplay()
 	if panicStrategy() == tinygo.PanicStrategyTrap {
 		trap()
 	}
+	// Record the stack before the deferred calls unwind it.
+	capturePanicTrace(pc, uintptr(sig), code, fault)
 	// Use the normal panic mechanism so that this runtime error
 	// can be recovered with recover().
 	if startPanicUnwind(err, panicTrue) {
@@ -135,11 +146,15 @@ func runtimePanicAt(addr unsafe.Pointer, err Error) {
 	crashing = true
 	printstring("panic: ")
 	printstring(err.Error())
-	if hasReturnAddr {
+	if sig != 0 {
 		printstring(" at ")
-		printptr(uintptr(addr) - callInstSize)
+		printptr(pc)
+	} else if hasReturnAddr {
+		printstring(" at ")
+		printptr(pc - callInstSize)
 	}
 	printnl()
+	printPanicTrace()
 	abort()
 }
 
@@ -236,6 +251,7 @@ func _recover(useParentFrame bool) interface{} {
 		// the panicking sequence, hence setting panicking to false.
 		frame.PanicState &^= panicTrue
 		clearPanicReplay()
+		releasePanicTrace()
 		return frame.PanicValue
 	}
 	// Not panicking, so return a nil interface.
