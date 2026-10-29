@@ -64,6 +64,10 @@ func TestCompiler(t *testing.T) {
 	if goMinor >= 27 {
 		tests = append(tests, testCase{"go1.27.go", "", ""})
 	}
+	if llvmutil.Version() >= 23 {
+		// Only has LLVM 23 output so far.
+		tests = append(tests, testCase{"sliceend.go", "", ""})
+	}
 
 	for _, tc := range tests {
 		name := tc.file
