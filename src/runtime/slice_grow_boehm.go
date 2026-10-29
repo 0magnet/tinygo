@@ -42,9 +42,8 @@ func sliceUntyped(layout unsafe.Pointer) bool {
 	return false
 }
 
-// sliceFitCap picks a capacity near c that fills a whole bdwgc object. Under
-// ALL_INTERIOR_POINTERS bdwgc adds a byte to every object, so a power of two
-// size takes one more granule, or one more block once it is over 2048 bytes.
+// sliceFitCap picks a capacity near c that fills a whole bdwgc object: one 16
+// byte granule for a tiny one, whole 4096 byte blocks for one over 2048 bytes.
 // Fit in the smaller object when that loses at most an eighth of c.
 func sliceFitCap(c, newCap, elemSize uintptr) uintptr {
 	size := c * elemSize
@@ -53,7 +52,7 @@ func sliceFitCap(c, newCap, elemSize uintptr) uintptr {
 	case size < 384:
 		// bdwgc's tiny size classes, one per 16 byte granule.
 		unit = 16
-	case size >= 2048:
+	case size > 2048:
 		// Large objects take whole 4096 byte blocks.
 		unit = 4096
 	default:
@@ -61,10 +60,10 @@ func sliceFitCap(c, newCap, elemSize uintptr) uintptr {
 		// sliceGrowFill.
 		return c
 	}
-	if fit := ((size+unit-1)&^(unit-1) - 1) / elemSize; fit >= newCap && fit >= c-c/8 {
+	if fit := size &^ (unit - 1) / elemSize; fit >= newCap && fit >= c-c/8 {
 		return fit
 	}
-	return ((size+unit)&^(unit-1) - 1) / elemSize
+	return (size + unit - 1) &^ (unit - 1) / elemSize
 }
 
 // sliceGrowFill extends the capacity of a new small slice buffer to the size
@@ -73,10 +72,10 @@ func sliceFitCap(c, newCap, elemSize uintptr) uintptr {
 // so only the untyped kinds can grow into the tail.
 func sliceGrowFill(buf unsafe.Pointer, newCap, elemSize uintptr, layout unsafe.Pointer) uintptr {
 	size := newCap * elemSize
-	if size == 0 || size >= 2048 || !sliceUntyped(layout) {
+	if size == 0 || size > 2048 || !sliceUntyped(layout) {
 		return newCap
 	}
-	usable := (libgc_size(uintptr(buf)) - 1) / elemSize
+	usable := libgc_size(uintptr(buf)) / elemSize
 	if usable <= newCap {
 		return newCap
 	}

@@ -26,6 +26,9 @@ var BoehmGC = Library{
 			"-DALL_INTERIOR_POINTERS",  // scan interior pointers (needed for Go)
 			"-DIGNORE_DYNAMIC_LOADING", // we don't support dynamic loading at the moment
 			"-DNO_GETCONTEXT",          // musl doesn't support getcontext()
+			// No padding byte per object: the compiler never makes a pointer just
+			// past the end of an object, as for s[len(s):], see sliceOffset.
+			"-DDONT_ADD_BYTE_AT_END",
 			// Each goroutine stack is pushed as one root under the threads
 			// scheduler, and GC_push_all aborts rather than grow the mark stack.
 			"-DINITIAL_MARK_STACK_SIZE=(64*HBLKSIZE)",

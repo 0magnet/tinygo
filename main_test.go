@@ -663,6 +663,14 @@ func TestBuild(t *testing.T) {
 			runTestWithConfig("gc-boehm-slicegrow.go", t, opts, nil, nil)
 		})
 
+		t.Run("gc=boehm-end-pointers", func(t *testing.T) {
+			t.Parallel()
+			opts := optionsFromTarget("", sema)
+			opts.GC = "boehm"
+			opts.Scheduler = "cores"
+			runTestWithConfig("gc-boehm-endptr.go", t, opts, nil, nil)
+		})
+
 		t.Run("gc=boehm-merge-unmapped", func(t *testing.T) {
 			if runtime.GOOS != "linux" {
 				t.Skip("unmapping needs mmap")
