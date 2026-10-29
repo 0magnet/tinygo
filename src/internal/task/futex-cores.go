@@ -12,7 +12,8 @@ import "runtime/interrupt"
 type Futex struct {
 	Uint32
 
-	waiters Stack
+	// Waiters wake oldest first, so a busy futex cannot starve the first one.
+	waiters Queue
 
 	// Schedulers sleeping on the value, which have no task to park.
 	sysWaiters Uint32
@@ -47,7 +48,7 @@ func (f *Futex) Wait(cmp uint32) (awoken bool) {
 		return false
 	}
 
-	// Push the current goroutine onto the waiter stack.
+	// Queue the current goroutine behind the other waiters.
 	f.waiters.Push(t)
 
 	unlockFutex(mask)
@@ -79,7 +80,8 @@ func (f *Futex) WakeAll() {
 		sysWake(&f.Uint32)
 	}
 	mask := lockFutex()
-	waiters := f.waiters.Queue()
+	var waiters Queue
+	waiters.Append(&f.waiters)
 	unlockFutex(mask)
 	for t := waiters.Pop(); t != nil; t = waiters.Pop() {
 		scheduleTask(t)

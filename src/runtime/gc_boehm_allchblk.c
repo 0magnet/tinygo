@@ -25,6 +25,14 @@ GC_INNER struct hblk *GC_allochblk(size_t lb_adjusted, int kind,
 GC_INNER void GC_unmap_old(unsigned threshold);
 #endif
 
+// What may be allocated between collections, set after each one by the runtime
+// with thread support, or zero. See tinygo_runtime_bdwgc_set_pace.
+GC_word tinygo_runtime_bdwgc_pace_bytes = 0;
+
+// Called after each collection has marked and set up the sweep, before free
+// blocks are given back. The allocator lock is held.
+void (*tinygo_runtime_bdwgc_pace_hook)(void) = NULL;
+
 #if defined(USE_MUNMAP) && !defined(CHERI_PURECAP)
 
 GC_INNER GC_bool GC_merge_unmapped(void);
@@ -158,9 +166,10 @@ GC_merge_unmapped(void)
 }
 
 // Without incremental mode bdwgc collects only when an allocation finds no
-// free block, so after a burst it uses the whole of the larger heap between
-// collections, faulting released pages in again. Once a collection is due
-// and the mapped free blocks are used up, fail so that it collects instead.
+// free block (GC_allocobj and GC_alloc_large call GC_collect_or_expand only
+// then), so the heap fills to whatever size it grew to. Fail once the paced
+// bytes were allocated, or once a collection is due and the mapped free
+// blocks are used up, so that GC_collect_or_expand collects instead.
 GC_INNER struct hblk *
 GC_allochblk(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
 {
@@ -169,7 +178,9 @@ GC_allochblk(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
   struct hblk *h;
 
   if (!GC_dont_gc && !GC_incremental
-      && GC_large_free_bytes - GC_unmapped_bytes < size + align_m1
+      && ((tinygo_runtime_bdwgc_pace_bytes != 0
+           && GC_bytes_allocd >= tinygo_runtime_bdwgc_pace_bytes)
+          || GC_large_free_bytes - GC_unmapped_bytes < size + align_m1)
       && GC_should_collect())
     return NULL;
   h = GC_allochblk_bdwgc(lb_adjusted, kind, flags, align_m1);
@@ -236,13 +247,23 @@ mapped_first(size_t i)
   }
 }
 
-// What stays mapped for the next cycle: bdwgc's trigger, as min_bytes_allocd
-// in alloc.c computes it, or a quarter of the marked bytes if more.
+// What stays mapped for the next cycle. When paced, what the heap goal and a
+// tenth more leave free after the blocks in use, as Go's scavenger keeps.
+// Otherwise bdwgc's trigger, as min_bytes_allocd in alloc.c computes it, or a
+// quarter of the marked bytes if more.
 static word
 release_keep(void)
 {
   word live = GC_composite_in_use + GC_atomic_in_use;
   word stack = 0, keep;
+
+  if (tinygo_runtime_bdwgc_pace_bytes != 0) {
+    word goal = live + tinygo_runtime_bdwgc_pace_bytes;
+    word used = GC_heapsize - GC_large_free_bytes;
+
+    goal += goal / 10;
+    return goal > used ? goal - used : 0;
+  }
 
 #  ifdef THREADS
   if (GC_need_to_lock)
@@ -299,8 +320,13 @@ release_free(void)
 GC_INNER void
 GC_unmap_old(unsigned threshold)
 {
-  if (threshold > 0)
+  if (threshold > 0) {
+    // GC_finish_collection in alloc.c calls it with a threshold once
+    // GC_start_reclaim counted the marked bytes, so the runtime paces here.
+    if (tinygo_runtime_bdwgc_pace_hook != NULL)
+      tinygo_runtime_bdwgc_pace_hook();
     GC_unmap_old_bdwgc(threshold);
+  }
   release_free();
 }
 

@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #endif
 
-void tinygo_handle_fatal_signal(int sig, uintptr_t addr);
+void tinygo_handle_fatal_signal(int sig, int code, uintptr_t fault, uintptr_t pc, uintptr_t fp);
 
 // tinygo_sigpanic is defined in Go. It turns a signal into a Go panic
 // that can be recovered with recover(). The signal number is passed via
@@ -24,6 +24,66 @@ void tinygo_sigpanic(void);
 
 // Set by the signal handler before redirecting to tinygo_sigpanic.
 int tinygo_caught_signal;
+
+// The signal, si_code, si_addr and faulting pc of the last signal this thread
+// redirected to tinygo_sigpanic, which takes them before anything can unwind.
+static __thread uintptr_t caught_info[4];
+
+uintptr_t tinygo_take_signal_info(int i) {
+	uintptr_t v = caught_info[i];
+	caught_info[i] = 0;
+	return v;
+}
+
+static uintptr_t context_pc(ucontext_t *uctx) {
+#if __APPLE__
+	#if __arm64__
+		return uctx->uc_mcontext->__ss.__pc;
+	#elif __x86_64__
+		return uctx->uc_mcontext->__ss.__rip;
+	#else
+		#error unknown architecture
+	#endif
+#elif __linux__
+	// Note: this can probably be simplified using the MC_PC macro in musl,
+	// but this works for now.
+	#if __arm__
+		return uctx->uc_mcontext.arm_pc;
+	#elif __i386__
+		return uctx->uc_mcontext.gregs[REG_EIP];
+	#elif __x86_64__
+		return uctx->uc_mcontext.gregs[REG_RIP];
+	#else // aarch64, mips, maybe others
+		return uctx->uc_mcontext.pc;
+	#endif
+#else
+	#error unknown platform
+#endif
+}
+
+// context_sp returns the stack pointer where the signal hit on Linux, and
+// zero where it is not known.
+__attribute__((unused)) static uintptr_t context_sp(ucontext_t *uctx) {
+#if __linux__ && __x86_64__
+	return uctx->uc_mcontext.gregs[REG_RSP];
+#elif __linux__ && __aarch64__
+	return uctx->uc_mcontext.sp;
+#else
+	return 0;
+#endif
+}
+
+// context_fp returns the frame pointer where the signal hit, where TinyGo
+// keeps frame pointers, and zero elsewhere.
+static uintptr_t context_fp(ucontext_t *uctx) {
+#if __linux__ && __x86_64__
+	return uctx->uc_mcontext.gregs[REG_RBP];
+#elif __linux__ && __aarch64__
+	return uctx->uc_mcontext.regs[29];
+#else
+	return 0;
+#endif
+}
 
 // Whether sigpanic-based recovery is supported for the current
 // architecture. Set to 0 on architectures where we can't reliably
@@ -38,11 +98,15 @@ static int can_sigpanic(void) {
 
 // Try to redirect execution from the signal handler to tinygo_sigpanic.
 // Returns 1 on success, 0 if the architecture doesn't support it.
-static int redirect_to_sigpanic(int sig, ucontext_t *uctx) {
+static int redirect_to_sigpanic(int sig, siginfo_t *info, ucontext_t *uctx) {
 	if (!can_sigpanic()) {
 		return 0;
 	}
 	tinygo_caught_signal = sig;
+	caught_info[0] = sig;
+	caught_info[1] = (uintptr_t)info->si_code;
+	caught_info[2] = (uintptr_t)info->si_addr;
+	caught_info[3] = context_pc(uctx);
 
 #if __APPLE__
 	#if __arm64__
@@ -99,9 +163,13 @@ static int redirect_to_sigpanic(int sig, ucontext_t *uctx) {
 #define OVERFLOW_WINDOW   (64 * 1024)
 #define SA_FATAL          (SA_SIGINFO | SA_RESETHAND | SA_ONSTACK)
 
-void tinygo_handle_stack_overflow(int sig);
+void tinygo_handle_stack_overflow(int sig, int code, uintptr_t fault, uintptr_t pc, uintptr_t fp);
 
-static __thread uintptr_t stack_lo;
+static __thread uintptr_t stack_lo, stack_hi;
+
+// The bounds of the calling thread's own stack, for a crash trace.
+uintptr_t tinygo_thread_stack_lo(void) { return stack_lo; }
+uintptr_t tinygo_thread_stack_hi(void) { return stack_hi; }
 static pthread_key_t signal_stack_key;
 static pthread_once_t signal_stack_once = PTHREAD_ONCE_INIT;
 
@@ -124,6 +192,7 @@ void tinygo_signal_thread_init(int is_main) {
 		size_t size;
 		if (pthread_attr_getstack(&attr, &addr, &size) == 0) {
 			stack_lo = (uintptr_t)addr;
+			stack_hi = (uintptr_t)addr + size;
 			struct rlimit rl;
 			if (is_main && getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
 				rl.rlim_cur < stack_lo + size) {
@@ -145,10 +214,18 @@ void tinygo_signal_thread_init(int is_main) {
 	pthread_setspecific(signal_stack_key, stack);
 }
 
-static int is_stack_overflow(int sig, siginfo_t *info) {
+// A goroutine stack is mapped by the scheduler, so its guard page is found
+// from the stack pointer: a fault just below it is an overflow.
+static int is_stack_overflow(int sig, siginfo_t *info, ucontext_t *uctx) {
 	uintptr_t addr = (uintptr_t)info->si_addr;
-	return (sig == SIGSEGV || sig == SIGBUS) && stack_lo != 0 &&
-		addr + OVERFLOW_WINDOW >= stack_lo && addr < stack_lo + OVERFLOW_WINDOW;
+	if (sig != SIGSEGV && sig != SIGBUS) {
+		return 0;
+	}
+	uintptr_t sp = context_sp(uctx);
+	if (sp != 0 && addr < sp + 256 && addr + OVERFLOW_WINDOW >= sp) {
+		return 1;
+	}
+	return stack_lo != 0 && addr + OVERFLOW_WINDOW >= stack_lo && addr < stack_lo + OVERFLOW_WINDOW;
 }
 #else
 #define SA_FATAL (SA_SIGINFO | SA_RESETHAND)
@@ -158,14 +235,14 @@ static void signal_handler(int sig, siginfo_t *info, void *context) {
 	ucontext_t* uctx = context;
 
 #if __linux__
-	if (is_stack_overflow(sig, info)) {
-		tinygo_handle_stack_overflow(sig);
+	if (is_stack_overflow(sig, info, uctx)) {
+		tinygo_handle_stack_overflow(sig, info->si_code, (uintptr_t)info->si_addr, context_pc(uctx), context_fp(uctx));
 		return;
 	}
 #endif
 
 	// Try to redirect to sigpanic for a recoverable panic.
-	if (redirect_to_sigpanic(sig, uctx)) {
+	if (redirect_to_sigpanic(sig, info, uctx)) {
 		// Re-register the signal handler since SA_RESETHAND cleared it.
 		// We need it active in case the sigpanic itself faults (e.g.,
 		// stack overflow during panic).
@@ -177,32 +254,7 @@ static void signal_handler(int sig, siginfo_t *info, void *context) {
 		return; // return from signal handler; execution resumes at sigpanic
 	}
 
-	// Fallback: extract the faulting address and call the fatal handler.
-	uintptr_t addr = 0;
-	#if __APPLE__
-		#if __arm64__
-			addr = uctx->uc_mcontext->__ss.__pc;
-		#elif __x86_64__
-			addr = uctx->uc_mcontext->__ss.__rip;
-		#else
-			#error unknown architecture
-		#endif
-	#elif __linux__
-		// Note: this can probably be simplified using the MC_PC macro in musl,
-		// but this works for now.
-		#if __arm__
-			addr = uctx->uc_mcontext.arm_pc;
-		#elif __i386__
-			addr = uctx->uc_mcontext.gregs[REG_EIP];
-		#elif __x86_64__
-			addr = uctx->uc_mcontext.gregs[REG_RIP];
-		#else // aarch64, mips, maybe others
-			addr = uctx->uc_mcontext.pc;
-		#endif
-	#else
-		#error unknown platform
-	#endif
-	tinygo_handle_fatal_signal(sig, addr);
+	tinygo_handle_fatal_signal(sig, info->si_code, (uintptr_t)info->si_addr, context_pc(uctx), context_fp(uctx));
 }
 
 void tinygo_register_fatal_signals(void) {

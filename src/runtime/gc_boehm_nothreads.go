@@ -31,14 +31,18 @@ func gcInitThreads() {}
 
 func gcReadPauses(m *MemStats) {}
 
-func gcSetDivisor(d uintptr) uintptr {
-	old := libgc_get_free_space_divisor()
-	libgc_set_free_space_divisor(d)
+// gcSetPercent sets GOGC. bdwgc allows about 2*live/divisor bytes between
+// collections, see GC_free_space_divisor in lib/bdwgc/include/gc/gc.h.
+func gcSetPercent(percent int32) int32 {
+	old := int32(200 / libgc_get_free_space_divisor())
+	if percent > 0 {
+		d := uintptr(200 / percent)
+		if d < 1 {
+			d = 1
+		}
+		libgc_set_free_space_divisor(d)
+	}
 	return old
-}
-
-func gcGetDivisor() uintptr {
-	return libgc_get_free_space_divisor()
 }
 
 func gcOutOfMemory(attempt int) bool { return false }

@@ -20,6 +20,8 @@
 
 void tinygo_runtime_bdwgc_event(int event);
 void tinygo_cores_gc_record(void);
+void tinygo_runtime_bdwgc_pace(void);
+extern void (*tinygo_runtime_bdwgc_pace_hook)(void);
 
 static struct sigaction suspend_next;
 
@@ -41,12 +43,16 @@ static void GC_CALLBACK collection_event(GC_EventType event) {
 // percent, before the heap grows past the limit. From TINYGO_GC_LIMIT_PAUSE.
 int tinygo_runtime_bdwgc_limit_pause = 75;
 
+// GOGC, which debug.SetGCPercent changes. See gcPace.
+int tinygo_runtime_bdwgc_gc_percent = 100;
+
 int tinygo_runtime_bdwgc_threads_init(void) {
     const char *p = getenv("TINYGO_GC_LIMIT_PAUSE");
     if (p != NULL && atoi(p) > 0) {
         tinygo_runtime_bdwgc_limit_pause = atoi(p);
     }
     GC_set_on_collection_event(collection_event);
+    tinygo_runtime_bdwgc_pace_hook = tinygo_runtime_bdwgc_pace;
     warn_next = GC_get_warn_proc();
     GC_set_warn_proc(warn_proc);
 
@@ -55,12 +61,11 @@ int tinygo_runtime_bdwgc_threads_init(void) {
     GC_word bitmap = 0;
     GC_make_descriptor(&bitmap, 1);
 
-    // GOGC sets how far the heap grows between collections, as
-    // debug.SetGCPercent does.
+    // The runtime paces each collection from GOGC once marking finished.
     const char *s = getenv("GOGC");
     long n;
     if (s != NULL && (n = atol(s)) > 0) {
-        GC_set_free_space_divisor(n >= 200 ? 1 : 200 / n);
+        tinygo_runtime_bdwgc_gc_percent = n > 1 << 20 ? 1 << 20 : (int)n;
     }
 
     // By default a collection marks in one parallel pause.

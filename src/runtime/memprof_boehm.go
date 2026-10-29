@@ -132,16 +132,7 @@ func readMemProfile(pcs, inuse, alloc []uintptr) int {
 
 func setGCPercent(percent int32) int32 {
 	gcLock.Lock()
-	old := int32(200 / gcGetDivisor())
-	if percent > 0 {
-		// Boehm allows about 2*live/divisor bytes between collections, see
-		// GC_free_space_divisor in lib/bdwgc/include/gc/gc.h.
-		d := uintptr(200 / percent)
-		if d < 1 {
-			d = 1
-		}
-		gcSetDivisor(d)
-	}
+	old := gcSetPercent(percent)
 	gcLock.Unlock()
 	return old
 }
