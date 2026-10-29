@@ -96,7 +96,8 @@ var BoehmGC = Library{
 		return []string{
 			"pthread_start.c",
 			"pthread_stop_world.c",
-			"pthread_support.c",
+			// pthread_support.c, counting processors without /proc/stat.
+			"../../src/runtime/gc_boehm_pthread_support.c",
 			"thread_local_alloc.c",
 		}
 	},
