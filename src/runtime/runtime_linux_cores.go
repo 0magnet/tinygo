@@ -194,8 +194,12 @@ func signalWakeScheduler() {
 	}
 }
 
-// epollDrainWake empties the eventfd after a wakeup.
+// epollDrainWake empties the eventfd after a wakeup. Only the core waiting in
+// epoll drains it, or a core polling between tasks can eat the sleeper's kick.
 func epollDrainWake() {
+	if sleepingCore != currentCPU() {
+		return
+	}
 	var n uint64
 	libc_read(wakeFD, unsafe.Pointer(&n), 8)
 }
