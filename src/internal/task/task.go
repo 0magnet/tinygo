@@ -50,6 +50,10 @@ type Task struct {
 
 	// SynctestBubble identifies the synctest bubble this task belongs to.
 	SynctestBubble unsafe.Pointer
+
+	// mutexWait is when the task started waiting for a Mutex, under the cores
+	// scheduler. It is empty for other schedulers.
+	mutexWait mutexWait
 }
 
 const (

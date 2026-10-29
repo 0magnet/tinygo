@@ -1,4 +1,4 @@
-//go:build !tinygo.unicore
+//go:build !tinygo.unicore && !scheduler.cores
 
 package task
 
