@@ -17,6 +17,12 @@ import (
 	"github.com/tinygo-org/tinygo/goenv"
 )
 
+// Go minor version range supported by TinyGo.
+const (
+	MinimumGoMinorVersion = 25
+	MaximumGoMinorVersion = 27
+)
+
 // Library versions. Whenever an existing library is changed, this number should
 // be added/increased so that existing caches are invalidated.
 //
@@ -28,6 +34,7 @@ var libVersions = map[string]int{
 	"bdwgc":        13,
 	"picolibc":     2,
 	"wasmbuiltins": 1,
+	"compiler-rt":  1,
 }
 
 // Config keeps all configuration affecting the build in a single struct.
@@ -240,16 +247,21 @@ func (c *Config) PanicStrategy() string {
 }
 
 // PanicUnwind returns the mechanism used to unwind panics and Goexit. Asyncify
-// provides unwinding whenever that scheduler is selected. Explicit
-// return-based unwinding must be requested by the command line or target
-// specification.
+// provides unwinding whenever that scheduler is selected, unless unwinding is
+// turned off with "none". Explicit return-based unwinding must be requested by
+// the command line or target specification.
 func (c *Config) PanicUnwind() string {
-	if c.Scheduler() == "asyncify" {
-		return "asyncify"
-	}
 	requested := c.Target.PanicUnwind
 	if c.Options.PanicUnwind != "" {
 		requested = c.Options.PanicUnwind
+	}
+	if requested == "none" {
+		// Without unwinding, recover never stops a panic and Goexit cannot run
+		// deferred calls, but calls need no code to propagate an unwind.
+		return "none"
+	}
+	if c.Scheduler() == "asyncify" {
+		return "asyncify"
 	}
 	if requested == "explicit" {
 		return "explicit"

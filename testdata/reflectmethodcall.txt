@@ -1,0 +1,29 @@
+NumMethod value: 6 6
+method 0 func func(int, int) (int, bool)
+method 1 func func(int64) main.Big
+method 2 func func() string
+method 3 func func(string) string
+method 4 func func() string
+method 5 func func(string, int) []string
+Name: Ann
+Greet: hi Bob from Ann
+Add: 13 true
+Big: 5 6 7 8 Ann
+Pair: 2
+Describe (promoted): base 7
+miss valid: false
+unexported valid: false
+pointer method on value valid: false
+NumMethod pointer: 8
+Age after Birthday: 31
+Rename old: Ann new: Cat
+pointer Name: Cat
+bound copy: Cat
+Interface func: Cat
+Counter Double: 42
+interface kind: interface
+interface Greet: hi Eve from Dan
+interface Method(1): Dan
+interface Describe valid: false
+Dan says hi x from Dan at 31
+base 7 / Dan

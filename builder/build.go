@@ -261,6 +261,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	if err != nil {
 		return result, err
 	}
+	compilerConfig.ReflectMethods = lprogram.UsesReflectMethod()
 
 	// Embed module build information so runtime/debug.ReadBuildInfo() works,
 	// mirroring what the standard `go build` toolchain does. We fill
@@ -617,16 +618,18 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			phaseMem("after-free")
 			ctx := llvm.NewContext()
 			mod = ctx.NewModule("main")
+			// Use one Linker for all packages. LinkModules rescans the whole
+			// module on every call.
+			linker := llvm.NewLinker(mod)
+			defer linker.Dispose()
 			// Resolve duplicate function definitions before linking.
 			// This can happen when a newer Go version adds a function
 			// body in a standard library package that was previously
 			// just a declaration provided by //go:linkname from the
 			// runtime. In that case, keep the first (runtime) definition
 			// by weakening the later one's linkage so the LLVM linker
-			// discards it in favor of the strong one, whichever order the
-			// two meet in below.
+			// discards it in favor of the strong one.
 			defined := make(map[string]struct{})
-			mods := make([]llvm.Module, 0, len(packageJobs))
 			for _, pkgJob := range packageJobs {
 				pkgMod, err := ctx.ParseBitcodeFile(pkgJob.result)
 				if err != nil {
@@ -649,29 +652,8 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 					}
 					defined[name] = struct{}{}
 				}
-				mods = append(mods, pkgMod)
-			}
-			// Link pairwise. Linking every package into one growing module
-			// walks that module once per package, which on a program of
-			// over a thousand packages took longer than everything else
-			// together. Halving the list each round keeps every module
-			// involved in only a logarithmic number of links.
-			for len(mods) > 1 {
-				next := make([]llvm.Module, 0, (len(mods)+1)/2)
-				for i := 0; i < len(mods); i += 2 {
-					if i+1 == len(mods) {
-						next = append(next, mods[i])
-						break
-					}
-					if err := llvm.LinkModules(mods[i], mods[i+1]); err != nil {
-						return fmt.Errorf("failed to link module: %w", err)
-					}
-					next = append(next, mods[i])
-				}
-				mods = next
-			}
-			if len(mods) == 1 {
-				if err := llvm.LinkModules(mod, mods[0]); err != nil {
+				err = linker.LinkModule(pkgMod)
+				if err != nil {
 					return fmt.Errorf("failed to link module: %w", err)
 				}
 			}
@@ -683,7 +665,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			// works fine. See:
 			// https://github.com/tinygo-org/tinygo/issues/4810
 			globalsMod := makeGlobalsModule(ctx, globalValues, machine)
-			llvm.LinkModules(mod, globalsMod)
+			if err := linker.LinkModule(globalsMod); err != nil {
+				return fmt.Errorf("failed to link globals module: %w", err)
+			}
 			phaseMem("after-link")
 
 			// Create runtime.initAll function that calls the runtime
@@ -756,7 +740,10 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			// Make sure stack sizes are loaded from a separate section so they can be
 			// modified after linking.
 			if config.AutomaticStackSize() {
-				stackSizeLoads = transform.CreateStackSizeLoads(mod, config)
+				stackSizeLoads, err = transform.CreateStackSizeLoads(mod, config)
+				if err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -811,9 +798,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			llvmBuf := llvm.WriteThinLTOBitcodeToMemoryBuffer(mod)
 			err := os.WriteFile(objfile, llvmBuf.Bytes(), 0666)
 			llvmBuf.Dispose()
-			// Only the stack size analysis reads the module after this point.
-			// Free it now so the linker and wasm-opt do not run alongside it.
-			if !config.AutomaticStackSize() {
+			// Only the stack size analysis in the link job reads the module
+			// after this point, so free it when that analysis will not run.
+			if !config.Options.PrintStacks && !config.AutomaticStackSize() {
 				ctx := mod.Context()
 				mod.Dispose()
 				ctx.Dispose()
@@ -894,28 +881,36 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		linkerDependencies = append(linkerDependencies, job)
 	}
 
-	// Add jobs to compile C files in all packages. This is part of CGo.
+	// Add jobs to compile C and C++ files in all packages. This is part of CGo.
 	// TODO: do this as part of building the package to be able to link the
 	// bitcode files together.
 	for _, pkg := range lprogram.Sorted() {
-		for _, filename := range pkg.CFiles {
-			abspath := filepath.Join(pkg.OriginalDir(), filename)
-			job := &compileJob{
-				description: "compile CGo file " + abspath,
-				run: func(job *compileJob) error {
-					cflags := pkg.CFlags
-					var compileConfig *cFileCompileConfig
-					if config.TrimPath() {
-						compileConfig = &cFileCompileConfig{
-							recordedPath: config.CSourcePath(pkg.RecordedPath(abspath)),
+		for _, source := range []struct {
+			files []string
+			flags []string
+		}{
+			{pkg.CFiles, pkg.CFlags},
+			{pkg.CXXFiles, pkg.CXXFlags},
+		} {
+			for _, filename := range source.files {
+				abspath := filepath.Join(pkg.OriginalDir(), filename)
+				job := &compileJob{
+					description: "compile CGo file " + abspath,
+					run: func(job *compileJob) error {
+						cflags := source.flags
+						var compileConfig *cFileCompileConfig
+						if config.TrimPath() {
+							compileConfig = &cFileCompileConfig{
+								recordedPath: config.CSourcePath(pkg.RecordedPath(abspath)),
+							}
 						}
-					}
-					result, err := compileAndCacheCFile(abspath, tmpdir, cflags, compileConfig, config.Options.PrintCommands)
-					job.result = result
-					return err
-				},
+						result, err := compileAndCacheCFile(abspath, tmpdir, cflags, compileConfig, config.Options.PrintCommands)
+						job.result = result
+						return err
+					},
+				}
+				linkerDependencies = append(linkerDependencies, job)
 			}
-			linkerDependencies = append(linkerDependencies, job)
 		}
 	}
 

@@ -2388,11 +2388,11 @@ func MakeChan(typ Type, size int) Value {
 }
 
 func (v Value) Method(i int) Value {
-	panic("unimplemented: (reflect.Value).Method()")
+	return valueMethod(v, i, "unimplemented: (reflect.Value).Method()")
 }
 
 func (v Value) MethodByName(name string) Value {
-	panic("unimplemented: (reflect.Value).MethodByName()")
+	return valueMethodByName(v, name, "unimplemented: (reflect.Value).MethodByName()")
 }
 
 func (v Value) Recv() (x Value, ok bool) {

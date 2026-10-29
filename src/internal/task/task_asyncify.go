@@ -252,12 +252,6 @@ func (t *Task) Resume() {
 	}
 }
 
-// getCurrentStackPointer is runtime.getCurrentStackPointer, with its C
-// calling convention.
-//
-//export tinygo_getCurrentStackPointer
-func getCurrentStackPointer() uintptr
-
 //go:linkname saveStackPointer runtime.saveStackPointer
 func saveStackPointer()
 

@@ -228,6 +228,9 @@ func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
 		global = c.mod.NamedGlobal(globalName)
 	}
 	if global.IsNil() {
+		if c.ReflectMethods && (hasMethodSet || isInterface && ms.Len() != 0) {
+			c.reflectTypes = append(c.reflectTypes, typ)
+		}
 		var typeFields []llvm.Value
 		// Define the type fields. These must match the structs in
 		// src/reflect/type.go (ptrType, arrayType, etc). See the comment at the

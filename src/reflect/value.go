@@ -234,17 +234,17 @@ func (v Value) Equal(u Value) bool {
 	return v.Value.Equal(u.Value)
 }
 
-// TINYGO: methods cannot be called (see Call), so Method and MethodByName
-// return the zero Value, which callers treat as no such method.
+// TINYGO: Method and MethodByName need the method tables the compiler keeps
+// only for programs that use them, see internal/reflectlite/method.go.
 func (v Value) Method(i int) Value {
-	if i < 0 || i >= v.NumMethod() {
+	if v.Kind() != Interface && (i < 0 || i >= v.NumMethod()) {
 		panic("reflect: Method index out of range")
 	}
-	return Value{}
+	return Value{v.Value.Method(i)}
 }
 
 func (v Value) MethodByName(name string) Value {
-	return Value{}
+	return Value{v.Value.MethodByName(name)}
 }
 
 func (v Value) Recv() (x Value, ok bool) {

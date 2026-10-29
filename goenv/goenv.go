@@ -151,8 +151,8 @@ func Get(name string) string {
 			panic("could not find cache dir: " + err.Error())
 		}
 		return filepath.Join(dir, "tinygo")
-	case "CGO_CFLAGS":
-		return os.Getenv("CGO_CFLAGS")
+	case "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS":
+		return os.Getenv(name)
 	case "CGO_ENABLED":
 		// Always enable CGo. It is required by a number of targets, including
 		// macOS and the rp2040.
@@ -178,6 +178,33 @@ func Get(name string) string {
 		return "wasm-tools"
 	default:
 		return ""
+	}
+}
+
+// SplitFlags splits a quoted flag list the same way as the go command.
+// See src/cmd/internal/quoted/quoted.go in the Go source tree.
+func SplitFlags(s string) ([]string, error) {
+	var f []string
+	for {
+		s = strings.TrimLeft(s, " \t\n\r")
+		if s == "" {
+			return f, nil
+		}
+		if quote := s[0]; quote == '"' || quote == '\'' {
+			i := strings.IndexByte(s[1:], quote)
+			if i < 0 {
+				return nil, fmt.Errorf("unterminated %c string", quote)
+			}
+			f = append(f, s[1:1+i])
+			s = s[2+i:]
+			continue
+		}
+		i := strings.IndexAny(s, " \t\n\r")
+		if i < 0 {
+			i = len(s)
+		}
+		f = append(f, s[:i])
+		s = s[i:]
 	}
 }
 
