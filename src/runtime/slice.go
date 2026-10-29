@@ -29,9 +29,10 @@ func sliceGrow(oldBuf unsafe.Pointer, oldLen, oldCap, newCap, elemSize uintptr, 
 		return oldBuf, oldLen, oldCap
 	}
 
-	newCap = sliceGrowCap(oldCap, newCap, elemSize)
+	newCap = sliceGrowCap(oldCap, newCap, elemSize, layout)
 
 	buf := alloc(newCap*elemSize, layout)
+	newCap = sliceGrowFill(buf, newCap, elemSize, layout)
 	if oldLen > 0 {
 		// copy any data to new slice
 		memmove(buf, oldBuf, oldLen*elemSize)

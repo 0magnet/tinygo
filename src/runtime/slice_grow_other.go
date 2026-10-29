@@ -2,7 +2,10 @@
 
 package runtime
 
-import "math/bits"
+import (
+	"math/bits"
+	"unsafe"
+)
 
 // sliceGrowCap is the capacity for a slice that needs newCap elements.
 //
@@ -10,6 +13,10 @@ import "math/bits"
 // which seems to be allowed by the Go language specification (but this can be observed by
 // programs); however, due to memory fragmentation and the current state of the TinyGo
 // memory allocators, this causes some difficult to debug issues.
-func sliceGrowCap(oldCap, newCap, elemSize uintptr) uintptr {
+func sliceGrowCap(oldCap, newCap, elemSize uintptr, layout unsafe.Pointer) uintptr {
 	return 1 << bits.Len(uint(newCap))
+}
+
+func sliceGrowFill(buf unsafe.Pointer, newCap, elemSize uintptr, layout unsafe.Pointer) uintptr {
+	return newCap
 }
