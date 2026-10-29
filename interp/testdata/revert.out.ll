@@ -1,3 +1,5 @@
+; ModuleID = 'testdata/revert.ll'
+source_filename = "testdata/revert.ll"
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64--linux"
 
@@ -5,15 +7,29 @@ target triple = "x86_64--linux"
 @bar.knownAtRuntime = local_unnamed_addr global i64 0
 @baz.someGlobal = external local_unnamed_addr global [3 x { i64, i32 }]
 @baz.someInt = local_unnamed_addr global i32 0
-@x.atomicNum = local_unnamed_addr global i32 0
+@x.atomicNum = local_unnamed_addr global i32 1
 @x.volatileNum = global i32 0
 @y.ready = local_unnamed_addr global i32 0
 @z.bloom = global i64 0
 @z.arr = global [32 x i8] zeroinitializer
+@atomic.value = global i32 11
+@atomic.old = local_unnamed_addr global i32 7
+@atomic.success = local_unnamed_addr global i1 true
+@atomic.failure = local_unnamed_addr global i1 false
+@atomic.seen = local_unnamed_addr global i32 11
+@atomic.runtimeOld = local_unnamed_addr global i32 0
+@atomic.runtimeSuccess = local_unnamed_addr global i1 false
+@atomic.runtimeSeen = local_unnamed_addr global i32 0
 
 declare void @externalCall(i64) local_unnamed_addr
 
-declare i64 @ptrHash(ptr nocapture) local_unnamed_addr
+declare i64 @ptrHash(ptr captures(none)) local_unnamed_addr
+
+declare void @modifyAtomic(ptr) local_unnamed_addr
+
+declare i32 @"sync/atomic.SwapUint32"(ptr, i32, ptr) local_unnamed_addr
+
+declare i1 @"sync/atomic.CompareAndSwapUint32"(ptr, i32, i32, ptr) local_unnamed_addr
 
 define void @runtime.initAll() unnamed_addr {
 entry:
@@ -22,6 +38,7 @@ entry:
   call fastcc void @"bar.init#interp"(ptr undef)
   call fastcc void @"main.init#interp"(ptr undef)
   call fastcc void @"x.init#interp"(ptr undef)
+  call fastcc void @"atomic.init#interp"(ptr undef)
   call fastcc void @y.init(ptr undef)
   call fastcc void @"z.init#interp"(ptr undef)
   ret void
@@ -90,11 +107,21 @@ entry:
 
 define internal fastcc void @"x.init#interp"(ptr %0) unnamed_addr {
 entry:
-  store atomic i32 1, ptr @x.atomicNum seq_cst, align 4
-  %x = load atomic i32, ptr @x.atomicNum seq_cst, align 4
-  store i32 %x, ptr @x.atomicNum, align 4
   %y = load volatile i32, ptr @x.volatileNum, align 4
   store volatile i32 %y, ptr @x.volatileNum, align 4
+  ret void
+}
+
+define internal fastcc void @"atomic.init#interp"(ptr %0) unnamed_addr {
+entry:
+  call void @modifyAtomic(ptr @atomic.value)
+  %runtimeOld = call i32 @"sync/atomic.SwapUint32"(ptr @atomic.value, i32 15, ptr undef)
+  store i32 %runtimeOld, ptr @atomic.runtimeOld, align 4
+  %runtimeSuccess = call i1 @"sync/atomic.CompareAndSwapUint32"(ptr @atomic.value, i32 15, i32 17, ptr undef)
+  store i1 %runtimeSuccess, ptr @atomic.runtimeSuccess, align 1
+  %runtimeSeen = load atomic i32, ptr @atomic.value seq_cst, align 4
+  store i32 %runtimeSeen, ptr @atomic.runtimeSeen, align 4
+  store atomic i32 19, ptr @atomic.value seq_cst, align 4
   ret void
 }
 

@@ -41,8 +41,6 @@ const TESTDATA = "testdata"
 
 var testTarget = flag.String("target", "", "override test target")
 
-var testOnlyCurrentOS = flag.Bool("only-current-os", false, "")
-
 var supportedLinuxArches = map[string]string{
 	"AMD64Linux": "linux/amd64",
 	"X86Linux":   "linux/386",
@@ -53,6 +51,150 @@ var supportedLinuxArches = map[string]string{
 }
 
 var sema = make(chan struct{}, runtime.NumCPU())
+
+func TestBoehmFinalizerInterior(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		target, scheduler string
+	}{
+		{"wasm", "asyncify"},
+		{"wasm", "none"},
+		{"", "tasks"},
+		{"", "threads"},
+		{"", "none"},
+	} {
+		if test.target == "" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+			continue
+		}
+		t.Run(test.target+"/"+test.scheduler, func(t *testing.T) {
+			t.Parallel()
+			options := optionsFromTarget(test.target, sema)
+			options.GC = "boehm"
+			options.Scheduler = test.scheduler
+			options.Tags = append(options.Tags, "runtime_asserts")
+			options.GlobalValues = map[string]map[string]string{
+				"main": {"finalizerTestMode": "interior"},
+			}
+			runTest("finalizer.go", options, t, nil, nil)
+		})
+	}
+}
+
+func TestBoehmFinalizerInteriorInvalid(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("host finalizers need Linux or Darwin")
+	}
+	options := optionsFromTarget("", sema)
+	options.GC = "boehm"
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"interior-pointer", "interior-large"} {
+		t.Run(name, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			_, err := buildAndRun("testdata/finalizer.go", config, output, []string{name}, nil, time.Minute, func(cmd *exec.Cmd, result builder.BuildResult) error {
+				cmd.Stdout = nil
+				cmd.Stderr = nil
+				data, err := cmd.CombinedOutput()
+				output.Write(data)
+				return err
+			})
+			if err == nil || !strings.Contains(output.String(), "pointer not at beginning of allocated block") {
+				t.Fatalf("interior registration result: %v\n%s", err, output.String())
+			}
+		})
+	}
+}
+
+func TestFinalizerRunnerRegistration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		target, gc, scheduler string
+	}{
+		{"wasm", "boehm", "asyncify"},
+		{"wasm", "conservative", "asyncify"},
+		{"", "boehm", "tasks"},
+		{"", "boehm", "threads"},
+	} {
+		if test.target == "" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+			continue
+		}
+		t.Run(test.target+"/"+test.gc+"/"+test.scheduler, func(t *testing.T) {
+			t.Parallel()
+			options := optionsFromTarget(test.target, sema)
+			options.GC = test.gc
+			options.Scheduler = test.scheduler
+			options.GlobalValues = map[string]map[string]string{
+				"main": {"finalizerIdleMode": "registration"},
+			}
+			runTest("finalizeridle.go", options, t, nil, nil)
+		})
+	}
+}
+
+func TestParseGoLinkFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want []string
+		err  string
+	}{
+		{name: "empty"},
+		{name: "windows-path", in: `-extldflags=-LC:\x\lib`, want: []string{`-LC:\x\lib`}},
+		{
+			name: "quoted-windows-paths",
+			in:   `-extldflags '-LC:\x\lib "-LC:\Program Files\x"'`,
+			want: []string{`-LC:\x\lib`, `-LC:\Program Files\x`},
+		},
+		{
+			name: "literal-quotes-and-backslashes",
+			in:   `-extldflags '-DNAME="value" a\ b ""'`,
+			want: []string{`-DNAME="value"`, `a\`, "b", ""},
+		},
+		{
+			name: "unterminated-ldflags",
+			in:   `-extldflags 'abc`,
+			err:  "unterminated ' string",
+		},
+		{
+			name: "unterminated-extldflags",
+			in:   `-extldflags "'abc"`,
+			err:  "could not parse -extldflags: unterminated ' string",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := parseGoLinkFlag(tc.in)
+			if tc.err != "" {
+				if err == nil || err.Error() != tc.err {
+					t.Fatalf("parseGoLinkFlag(%q) error = %v, want %q", tc.in, err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("external flags = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("global-values", func(t *testing.T) {
+		got, _, err := parseGoLinkFlag(`-X main.version=1.0 -X 'example.com/app.name=hello world' -X 'main.path=C:\x\lib'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]map[string]string{
+			"main":            {"version": "1.0", "path": `C:\x\lib`},
+			"example.com/app": {"name": "hello world"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("global values = %v, want %v", got, want)
+		}
+	})
+}
 
 func TestTrimPath(t *testing.T) {
 	t.Setenv("CGO_CFLAGS", "-iquoteinclude -includestdint.h -imacros relative.h")
@@ -334,6 +476,9 @@ func TestBuild(t *testing.T) {
 		"float.go",
 		"gc.go",
 		"generics.go",
+		"go1.21.go",
+		"go1.22/",
+		"go1.23/",
 		"goroutines.go",
 		"init.go",
 		"init_multi.go",
@@ -360,27 +505,9 @@ func TestBuild(t *testing.T) {
 		"structs.go",
 		"testing.go",
 		"timers.go",
+		"typealias.go",
 		"weak.go",
 		"zeroalloc.go",
-	}
-
-	// Go 1.21 made some changes to the language, which we can only test when
-	// we're actually on Go 1.21.
-	_, minor, err := goenv.GetGorootVersion()
-	if err != nil {
-		t.Fatal("could not get version:", minor)
-	}
-	if minor >= 21 {
-		tests = append(tests, "go1.21.go")
-	}
-	if minor >= 22 {
-		tests = append(tests, "go1.22/")
-	}
-	if minor >= 23 {
-		tests = append(tests, "go1.23/")
-	}
-	if minor >= 24 {
-		tests = append(tests, "typealias.go")
 	}
 
 	if *testTarget != "" {
@@ -420,6 +547,39 @@ func TestBuild(t *testing.T) {
 					runTest("finalizerinvariants.go", options, t, nil, nil)
 				})
 			}
+		}
+	})
+
+	t.Run("boehm-finalizers", func(t *testing.T) {
+		t.Parallel()
+		options := optionsFromTarget("wasm", sema)
+		options.GC = "boehm"
+		t.Run("finalizerlarge.go-graph", func(t *testing.T) {
+			t.Parallel()
+			testOptions := compileopts.Options(options)
+			testOptions.GlobalValues = map[string]map[string]string{
+				"main": {"finalizerLargeMode": "graph"},
+			}
+			runTest("finalizerlarge.go", testOptions, t, nil, nil)
+		})
+		for _, name := range []string{
+			"finalizer.go",
+			"finalizerbits.go",
+			"finalizeridle.go",
+			"finalizerlarge.go",
+			"finalizerinvariants.go",
+		} {
+			name := name
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				testOptions := compileopts.Options(options)
+				if name == "finalizerlarge.go" {
+					testOptions.GlobalValues = map[string]map[string]string{
+						"main": {"finalizerLargeMode": "runner-payload"},
+					}
+				}
+				runTest(name, testOptions, t, nil, nil)
+			})
 		}
 	})
 
@@ -650,13 +810,9 @@ func TestBuild(t *testing.T) {
 		})
 	})
 
-	if testing.Short() {
-		// Don't test other targets when the -short flag is used. Only test the
-		// host system.
-		return
-	}
-
-	if !*testOnlyCurrentOS {
+	// Short mode skips the targets that every host can test. Linux CI tests
+	// them without -short.
+	if !testing.Short() {
 		t.Run("EmulatedCortexM3", func(t *testing.T) {
 			t.Parallel()
 			runPlatTests(optionsFromTarget("cortex-m-qemu", sema), tests, t)
@@ -711,7 +867,10 @@ func TestBuild(t *testing.T) {
 		})
 	}
 
-	if runtime.GOOS == "linux" {
+	// Linux CI also tests the other Linux architectures without -short, so
+	// short mode skips them. Windows CI runs only in short mode, so
+	// Windows386 continues to run.
+	if runtime.GOOS == "linux" && !testing.Short() {
 		for name, osArch := range supportedLinuxArches {
 			options := optionsFromOSARCH(osArch, sema)
 			if options.GOARCH != runtime.GOARCH { // Native architecture already run above.
@@ -901,14 +1060,6 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				continue
 			}
 		}
-		if options.Target == "" && options.GC == "" {
-			switch name {
-			case "finalizerinvariants.go":
-				// Skip the default host GC because it does not implement finalizers.
-				// Explicit conservative GC variants cover this test.
-				continue
-			}
-		}
 		if options.Target == "simavr" {
 			switch name {
 			case "finalizerinvariants.go":
@@ -968,6 +1119,12 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			options.Scheduler = "none"
 			options.PanicUnwind = "explicit"
 			runTest("recover-explicit.go", options, t, nil, nil)
+		})
+		t.Run("calls.go-unwind-none", func(t *testing.T) {
+			t.Parallel()
+			options := compileopts.Options(options)
+			options.PanicUnwind = "none"
+			runTest("calls.go", options, t, nil, nil)
 		})
 	}
 }
@@ -1897,7 +2054,6 @@ func TestTest(t *testing.T) {
 				defer out.Close()
 
 				opts := targ.opts
-				opts.GC = "conservative"
 				passed, err := Test("github.com/tinygo-org/tinygo/tests/stringcompare", false, out, out, &opts, "")
 				if err != nil {
 					t.Errorf("test error: %v", err)
@@ -2092,6 +2248,11 @@ func TestMain(m *testing.M) {
 			main()
 			os.Exit(0)
 		}
+	}
+
+	// make test sets these to build TinyGo against the host LLVM.
+	for _, name := range []string{"CGO_CPPFLAGS", "CGO_CFLAGS", "CGO_CXXFLAGS"} {
+		os.Unsetenv(name)
 	}
 
 	// Run normal tests.

@@ -10,9 +10,12 @@ func gcAllocLock() {
 	gcLock.Lock()
 }
 
-func gcAllocUnlock() {
+// gcAllocUnlock reports whether finalizers were queued, for wakeFinalizer.
+func gcAllocUnlock() bool {
+	queued := boehmInvokeFinalizers()
 	gcResumeWorld()
 	gcLock.Unlock()
+	return queued
 }
 
 func gcCountMalloc() {

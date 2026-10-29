@@ -69,10 +69,26 @@ var (
 
 func gcAllocLock() {}
 
-func gcAllocUnlock() {
+// gcAllocUnlock reports whether finalizers were queued, for wakeFinalizer.
+func gcAllocUnlock() bool {
 	if gcGrow.Load() != 0 {
 		gcGrowHeap()
 	}
+	return gcPollFinalizers()
+}
+
+// gcPollFinalizers queues dead objects' finalizers without bdwgc's lock. TryLock
+// avoids self deadlock when allocating under gcLock; a later allocation retries.
+func gcPollFinalizers() bool {
+	if numFinalizers == 0 || libgc_should_invoke_finalizers() == 0 {
+		return false
+	}
+	if !gcLock.TryLock() {
+		return false
+	}
+	queued := boehmInvokeFinalizers()
+	gcLock.Unlock()
+	return queued
 }
 
 // The least that may be allocated between collections at GOGC=100, as Go's

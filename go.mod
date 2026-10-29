@@ -18,8 +18,8 @@ require (
 	golang.org/x/sys v0.49.0
 	golang.org/x/tools v0.52.0
 	gopkg.in/yaml.v2 v2.4.0
-	tinygo.org/x/espflasher v0.8.1
-	tinygo.org/x/go-llvm v0.0.0-20261019104553-b75cf7a8b7bc
+	tinygo.org/x/espflasher v0.9.2
+	tinygo.org/x/go-llvm v0.0.0-20261023230756-8136c9aa7bda
 )
 
 require (

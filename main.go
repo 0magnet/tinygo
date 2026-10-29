@@ -1174,10 +1174,6 @@ func flashBinUsingEsp32(port, resetMode, tmppath string, options *compileopts.Op
 		return err
 	}
 
-	if err := flasher.EraseFlash(progressFunc); err != nil {
-		return fmt.Errorf("erase failed: %v", err)
-	}
-
 	// Flash with progress reporting
 	err = flasher.FlashImage(data, offset, progressFunc)
 	if err != nil {
@@ -1578,6 +1574,7 @@ commands:
 		ports:		list available serial ports
 		env:		list environment variables used during build
 		list:		run go list using the TinyGo root
+		fix:		apply Go fix analyzers using the TinyGo loader
 		clean:		empty cache directory (%s)
 		targets:	list targets
 		info:		show info for specified target
@@ -1588,6 +1585,7 @@ commands:
 var (
 	commandHelp = map[string]string{
 		"build":   usageBuild,
+		"fix":     usageFix,
 		"run":     usageRun,
 		"flash":   usageFlash,
 		"monitor": usageMonitor,
@@ -1719,20 +1717,24 @@ func (m globalValuesFlag) Set(value string) error {
 
 // parseGoLinkFlag parses the -ldflags parameter. Its primary purpose right now
 // is the -X flag, for setting the value of global string variables.
-func parseGoLinkFlag(flagsString string) (map[string]map[string]string, string, error) {
+func parseGoLinkFlag(flagsString string) (map[string]map[string]string, []string, error) {
 	set := flag.NewFlagSet("link", flag.ExitOnError)
 	globalVarValues := make(globalValuesFlag)
 	set.Var(globalVarValues, "X", "Set the value of the string variable to the given value.")
 	extLDFlags := set.String("extldflags", "", "additional flags to pass to external linker")
-	flags, err := shlex.Split(flagsString)
+	flags, err := goenv.SplitFlags(flagsString)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	err = set.Parse(flags)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return map[string]map[string]string(globalVarValues), *extLDFlags, nil
+	externalFlags, err := goenv.SplitFlags(*extLDFlags)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not parse -extldflags: %w", err)
+	}
+	return map[string]map[string]string(globalVarValues), externalFlags, nil
 }
 
 // getListOfPackages returns a standard list of packages for a given list that might
@@ -1778,7 +1780,7 @@ func main() {
 	opt := flag.String("opt", "z", "optimization level: 0, 1, 2, s, z")
 	gc := flag.String("gc", "", "garbage collector to use (none, leaking, conservative, custom, precise, boehm)")
 	panicStrategy := flag.String("panic", "print", "panic strategy (print, trap)")
-	panicUnwind := flag.String("panic-unwind", "", "panic unwind strategy (auto, explicit)")
+	panicUnwind := flag.String("panic-unwind", "", "panic unwind strategy (auto, explicit, none)")
 	scheduler := flag.String("scheduler", "", "which scheduler to use (none, tasks, cores, threads, asyncify)")
 	serial := flag.String("serial", "", "which serial output to use (none, uart, usb, rtt)")
 	work := flag.Bool("work", false, "print the name of the temporary build directory and do not delete this directory on exit")
@@ -1870,6 +1872,8 @@ func main() {
 	// library.
 	handleChdirFlag()
 	switch command {
+	case "fix":
+		os.Exit(runFix(os.Args[2:], os.Stdout, os.Stderr))
 	case "clang", "ld.lld", "wasm-ld":
 		err := builder.RunTool(command, os.Args[2:]...)
 		if err != nil {
@@ -1950,6 +1954,7 @@ func main() {
 		Tags:                    []string(tags),
 		TestConfig:              testConfig,
 		GlobalValues:            globalVarValues,
+		ExtLDFlags:              extLDFlags,
 		Programmer:              *programmer,
 		OpenOCDCommands:         ocdCommands,
 		LLVMFeatures:            *llvmFeatures,
@@ -1962,14 +1967,6 @@ func main() {
 	}
 	if *printCommands {
 		options.PrintCommands = printCommand
-	}
-
-	if extLDFlags != "" {
-		options.ExtLDFlags, err = shlex.Split(extLDFlags)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "could not parse -extldflags:", err)
-			os.Exit(1)
-		}
 	}
 
 	err = options.Verify()
