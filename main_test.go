@@ -544,6 +544,20 @@ func TestBuild(t *testing.T) {
 			runTestWithConfig("gc-boehm-pace.go", t, opts, nil, nil)
 		})
 
+		for _, scheduler := range []string{"cores", "tasks"} {
+			t.Run("gc=boehm-retries-"+scheduler, func(t *testing.T) {
+				if runtime.GOOS != "linux" {
+					t.Skip("maps goroutine stacks next to the heap on linux")
+				}
+				t.Parallel()
+				opts := optionsFromTarget("", sema)
+				opts.GC = "boehm"
+				opts.Scheduler = scheduler
+				// The deployment host ran bdwgc with one marker thread.
+				runTestWithConfig("gc-boehm-retries.go", t, opts, nil, []string{"GC_NPROCS=1"})
+			})
+		}
+
 		// Regression test: at -opt=0 the compiler does not always remove a
 		// local escaping through a pointer cast, so printitf used to
 		// allocate on the panic path. printitf is //go:noheap, so a
