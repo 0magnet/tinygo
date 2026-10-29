@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"tinygo.org/x/go-llvm"
@@ -228,6 +229,17 @@ func valueEscapesAtImpl(value llvm.Value, allowReturn bool, visiting map[llvm.Va
 			if !result.merge(valueEscapesAtImpl(use, allowReturn, visiting)) {
 				return result
 			}
+		case llvm.PHI:
+			// In a callee a phi only merges this call's argument, such as
+			// return nil, err or return p, nil. In the allocating function
+			// a phi can carry the object into the next loop iteration,
+			// where the same stack slot is reused.
+			if !allowReturn {
+				return escapeResult{escapeAt: use}
+			}
+			if !result.merge(valueEscapesAtImpl(use, allowReturn, visiting)) {
+				return result
+			}
 		case llvm.Load:
 			// Load does not escape.
 		case llvm.Store:
@@ -321,4 +333,80 @@ func lineLengthAt(filename string, lineNumber int) int {
 		line++
 	}
 	return 0
+}
+
+// InlineAllocConstructors inlines small functions that return a new object
+// which does not otherwise escape, such as
+//
+//	func New() *T { t := &T{}; t.init(); return t }
+//
+// so that OptimizeAllocs can put the object on the stack of a caller that
+// does not let it escape. Go's escape analysis runs after inlining and gets
+// this for free.
+func InlineAllocConstructors(mod llvm.Module, maxStackAlloc uint64) error {
+	const maxInstructions = 40
+	kindAlwaysInline := llvm.AttributeKindID("alwaysinline")
+	kindNoInline := llvm.AttributeKindID("noinline")
+	po := llvm.NewPassBuilderOptions()
+	defer po.Dispose()
+	for round := 0; round < 3; round++ {
+		marked := false
+		for _, name := range []string{"runtime.alloc", "runtime.alloc_noheap"} {
+			allocator := mod.NamedFunction(name)
+			if allocator.IsNil() {
+				continue
+			}
+			for _, heapalloc := range getUses(allocator) {
+				if heapalloc.IsACallInst().IsNil() || heapalloc.Operand(0).IsAConstantInt().IsNil() {
+					continue
+				}
+				if size := heapalloc.Operand(0).ZExtValue(); size == 0 || size > maxStackAlloc {
+					continue
+				}
+				fn := heapalloc.InstructionParent().Parent()
+				if !fn.GetEnumFunctionAttribute(kindAlwaysInline).IsNil() ||
+					!fn.GetEnumFunctionAttribute(kindNoInline).IsNil() ||
+					len(getUses(fn)) == 0 {
+					continue
+				}
+				if size := inlineCandidateSize(fn); size < 0 || size > maxInstructions {
+					continue
+				}
+				result := valueEscapesAtImpl(heapalloc, true, nil)
+				if !result.escapeAt.IsNil() || !result.returned {
+					continue
+				}
+				fn.AddFunctionAttr(mod.Context().CreateEnumAttribute(kindAlwaysInline, 0))
+				marked = true
+			}
+		}
+		if !marked {
+			return nil
+		}
+		if err := mod.RunPasses("always-inline", llvm.TargetMachine{}, po); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// inlineCandidateSize returns the number of instructions in fn, or -1 if fn
+// reads its own frame or return address and must not be inlined here.
+func inlineCandidateSize(fn llvm.Value) int {
+	n := 0
+	for bb := fn.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
+		for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+			n++
+			if inst.IsACallInst().IsNil() {
+				continue
+			}
+			switch name := inst.CalledValue().Name(); {
+			case strings.HasPrefix(name, "llvm.returnaddress"),
+				strings.HasPrefix(name, "llvm.frameaddress"),
+				strings.HasPrefix(name, "llvm.stacksave"):
+				return -1
+			}
+		}
+	}
+	return n
 }

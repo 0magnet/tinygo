@@ -75,6 +75,9 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		// Run TinyGo-specific optimization passes.
 		OptimizeStringToBytes(mod)
 		maxStackSize := config.MaxStackAlloc()
+		if err := InlineAllocConstructors(mod, maxStackSize); err != nil {
+			return []error{err}
+		}
 		OptimizeAllocs(mod, nil, maxStackSize, nil)
 		err = LowerInterfaces(mod, config)
 		if err != nil {
