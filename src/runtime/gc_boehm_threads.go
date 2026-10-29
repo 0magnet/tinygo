@@ -173,12 +173,14 @@ func gcGrowHeap() {
 	}
 	gcAllocatorLock()
 	want, capHeap, unmapAfter := gcWant, gcCapNext, gcUnmapNext
-	gcAllocatorUnlock()
-
+	// Under the allocator lock, so that gcHeapCap and the bdwgc cap stay the
+	// same while gcOutOfMemory lifts the cap on another core.
 	if capHeap != gcHeapCap {
 		gcHeapCap = capHeap
 		libgc_set_max_heap_size(capHeap)
 	}
+	gcAllocatorUnlock()
+
 	if unmapAfter != gcUnmapNow {
 		gcUnmapNow = unmapAfter
 		tinygo_runtime_bdwgc_set_unmap_threshold(uint32(unmapAfter))
@@ -208,9 +210,13 @@ func gcOutOfMemory(attempt int) bool {
 		}
 		return true
 	}
+	// gcGrowHeap may set the cap again after a collection on another core,
+	// so lift it each time.
+	gcAllocatorLock()
 	gcHeapCap = 0
 	libgc_set_max_heap_size(0)
-	return attempt == 1
+	gcAllocatorUnlock()
+	return attempt < 16
 }
 
 //go:extern tinygo_runtime_bdwgc_limit_pause

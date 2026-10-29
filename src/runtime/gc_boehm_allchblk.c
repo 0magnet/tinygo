@@ -165,25 +165,65 @@ GC_merge_unmapped(void)
   return merged;
 }
 
+// The NULL results since the last block was allocated, and the collection
+// count and heap size at the last one. Protected by the allocator lock.
+static unsigned alloc_failures = 0;
+static word failed_gc_no, failed_heapsize;
+
 // Without incremental mode bdwgc collects only when an allocation finds no
 // free block (GC_allocobj and GC_alloc_large call GC_collect_or_expand only
 // then), so the heap fills to whatever size it grew to. Fail once the paced
 // bytes were allocated, or once a collection is due and the mapped free
 // blocks are used up, so that GC_collect_or_expand collects instead.
+//
+// GC_alloc_large in malloc.c aborts with "Too many retries" after ten more
+// failures, each after GC_collect_or_expand collected or grew the heap. So
+// once either happened since a failure, use any free block that fits.
+// GC_should_collect stays true for the rest of a cycle in which the heap
+// grew, which gcGrowHeap does after most collections, and GC_allochblk_bdwgc
+// then does not split large free blocks.
 GC_INNER struct hblk *
 GC_allochblk(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
 {
   word unmapped = GC_unmapped_bytes;
   size_t size = OBJ_SZ_TO_BLOCKS(lb_adjusted) * HBLKSIZE;
+  GC_bool retry = alloc_failures > 0
+                  && (GC_gc_no != failed_gc_no || GC_heapsize != failed_heapsize);
   struct hblk *h;
 
-  if (!GC_dont_gc && !GC_incremental
+  if (!retry && !GC_dont_gc && !GC_incremental
       && ((tinygo_runtime_bdwgc_pace_bytes != 0
            && GC_bytes_allocd >= tinygo_runtime_bdwgc_pace_bytes)
           || GC_large_free_bytes - GC_unmapped_bytes < size + align_m1)
-      && GC_should_collect())
+      && GC_should_collect()) {
+    h = NULL;
+  } else if (!retry) {
+    h = GC_allochblk_bdwgc(lb_adjusted, kind, flags, align_m1);
+  } else {
+    int entire = GC_use_entire_heap;
+
+    GC_use_entire_heap = TRUE;
+    h = GC_allochblk_bdwgc(lb_adjusted, kind, flags, align_m1);
+    // Stale pointers on goroutine stacks black-list pages of free blocks,
+    // and bdwgc takes a black-listed block only for a request bigger than
+    // GC_black_list_spacing. Accept one with a clean first page, as it does
+    // for IGNORE_OFF_PAGE, then set the header up without that flag, which
+    // would make interior pointers past the first page not count.
+    if (NULL == h && alloc_failures >= 3 && (flags & IGNORE_OFF_PAGE) == 0) {
+      h = GC_allochblk_bdwgc(lb_adjusted, kind, flags | IGNORE_OFF_PAGE,
+                             align_m1);
+      if (h != NULL)
+        (void)setup_header(HDR(h), h, lb_adjusted, kind, flags);
+    }
+    GC_use_entire_heap = entire;
+  }
+  if (NULL == h) {
+    alloc_failures++;
+    failed_gc_no = GC_gc_no;
+    failed_heapsize = GC_heapsize;
     return NULL;
-  h = GC_allochblk_bdwgc(lb_adjusted, kind, flags, align_m1);
+  }
+  alloc_failures = 0;
   // bdwgc maps the whole of an unmapped block to split it. Give the rest,
   // which nothing touched, back again.
   if (h != NULL && GC_unmapped_bytes < unmapped
