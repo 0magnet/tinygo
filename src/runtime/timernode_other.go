@@ -1,4 +1,4 @@
-//go:build !scheduler.threads
+//go:build !scheduler.threads && !scheduler.cores
 
 package runtime
 

@@ -170,10 +170,12 @@ func reAddTimer(tn *timerNode) {
 		// The timer was stopped or reset while its callback was running. Don't
 		// re-add it: a stopped ticker must stay stopped, and a reset ticker has
 		// already been re-added by resetTimer.
+		freeTimerNode(tn)
 		schedulerLock.Unlock()
 		return
 	}
 	if tn.timer.period == 0 {
+		freeTimerNode(tn)
 		schedulerLock.Unlock()
 		return
 	}
@@ -478,3 +480,6 @@ func lockSchedulerWithTimerRoom() {
 		schedulerLock.Unlock()
 	}
 }
+
+func lockTimerNodes()   { schedulerLock.Lock() }
+func unlockTimerNodes() { schedulerLock.Unlock() }
