@@ -338,3 +338,28 @@ func stringLookup(s string, x uint8) byte {
 	// Test that x is correctly extended to an uint before comparison.
 	return s[x]
 }
+
+func mapIndexBytes(m map[string]int, a []byte) int {
+	return m[string(a)]
+}
+
+func mapIndexBytesCommaOk(m map[string]int, a []byte) (int, bool) {
+	v, ok := m[string(a)]
+	return v, ok
+}
+
+func mapIndexBytesGlobal(a []byte) int {
+	return globalStringMap[string(a)]
+}
+
+var globalStringMap map[string]int
+
+func mapIndexBytesMutation(m map[string]int, a []byte) int {
+	k := string(a)
+	a[0] = 'z'
+	return m[k]
+}
+
+func mapIndexBytesStore(m map[string]int, a []byte) {
+	m[string(a)] = 1
+}

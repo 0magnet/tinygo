@@ -1832,6 +1832,14 @@ func isDereference(value ssa.Value) bool {
 // adjacentComparison returns the only binary operation that uses instr, if
 // only debug refs and other operands accepted by operandOK run in between.
 func adjacentComparison(instr ssa.Instruction, operandOK func(ssa.Value) bool) *ssa.BinOp {
+	comparison, _ := adjacentUse(instr, operandOK).(*ssa.BinOp)
+	return comparison
+}
+
+// adjacentUse returns the only instruction that uses instr, if it is in the
+// same block and only debug refs and other operands of it accepted by
+// operandOK run in between.
+func adjacentUse(instr ssa.Instruction, operandOK func(ssa.Value) bool) ssa.Instruction {
 	value, ok := instr.(ssa.Value)
 	if !ok {
 		return nil
@@ -1840,20 +1848,17 @@ func adjacentComparison(instr ssa.Instruction, operandOK func(ssa.Value) bool) *
 	if referrers == nil {
 		return nil
 	}
-	var comparison *ssa.BinOp
+	var use ssa.Instruction
 	for _, referrer := range *referrers {
-		switch referrer := referrer.(type) {
-		case *ssa.DebugRef:
-		case *ssa.BinOp:
-			if comparison != nil {
-				return nil
-			}
-			comparison = referrer
-		default:
+		if _, ok := referrer.(*ssa.DebugRef); ok {
+			continue
+		}
+		if use != nil {
 			return nil
 		}
+		use = referrer
 	}
-	if comparison == nil || instr.Block() != comparison.Block() {
+	if use == nil || instr.Block() != use.Block() {
 		return nil
 	}
 
@@ -1863,13 +1868,13 @@ func adjacentComparison(instr ssa.Instruction, operandOK func(ssa.Value) bool) *
 			found = instruction == instr
 			continue
 		}
-		if instruction == comparison {
-			return comparison
+		if instruction == use {
+			return use
 		}
 		switch instruction := instruction.(type) {
 		case *ssa.DebugRef:
 		case ssa.Value:
-			if comparison.X != instruction && comparison.Y != instruction || !operandOK(instruction) {
+			if !isOperandOf(instruction, use) || !operandOK(instruction) {
 				return nil
 			}
 		default:
@@ -1877,6 +1882,15 @@ func adjacentComparison(instr ssa.Instruction, operandOK func(ssa.Value) bool) *
 		}
 	}
 	return nil
+}
+
+func isOperandOf(value ssa.Value, instr ssa.Instruction) bool {
+	for _, operand := range instr.Operands(nil) {
+		if *operand == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *builder) getCallArgument(value ssa.Value, indirect bool) llvm.Value {
@@ -2736,7 +2750,7 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 		panic("const is not an expression")
 	case *ssa.Convert:
 		x := b.getValue(expr.X, getPos(expr))
-		if isByteSliceToStringComparison(expr) {
+		if isByteSliceToStringComparison(expr) || isByteSliceToStringMapKey(expr) {
 			str := llvm.Undef(b.getLLVMRuntimeType("_string"))
 			str = b.CreateInsertValue(str, b.CreateExtractValue(x, 0, ""), 0, "")
 			str = b.CreateInsertValue(str, b.CreateExtractValue(x, 1, ""), 1, "")
@@ -3160,6 +3174,20 @@ func isByteSliceToStringComparison(expr *ssa.Convert) bool {
 	}
 	comparison := adjacentComparison(expr, isStringComparisonOperand)
 	return comparison != nil && isComparisonOp(comparison.Op)
+}
+
+// isByteSliceToStringMapKey reports whether expr is only the key of an
+// adjacent map read, which does not keep the key, as for m[string(b)] in Go.
+func isByteSliceToStringMapKey(expr *ssa.Convert) bool {
+	if !isByteSliceToStringConvert(expr) {
+		return false
+	}
+	lookup, ok := adjacentUse(expr, isStringComparisonOperand).(*ssa.Lookup)
+	if !ok || lookup.Index != expr {
+		return false
+	}
+	_, ok = lookup.X.Type().Underlying().(*types.Map)
+	return ok
 }
 
 // isStringComparisonOperand reports whether value cannot write memory or call

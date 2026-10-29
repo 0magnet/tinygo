@@ -92,3 +92,6 @@ padded key equal: true
 blank key lookup: 200
 blank key equal: true
 no interface lookup failures
+byte key lookup: 1 1 true
+byte key after mutation: 1 2
+byte key stored: 3 2

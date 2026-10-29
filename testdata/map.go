@@ -150,6 +150,8 @@ func main() {
 	ptrmaps()
 
 	interfacerehash()
+
+	byteKeyLookup()
 }
 
 func floatcmplx() {
@@ -399,4 +401,17 @@ func ptrmaps() {
 	bm[bk1] = 200
 	println("blank key lookup:", bm[bk2])           // 200
 	println("blank key equal:", bk1 == bk2)          // true
+}
+
+func byteKeyLookup() {
+	m := map[string]int{"abc": 1, "zbc": 2}
+	b := []byte("abc")
+	v, ok := m[string(b)]
+	println("byte key lookup:", m[string(b)], v, ok)
+	k := string(b)
+	b[0] = 'z'
+	println("byte key after mutation:", m[k], m[string(b)])
+	m[string(b)] = 3
+	b[0] = 'q'
+	println("byte key stored:", m["zbc"], len(m))
 }
