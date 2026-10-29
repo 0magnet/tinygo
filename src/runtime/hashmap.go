@@ -151,8 +151,12 @@ func hashmapMake(keySize, valueSize uintptr, sizeHint uintptr, typeInfo unsafe.P
 		valueSlotSize = unsafe.Sizeof(unsafe.Pointer(nil))
 	}
 
-	bucketBufSize := hashmapBucketHeaderSize + keySlotSize*8 + valueSlotSize*8
-	buckets := alloc(bucketBufSize*(1<<bucketBits), (*hashmapTypeInfo)(typeInfo).bucketLayout)
+	// A map that fits one bucket gets it on the first insert, as in Go.
+	var buckets unsafe.Pointer
+	if bucketBits > 0 {
+		bucketBufSize := hashmapBucketHeaderSize + keySlotSize*8 + valueSlotSize*8
+		buckets = alloc(bucketBufSize*(1<<bucketBits), (*hashmapTypeInfo)(typeInfo).bucketLayout)
+	}
 
 	keyHash := hashmapKeyHashAlg(tinygo.HashmapAlgorithm(alg))
 	keyEqual := hashmapKeyEqualAlg(tinygo.HashmapAlgorithm(alg))
@@ -176,7 +180,7 @@ func hashmapMake(keySize, valueSize uintptr, sizeHint uintptr, typeInfo unsafe.P
 // it. This is used for the clear builtin, and can be used to reuse a map (to
 // avoid extra heap allocations).
 func hashmapClear(m *hashmap) {
-	if m == nil {
+	if m == nil || m.buckets == nil {
 		// Nothing to do. According to the spec:
 		// > If the map or slice is nil, clear is a no-op.
 		return
@@ -240,6 +244,10 @@ func hashmapOverLoadFactor(n uintptr, bucketBits uint8) bool {
 	//     = 3 * (buckets * (8/4)
 	//     = 3 * (buckets * 2)
 	//     = 6 * buckets
+	if bucketBits == 0 {
+		// A single bucket fills up before it grows, like a small Go map.
+		return n > 8
+	}
 	max := (uintptr(6) << bucketBits)
 	return n > max
 }
@@ -290,7 +298,10 @@ func hashmapSlotValue(m *hashmap, bucket *hashmapBucket, slot uint8) unsafe.Poin
 //
 //go:nobounds
 func hashmapSet(m *hashmap, key unsafe.Pointer, value unsafe.Pointer, hash uint32) {
-	if hashmapHasSpaceToGrow(m.bucketBits) && hashmapOverLoadFactor(m.count, m.bucketBits) {
+	if m.buckets == nil {
+		m.buckets = alloc(hashmapBucketSize(m)<<m.bucketBits, hashmapType(m).bucketLayout)
+	}
+	if hashmapHasSpaceToGrow(m.bucketBits) && hashmapOverLoadFactor(m.count+1, m.bucketBits) {
 		hashmapGrow(m)
 		// seed changed when we grew; rehash key with new seed
 		hash = m.keyHash(key, m.keySize, m.seed)
@@ -411,19 +422,30 @@ func hashmapCopy(m *hashmap, sizeBits uint8) hashmap {
 	n.seed = uintptr(fastrand())
 
 	n.bucketBits = sizeBits
-	numBuckets := uintptr(1) << n.bucketBits
-	bucketBufSize := hashmapBucketSize(m)
-	n.buckets = alloc(bucketBufSize*numBuckets, hashmapType(m).bucketLayout)
+	n.buckets = nil
+	if m.count == 0 && sizeBits == 0 {
+		return n
+	}
+	n.buckets = alloc(hashmapBucketSize(m)<<sizeBits, hashmapType(m).bucketLayout)
+	if m.count == 0 {
+		return n
+	}
 
-	// use a hashmap iterator to go through the old map
-	var it hashmapIterator
-
-	var key = alloc(m.keySize, hashmapType(m).keyLayout)
-	var value = alloc(m.valueSize, hashmapType(m).valueLayout)
-
-	for hashmapNext(m, &it, key, value) {
-		h := n.keyHash(key, uintptr(n.keySize), n.seed)
-		hashmapSet(&n, key, value, h)
+	// Insert straight from the old buckets. Going through an iterator
+	// would need a key and a value buffer allocated for every copy.
+	numBuckets := uintptr(1) << m.bucketBits
+	for i := uintptr(0); i < numBuckets; i++ {
+		for bucket := hashmapBucketAddr(m, m.buckets, i); bucket != nil; bucket = bucket.next {
+			for j := uint8(0); j < 8; j++ {
+				if bucket.tophash[j] == 0 {
+					continue
+				}
+				key := hashmapSlotKeyData(m, hashmapSlotKey(m, bucket, j))
+				value := hashmapSlotValueData(m, hashmapSlotValue(m, bucket, j))
+				h := n.keyHash(key, uintptr(n.keySize), n.seed)
+				hashmapSet(&n, key, value, h)
+			}
+		}
 	}
 
 	return n
@@ -433,7 +455,7 @@ func hashmapCopy(m *hashmap, sizeBits uint8) hashmap {
 //
 //go:nobounds
 func hashmapGet(m *hashmap, key, value unsafe.Pointer, valueSize uintptr, hash uint32) bool {
-	if m == nil {
+	if m == nil || m.buckets == nil {
 		// Getting a value out of a nil map is valid. From the spec:
 		// > if the map is nil or does not contain such an entry, a[x] is the
 		// > zero value for the element type of M
@@ -471,7 +493,7 @@ func hashmapGet(m *hashmap, key, value unsafe.Pointer, valueSize uintptr, hash u
 //
 //go:nobounds
 func hashmapDelete(m *hashmap, key unsafe.Pointer, hash uint32) {
-	if m == nil {
+	if m == nil || m.buckets == nil {
 		// The delete builtin is defined even when the map is nil. From the spec:
 		// > If the map m is nil or the element m[k] does not exist, delete is a
 		// > no-op.
@@ -509,7 +531,7 @@ func hashmapDelete(m *hashmap, key unsafe.Pointer, hash uint32) {
 //
 //go:nobounds
 func hashmapNext(m *hashmap, it *hashmapIterator, key, value unsafe.Pointer) bool {
-	if m == nil {
+	if m == nil || m.buckets == nil {
 		// From the spec: If the map is nil, the number of iterations is 0.
 		return false
 	}
@@ -665,8 +687,12 @@ func hashmapMakeGeneric(keySize, valueSize uintptr, sizeHint uintptr,
 		valueSlotSize = unsafe.Sizeof(unsafe.Pointer(nil))
 	}
 
-	bucketBufSize := hashmapBucketHeaderSize + keySlotSize*8 + valueSlotSize*8
-	buckets := alloc(bucketBufSize*(1<<bucketBits), (*hashmapTypeInfo)(typeInfo).bucketLayout)
+	// A map that fits one bucket gets it on the first insert, as in Go.
+	var buckets unsafe.Pointer
+	if bucketBits > 0 {
+		bucketBufSize := hashmapBucketHeaderSize + keySlotSize*8 + valueSlotSize*8
+		buckets = alloc(bucketBufSize*(1<<bucketBits), (*hashmapTypeInfo)(typeInfo).bucketLayout)
+	}
 
 	return &hashmap{
 		buckets:       buckets,
