@@ -7,6 +7,9 @@
 // cycle needs, see below.
 
 #include <time.h>
+#ifdef _WIN32
+#  include <windows.h>
+#endif
 
 #define GC_merge_unmapped GC_merge_unmapped_bdwgc
 #define GC_freehblk GC_freehblk_bdwgc
@@ -248,10 +251,20 @@ GC_allochblk(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
 static long long
 release_clock(void)
 {
+#  ifdef _WIN32
+  // mingw-w64 has clock_gettime only in winpthreads, which TinyGo omits.
+  LARGE_INTEGER c, f;
+
+  QueryPerformanceCounter(&c);
+  QueryPerformanceFrequency(&f);
+  return c.QuadPart / f.QuadPart * 1000000000
+         + c.QuadPart % f.QuadPart * 1000000000 / f.QuadPart;
+#  else
   struct timespec ts;
 
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (long long)ts.tv_sec * 1000000000 + ts.tv_nsec;
+#  endif
 }
 
 // Put the mapped blocks of free list i before the unmapped ones, so that
