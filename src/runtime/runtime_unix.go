@@ -91,6 +91,8 @@ func main(argc int32, argv *unsafe.Pointer) int {
 	// messages.
 	tinygo_register_fatal_signals()
 
+	initHWCap()
+
 	// Obtain the initial stack pointer right before calling the run() function.
 	// The run function has been moved to a separate (non-inlined) function so
 	// that the correct stack pointer is read.
