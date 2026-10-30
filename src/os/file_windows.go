@@ -21,6 +21,11 @@ func Symlink(oldname, newname string) error {
 	return ErrNotImplemented
 }
 
+// Link is a stub, it is not implemented.
+func Link(oldname, newname string) error {
+	return &LinkError{"link", oldname, newname, ErrNotImplemented}
+}
+
 // Readlink is a stub (for now), always returning the string it was given
 func Readlink(name string) (string, error) {
 	return name, nil

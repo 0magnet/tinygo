@@ -989,6 +989,11 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 			} else if !info.extern {
 				global.SetInitializer(llvm.ConstNull(global.GlobalValueType()))
 				global.SetVisibility(llvm.HiddenVisibility)
+				if i := strings.LastIndexByte(info.linkName, '.'); i > 0 && info.linkName[:i] != member.Pkg.Pkg.Path() {
+					// A //go:linkname to another package's variable. Go merges
+					// it with that definition, so let the definition win.
+					global.SetLinkage(llvm.WeakAnyLinkage)
+				}
 				if info.section != "" {
 					global.SetSection(info.section)
 				}
