@@ -462,6 +462,9 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		if options.GOARCH == "amd64" || options.GOARCH == "386" {
 			spec.ExtraFiles = append(spec.ExtraFiles, "src/runtime/cpuid_x86.c")
 		}
+		if options.GOARCH == "386" {
+			spec.ExtraFiles = append(spec.ExtraFiles, "src/runtime/socketcall_linux_386.c")
+		}
 	case "windows":
 		spec.GC = "boehm"
 		spec.Scheduler = "tasks"
