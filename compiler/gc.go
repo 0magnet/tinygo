@@ -46,7 +46,8 @@ func (b *builder) trackExpr(expr ssa.Value, value llvm.Value) {
 	case *ssa.Alloc, *ssa.MakeChan, *ssa.MakeMap:
 		// These values are always of pointer type in IR.
 		b.trackPointer(value)
-	case *ssa.Call, *ssa.Convert, *ssa.MakeClosure, *ssa.MakeInterface, *ssa.MakeSlice, *ssa.Next:
+	case *ssa.Call, *ssa.Convert, *ssa.Lookup, *ssa.MakeClosure, *ssa.MakeInterface, *ssa.MakeSlice, *ssa.Next:
+		// A map lookup copies the value out, so it is not rooted by the map.
 		if !value.IsNil() {
 			b.trackValue(value)
 		}

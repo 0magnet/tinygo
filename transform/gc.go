@@ -305,6 +305,7 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 		builder.CreateStore(stackObject, stackChainStart)
 
 		// Do a store to the stack object after each new pointer that is created.
+		slotStores := make([]llvm.Value, len(pointers))
 		pointerStores := make(map[llvm.Value]struct{})
 		for i, ptr := range pointers {
 			// Insert the store after the pointer value is created.
@@ -324,8 +325,12 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 
 			// Store the pointer into the stack slot.
 			store := builder.CreateStore(ptr, gep)
+			slotStores[i] = store
 			pointerStores[store] = struct{}{}
 		}
+
+		// Clear each slot once its pointer is dead, so it stops rooting the object.
+		clearDeadStackSlots(builder, fn, stackObject, stackObjectType, pointers, slotStores)
 
 		// Make sure this stack object is popped from the linked list of stack
 		// objects at return.
