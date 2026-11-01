@@ -31,9 +31,8 @@ func unlinkStack(t *Task) {
 	t.state.nextStack, t.state.prevStack = nil, nil
 }
 
-// liveStackRanges calls mark with the parts of each stack that hold data: the
-// save area at the bottom and the C stack frames at the top. The gap between
-// them keeps stale words from deeper calls, which must not be treated as roots.
+// liveStackRanges calls mark with the C stack frames of each stack. Its asyncify
+// save area keeps dead locals and is skipped, except for frames a panic unwound.
 func liveStackRanges(mark func(start, end uintptr)) {
 	if t := currentTask; t != nil && t.state.prevStack == nil && stackTasks != t {
 		// It left the list on exit or detach but still runs until its final pause.
@@ -46,8 +45,8 @@ func liveStackRanges(mark func(start, end uintptr)) {
 		}
 		base := uintptr(unsafe.Pointer(s.canaryPtr))
 		top := uintptr(s.top)
-		saved := uintptr(s.asyncifysp)
-		if s.panicReplay != 0 && uintptr(s.panicOrigin.asyncifysp) > saved {
+		saved := base
+		if s.panicReplay != 0 {
 			saved = uintptr(s.panicOrigin.asyncifysp)
 		}
 		sp := uintptr(s.csp)
