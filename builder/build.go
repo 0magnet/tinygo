@@ -1071,6 +1071,12 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 				if config.Scheduler() == "asyncify" {
 					args = append(args, "--asyncify")
+					if gc := config.GC(); gc == "conservative" || gc == "precise" {
+						// Paused stacks are scanned, so frames must not keep stale words.
+						if err := zeroWasmFrames(result.Binary, strings.Contains(config.Features(), "+bulk-memory")); err != nil {
+							return fmt.Errorf("could not clear wasm stack frames: %w", err)
+						}
+					}
 				}
 
 				inputFile := result.Binary
