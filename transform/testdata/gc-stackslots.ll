@@ -260,6 +260,30 @@ define ptr @getAndCallWithMemAttr() {
 }
 
 ; Generic function that returns a slice (that must be tracked).
+; A pointer extracted again from the same aggregate in a later block must keep
+; the first extraction's slot alive.
+declare {ptr, ptr} @getInterface()
+
+declare void @usePointer(ptr)
+
+define void @siblingExtract(i1 %cond) {
+entry:
+  %itf = call {ptr, ptr} @getInterface()
+  %itf.data = extractvalue {ptr, ptr} %itf, 1
+  call void @runtime.trackPointer(ptr %itf.data)
+  call void @usePointer(ptr %itf.data)
+  %unused = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  br i1 %cond, label %later, label %done
+
+later:
+  %itf.data2 = extractvalue {ptr, ptr} %itf, 1
+  call void @usePointer(ptr %itf.data2)
+  br label %done
+
+done:
+  ret void
+}
+
 define {ptr, i32, i32} @getSlice() {
   ret {ptr, i32, i32} {ptr @someGlobal, i32 8, i32 8}
 }

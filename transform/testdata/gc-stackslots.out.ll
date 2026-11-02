@@ -409,6 +409,40 @@ define ptr @getAndCallWithMemAttr() {
   ret ptr %ptr
 }
 
+declare { ptr, ptr } @getInterface()
+
+declare void @usePointer(ptr)
+
+define void @siblingExtract(i1 %cond) {
+entry:
+  %gc.stackobject = alloca { ptr, i32, ptr }, align 8
+  store { ptr, i32, ptr } { ptr null, i32 1, ptr null }, ptr %gc.stackobject, align 4
+  %0 = load ptr, ptr @runtime.stackChainStart, align 4
+  %1 = getelementptr { ptr, i32, ptr }, ptr %gc.stackobject, i32 0, i32 0
+  store ptr %0, ptr %1, align 4
+  store ptr %gc.stackobject, ptr @runtime.stackChainStart, align 4
+  %itf = call { ptr, ptr } @getInterface()
+  %itf.data = extractvalue { ptr, ptr } %itf, 1
+  %2 = getelementptr { ptr, i32, ptr }, ptr %gc.stackobject, i32 0, i32 2
+  store ptr %itf.data, ptr %2, align 4
+  call void @usePointer(ptr %itf.data)
+  %unused = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
+  br i1 %cond, label %later, label %done
+
+later:                                            ; preds = %entry
+  %itf.data2 = extractvalue { ptr, ptr } %itf, 1
+  call void @usePointer(ptr %itf.data2)
+  %3 = getelementptr { ptr, i32, ptr }, ptr %gc.stackobject, i32 0, i32 2
+  store ptr null, ptr %3, align 4
+  br label %done
+
+done:                                             ; preds = %later, %entry
+  %4 = getelementptr { ptr, i32, ptr }, ptr %gc.stackobject, i32 0, i32 2
+  store ptr null, ptr %4, align 4
+  store ptr %0, ptr @runtime.stackChainStart, align 4
+  ret void
+}
+
 define { ptr, i32, i32 } @getSlice() {
   ret { ptr, i32, i32 } { ptr @someGlobal, i32 8, i32 8 }
 }

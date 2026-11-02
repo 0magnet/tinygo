@@ -57,14 +57,89 @@ func clearDeadStackSlots(builder llvm.Builder, fn, stackObject llvm.Value, stack
 		// Collect the uses of ptr and of the values derived from it.
 		var uses []llvm.Value          // non-phi uses
 		var phiPreds []llvm.BasicBlock // blocks whose end uses ptr through a phi
-		seen := map[llvm.Value]struct{}{ptr: {}}
+		// Start from the value ptr was extracted or cast from as well, so a
+		// sibling taken from the same aggregate keeps the slot alive too.
+		src := ptr
+		for !src.IsAInstruction().IsNil() {
+			op := src.InstructionOpcode()
+			if op != llvm.ExtractValue && op != llvm.BitCast && op != llvm.GetElementPtr {
+				break
+			}
+			next := src.Operand(0)
+			if next.IsAInstruction().IsNil() && next.IsAArgument().IsNil() {
+				break
+			}
+			src = next
+		}
+		seen := map[llvm.Value]struct{}{ptr: {}, src: {}}
 		worklist := []llvm.Value{ptr}
+		if src != ptr {
+			worklist = append(worklist, src)
+		}
+		// Memory ptr may have been written to. The optimizer can later replace
+		// a load from it with ptr itself, so such loads count as derived values.
+		tainted := map[llvm.Value]struct{}{}
+		derive := func(inst llvm.Value) {
+			if _, ok := seen[inst]; ok {
+				return
+			}
+			seen[inst] = struct{}{}
+			if _, ok := rooted[inst]; !ok && derivesPointer(inst) {
+				worklist = append(worklist, inst)
+			}
+		}
+		var taint func(addr llvm.Value)
+		taint = func(addr llvm.Value) {
+			base := stripPointerCasts(addr)
+			if base == stackObject || !base.IsAGlobalValue().IsNil() || !base.IsAConstant().IsNil() {
+				return
+			}
+			if _, ok := tainted[base]; ok {
+				return
+			}
+			tainted[base] = struct{}{}
+			ptrs := []llvm.Value{base}
+			for k := 0; k < len(ptrs); k++ {
+				for _, user := range getUses(ptrs[k]) {
+					if user.IsAInstruction().IsNil() {
+						continue
+					}
+					switch user.InstructionOpcode() {
+					case llvm.GetElementPtr, llvm.BitCast:
+						ptrs = append(ptrs, user)
+					case llvm.Load:
+						uses = append(uses, user)
+						derive(user)
+					case llvm.Call:
+						uses = append(uses, user)
+						derive(user)
+						for a := 0; a < user.OperandsCount()-1; a++ {
+							if arg := user.Operand(a); arg.Type().TypeKind() == llvm.PointerTypeKind {
+								taint(arg)
+							}
+						}
+					}
+				}
+			}
+		}
 		for len(worklist) != 0 {
 			val := worklist[len(worklist)-1]
 			worklist = worklist[:len(worklist)-1]
 			for _, user := range getUses(val) {
 				if user.IsAInstruction().IsNil() {
 					continue
+				}
+				switch user.InstructionOpcode() {
+				case llvm.Store:
+					if user.Operand(0) == val {
+						taint(user.Operand(1))
+					}
+				case llvm.Call:
+					for a := 0; a < user.OperandsCount()-1; a++ {
+						if arg := user.Operand(a); arg != val && arg.Type().TypeKind() == llvm.PointerTypeKind {
+							taint(arg)
+						}
+					}
 				}
 				if !user.IsAPHINode().IsNil() {
 					for j := 0; j < user.IncomingCount(); j++ {
@@ -203,13 +278,12 @@ func derivesPointer(inst llvm.Value) bool {
 	if typeHasPointers(typ) {
 		return true
 	}
-	if typ.TypeKind() != llvm.IntegerTypeKind {
-		return false
-	}
-	switch inst.InstructionOpcode() {
-	case llvm.PtrToInt, llvm.Add, llvm.Sub, llvm.Mul, llvm.And, llvm.Or, llvm.Xor,
-		llvm.Shl, llvm.LShr, llvm.AShr, llvm.Trunc, llvm.ZExt, llvm.SExt,
-		llvm.PHI, llvm.Select, llvm.ExtractValue:
+	switch typ.TypeKind() {
+	case llvm.IntegerTypeKind:
+		// An integer of pointer size may hold a pointer that LLVM loaded or
+		// copied as an integer.
+		return typ.IntTypeWidth() >= 32
+	case llvm.StructTypeKind, llvm.ArrayTypeKind, llvm.VectorTypeKind:
 		return true
 	}
 	return false
