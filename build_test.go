@@ -666,7 +666,8 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			runTest("filesystem.go", options, t, nil, nil)
 		})
 	}
-	if options.Target == "wasm" || isBaremetal {
+	// js opens the host's /dev/null through its filesystem, not the emulated null device.
+	if isBaremetal {
 		t.Run("devnull.go", func(t *testing.T) {
 			t.Parallel()
 			runTest("devnull.go", options, t, nil, nil)
