@@ -90,11 +90,28 @@ func TestBinarySize(t *testing.T) {
 		{target: "pico2", path: "./testdata/size-contains", opt: "z"},
 		{target: "pico2", path: "./testdata/size-os", opt: "z"},
 		{target: "pico2", path: "./testdata/size-os", opt: "2"},
+		{target: "pico2", path: "./testdata/size-timer", opt: "z"},
+		{target: "pico2", path: "./testdata/size-timer", opt: "2"},
 
 		{target: "cortex-m-qemu", path: "./testdata/size-corpus", opt: "z"},
 		{target: "cortex-m-qemu", path: "./testdata/size-corpus", opt: "2"},
 		{target: "riscv-qemu", path: "./testdata/size-corpus", opt: "z"},
 		{target: "riscv-qemu", path: "./testdata/size-corpus", opt: "2"},
+
+		{target: "cortex-m-qemu", path: "./testdata/size-init-recover", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-recover", opt: "2"},
+		{target: "pico2", path: "./testdata/size-init-regexp", opt: "z"},
+		{target: "pico2", path: "./testdata/size-init-regexp", opt: "2"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-crc", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-crc", opt: "2"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-map", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-map", opt: "2"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-errors", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-errors", opt: "2"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-config", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-config", opt: "2"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-strings", opt: "z"},
+		{target: "cortex-m-qemu", path: "./testdata/size-init-strings", opt: "2"},
 
 		// TODO: also check wasm. Right now this is difficult, because
 		// wasm binaries are run through wasm-opt and therefore the
@@ -300,7 +317,7 @@ func TestSizePackagePath(t *testing.T) {
 	}
 }
 
-func buildBinary(t *testing.T, targetString, pkgName string, trimPath bool) BuildResult {
+func buildBinary(t *testing.T, targetString, pkgName string, trimPath bool) *BuildResult {
 	t.Helper()
 	result, err := buildBinaryInDir(targetString, pkgName, "z", t.TempDir(), trimPath)
 	if err != nil {
@@ -309,7 +326,7 @@ func buildBinary(t *testing.T, targetString, pkgName string, trimPath bool) Buil
 	return result
 }
 
-func buildBinaryInDir(targetString, pkgName, opt, tmpdir string, trimPath bool) (BuildResult, error) {
+func buildBinaryInDir(targetString, pkgName, opt, tmpdir string, trimPath bool) (*BuildResult, error) {
 	options := compileopts.Options{
 		Target:                  targetString,
 		Opt:                     opt,
@@ -319,10 +336,12 @@ func buildBinaryInDir(targetString, pkgName, opt, tmpdir string, trimPath bool) 
 		Debug:                   true,
 		VerifyIR:                true,
 		TrimPath:                trimPath,
+		// The GOROOT string is stored in data, so its length must not depend on the host.
+		GlobalValues: map[string]map[string]string{"runtime": {"goroot": "/usr/local/go"}},
 	}
 	target, err := compileopts.LoadTarget(&options)
 	if err != nil {
-		return BuildResult{}, fmt.Errorf("could not load target: %w", err)
+		return nil, fmt.Errorf("could not load target: %w", err)
 	}
 	config := &compileopts.Config{
 		Options: &options,
@@ -330,7 +349,7 @@ func buildBinaryInDir(targetString, pkgName, opt, tmpdir string, trimPath bool) 
 	}
 	result, err := Build(pkgName, "", tmpdir, config)
 	if err != nil {
-		return BuildResult{}, fmt.Errorf("could not build: %w", err)
+		return nil, fmt.Errorf("could not build: %w", err)
 	}
 	return result, nil
 }

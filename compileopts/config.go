@@ -19,7 +19,7 @@ import (
 
 // Go minor version range supported by TinyGo.
 const (
-	MinimumGoMinorVersion = 25
+	MinimumGoMinorVersion = 26
 	MaximumGoMinorVersion = 27
 )
 
@@ -653,6 +653,38 @@ func (c *Config) BinaryFormat(ext string) string {
 		// Use the ELF format for unrecognized file formats.
 		return "elf"
 	}
+}
+
+var firmwareOutputExtensions = []string{
+	".elf",
+	".bin",
+	".gba",
+	".nro",
+	".img",
+	".hex",
+	".uf2",
+	".zip",
+}
+
+// ValidateOutputExtension checks whether a firmware output extension is supported by the target.
+func (c *Config) ValidateOutputExtension(ext string) error {
+	supported := c.Target.FirmwareExts
+	if len(supported) == 0 || !slices.Contains(firmwareOutputExtensions, ext) || slices.Contains(supported, ext) {
+		return nil
+	}
+
+	supportedList := ""
+	switch len(supported) {
+	case 1:
+		supportedList = supported[0]
+	case 2:
+		supportedList = supported[0] + " or " + supported[1]
+	default:
+		supportedList = strings.Join(supported[:len(supported)-1], ", ") + ", or " + supported[len(supported)-1]
+	}
+
+	targetName := strings.TrimSuffix(filepath.Base(c.Options.Target), ".json")
+	return fmt.Errorf("target %s does not support firmware output extension %s; use %s", targetName, ext, supportedList)
 }
 
 // Programmer returns the flash method and OpenOCD interface name given a

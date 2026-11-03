@@ -1,0 +1,230 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	"github.com/tinygo-org/tinygo/builder"
+)
+
+// TestTimerStopResetRace checks that stopping or resetting a timer while its
+// callback is running behaves correctly. It reaches into the runtime timer
+// hooks via //go:linkname and relies on the threads scheduler, which is only
+// used on these hosts.
+func TestTimerStopResetRace(t *testing.T) {
+	t.Parallel()
+
+	switch runtime.GOOS {
+	case "darwin", "linux":
+	default:
+		t.Skipf("host GOOS %s does not use the threads scheduler", runtime.GOOS)
+	}
+	runTest("timer_stop_reset_race.go", optionsFromTarget("", sema), t, nil, nil)
+}
+
+func TestGoexitCrash(t *testing.T) {
+	t.Parallel()
+
+	options := optionsFromTarget("", sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"main", "fatal error: all goroutines are asleep - deadlock!"},
+		{"deadlock", "fatal error: all goroutines are asleep - deadlock!"},
+		{"exit", "fatal error: all goroutines are asleep - deadlock!"},
+		{"main-other", "fatal error: all goroutines are asleep - deadlock!"},
+		{"in-panic", "fatal error: all goroutines are asleep - deadlock!"},
+		{"panic", "panic: panic after Goexit"},
+		{"recovered-panic", "fatal error: all goroutines are asleep - deadlock!"},
+		{"recover-before-panic", "fatal error: all goroutines are asleep - deadlock!"},
+		{"recover-before-panic-loop", "fatal error: all goroutines are asleep - deadlock!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			_, err = buildAndRun("testdata/goexit.go", config, output, []string{tc.name}, nil, time.Minute, func(cmd *exec.Cmd, result *builder.BuildResult) error {
+				cmd.Stdout = nil
+				cmd.Stderr = nil
+				data, err := cmd.CombinedOutput()
+				output.Write(data)
+				return err
+			})
+			if err == nil {
+				t.Fatal("program unexpectedly exited successfully")
+			}
+			if !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("output does not contain %q:\n%s", tc.want, output.String())
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name          string
+		arg           string
+		panicStrategy string
+		want          string
+	}{
+		{"wasip1-deadlock", "deadlock", "", "fatal error: all goroutines are asleep - deadlock!"},
+		{"wasip1-goexit-panic-trap", "defer", "trap", "defer ran"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			options := optionsFromTarget("wasip1", sema)
+			options.PanicStrategy = tc.panicStrategy
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := builder.Build("testdata/goexit.go", ".wasm", t.TempDir(), config)
+			if err != nil {
+				t.Fatal("failed to build binary:", err)
+			}
+			data, err := os.ReadFile(result.Binary)
+			if err != nil {
+				t.Fatal("failed to read binary:", err)
+			}
+
+			output := &bytes.Buffer{}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
+			defer r.Close(ctx)
+			wasi_snapshot_preview1.MustInstantiate(ctx, r)
+			moduleConfig := wazero.NewModuleConfig().
+				WithArgs(result.Binary, tc.arg).
+				WithStdout(output).
+				WithStderr(output)
+			_, err = r.InstantiateWithConfig(ctx, data, moduleConfig)
+			if err == nil {
+				t.Fatal("program unexpectedly exited successfully")
+			}
+			if !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("output does not contain %q:\n%s", tc.want, output.String())
+			}
+		})
+	}
+}
+
+func TestRuntimeFatal(t *testing.T) {
+	t.Parallel()
+
+	options := optionsFromTarget("", sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := &bytes.Buffer{}
+	_, err = buildAndRun("testdata/runtimefatal.go", config, output, nil, nil, time.Minute, func(cmd *exec.Cmd, result *builder.BuildResult) error {
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		data, err := cmd.CombinedOutput()
+		output.Write(data)
+		return err
+	})
+	if err == nil {
+		t.Fatal("program unexpectedly exited successfully")
+	}
+	if want := "fatal error: sync: unlock of unlocked Mutex"; !strings.Contains(output.String(), want) {
+		t.Fatalf("output does not contain %q:\n%s", want, output.String())
+	}
+	if strings.Contains(output.String(), "recovered:") {
+		t.Fatalf("fatal runtime error was recovered:\n%s", output.String())
+	}
+}
+
+// Test that a fatal panic prints the stack recorded where it started, named
+// from the symbol table of a build without debug information, and that a
+// recovered panic prints nothing more.
+func TestPanicTrace(t *testing.T) {
+	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+		t.Skip("panic traces need linux frame pointers")
+	}
+	t.Parallel()
+
+	cases := []struct {
+		arg  string
+		env  []string
+		want []string
+	}{
+		{"goroutine", nil, []string{"[signal SIGSEGV: segmentation violation", "main.faultInGoroutine+", "main.main$1+"}},
+		{"main", nil, []string{"[signal SIGSEGV", "pc=", "main.faultInMain+", "main.main+"}},
+		{"defer", nil, []string{"[signal SIGSEGV", "main.faultInDefer+", "main.main$2+"}},
+		{"nilcheck", nil, []string{"main.nilCheckInGoroutine+", "main.main$3+"}},
+		{"explicit", nil, []string{"panic: explicit panic here", "main.explicitPanic+", "main.main+"}},
+		{"all", []string{"TINYGO_PANIC_ALL=1"}, []string{"main.faultInMain+", "[chan receive]:", "main.blockedReceiver+"}},
+	}
+	for _, scheduler := range []string{"cores", "tasks"} {
+		t.Run(scheduler, func(t *testing.T) {
+			t.Parallel()
+			options := optionsFromTarget("", sema)
+			options.GC = "boehm"
+			options.Scheduler = scheduler
+			options.Debug = false
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := builder.Build("testdata/panic-trace.go", "", t.TempDir(), config)
+			if err != nil {
+				t.Fatal("failed to build binary:", err)
+			}
+			for _, tc := range cases {
+				cmd := exec.Command(result.Binary, tc.arg)
+				cmd.Env = append(os.Environ(), tc.env...)
+				out, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Errorf("%s: program unexpectedly exited successfully:\n%s", tc.arg, out)
+					continue
+				}
+				for _, want := range tc.want {
+					if !strings.Contains(string(out), want) {
+						t.Errorf("%s: output does not contain %q:\n%s", tc.arg, want, out)
+					}
+				}
+			}
+
+			out, err := exec.Command(result.Binary, "recover").CombinedOutput()
+			if err != nil {
+				t.Fatalf("recover: %v:\n%s", err, out)
+			}
+			if strings.Contains(string(out), "goroutine") || !strings.HasSuffix(string(out), "done\n") {
+				t.Errorf("recover: recovered panics printed a trace:\n%s", out)
+			}
+		})
+	}
+}
+
+// Test that the program can read stdin when the caller supplies it.
+func TestStdin(t *testing.T) {
+	t.Parallel()
+
+	options := optionsFromTarget("", sema)
+	config, err := builder.NewConfig(&options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := &bytes.Buffer{}
+	_, err = buildAndRun(TESTDATA+"/stdin.go", config, output, nil, nil, time.Minute, func(cmd *exec.Cmd, result *builder.BuildResult) error {
+		cmd.Stdin = strings.NewReader("hello\nworld\n")
+		return cmd.Run()
+	})
+	if err != nil {
+		t.Error("failed to run:", err)
+	}
+	checkOutput(t, TESTDATA+"/stdin.txt", output.Bytes())
+}

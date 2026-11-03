@@ -45,7 +45,7 @@ func GetCachedGoroot(config *compileopts.Config) (string, error) {
 	}
 
 	// Find the overrides needed for the goroot.
-	overrides := pathsToOverride(config.GoMinorVersion, needsSyscallPackage(config.BuildTags()), needsThinTLS(config.BuildTags(), config.GOOS()))
+	overrides := pathsToOverride(config)
 
 	// Resolve the merge links within the goroot.
 	merge, err := listGorootMergeLinks(goroot, tinygoroot, overrides)
@@ -235,59 +235,62 @@ func needsSyscallPackage(buildTags []string) bool {
 
 // The boolean indicates whether to merge the subdirs. True means merge, false
 // means use the TinyGo version.
-func pathsToOverride(goMinor int, needsSyscallPackage, thinTLS bool) map[string]bool {
+func pathsToOverride(config *compileopts.Config) map[string]bool {
 	paths := map[string]bool{
 		"":                            true,
 		"crypto/":                     true,
 		"crypto/internal/":            true,
 		"crypto/internal/boring/":     true,
 		"crypto/internal/boring/sig/": false,
-		"crypto/rand/":                false,
-		"crypto/x509/":                true,
-		"crypto/x509/internal/":       true,
-		"crypto/x509/internal/macos/": false,
-		"device/":                     false,
-		"examples/":                   false,
-		"hash/":                       true,
-		"hash/maphash/":               false,
-		"internal/":                   true,
-		"internal/abi/":               false,
-		"internal/binary/":            false,
-		"internal/bytealg/":           false,
-		"internal/cm/":                false,
-		"internal/futex/":             false,
-		"internal/fuzz/":              false,
-		"internal/itoa/":              false,
-		"internal/poll/":              false,
-		"internal/reflectlite/":       false,
-		"internal/gclayout":           false,
-		"internal/task/":              false,
-		"internal/wasi/":              false,
-		"machine/":                    false,
-		"net/":                        true,
-		"net/http/":                   true,
-		"net/http/httptest/":          false,
-		"net/http/httptrace/":         false,
-		"net/http/httputil/":          false,
-		"net/http/internal/":          false,
-		"net/http/pprof/":             false,
-		"os/":                         true,
-		"reflect/":                    false,
-		"runtime/":                    false,
-		"sync/":                       true,
-		"testing/":                    true,
-		"tinygo/":                     false,
-		"unique/":                     false,
-	}
-
-	if goMinor >= 26 {
 		// Go 1.26 added a CPU jitter entropy source for FIPS 140-3 that
 		// allocates a 32 MiB global buffer (ScratchBuffer [1<<25]byte).
 		// This is fine on systems with virtual memory, but causes RAM
 		// overflow on microcontrollers. Replace with a zero-size stub
 		// since TinyGo targets never use FIPS jitter entropy.
-		paths["crypto/internal/entropy/"] = true
-		paths["crypto/internal/entropy/v1.0.0/"] = false
+		"crypto/internal/entropy/":        true,
+		"crypto/internal/entropy/v1.0.0/": false,
+		"crypto/rand/":                    false,
+		"crypto/x509/":                    true,
+		"crypto/x509/internal/":           true,
+		"crypto/x509/internal/macos/":     false,
+		"device/":                         false,
+		"examples/":                       false,
+		"hash/":                           true,
+		"hash/maphash/":                   false,
+		"internal/":                       true,
+		"internal/abi/":                   false,
+		"internal/binary/":                false,
+		"internal/bytealg/":               false,
+		"internal/cm/":                    false,
+		"internal/futex/":                 false,
+		"internal/fuzz/":                  false,
+		"internal/itoa/":                  false,
+		"internal/poll/":                  false,
+		"internal/reflectlite/":           false,
+		"internal/gclayout":               false,
+		"internal/task/":                  false,
+		"internal/wasi/":                  false,
+		"machine/":                        false,
+		"net/":                            true,
+		"net/http/":                       true,
+		"net/http/httptest/":              false,
+		"net/http/httptrace/":             false,
+		"net/http/httputil/":              false,
+		"net/http/internal/":              false,
+		"net/http/pprof/":                 false,
+		"os/":                             true,
+		"reflect/":                        false,
+		"runtime/":                        false,
+		"sync/":                           true,
+		"testing/":                        true,
+		"tinygo/":                         false,
+		// Go 1.26 added SWAR optimizations to unicode/utf8 that use
+		// constants assuming at least 32-bit uintptr. TinyGo supports
+		// 16-bit targets (AVR) where these constants overflow, so we
+		// provide a patched version.
+		"unicode/":      true,
+		"unicode/utf8/": false,
+		"unique/":       false,
 	}
 
 	// crypto/tls: TinyGo's version is a thin wrapper around a netdev-provided
@@ -297,25 +300,16 @@ func pathsToOverride(goMinor int, needsSyscallPackage, thinTLS bool) map[string]
 	// Go's full software crypto/tls instead — leaving crypto/tls out of the
 	// overrides map makes the goroot link Go's implementation. needsSyscallPackage
 	// is true exactly for the embedded/wasm targets.
-	if thinTLS {
+	if needsThinTLS(config.BuildTags(), config.GOOS()) {
 		paths["crypto/tls/"] = false
 	}
 
-	if needsSyscallPackage {
+	if needsSyscallPackage(config.BuildTags()) {
 		paths["syscall/"] = true
 		// Go's syscall/js with property access that panics when JS throws.
 		paths["syscall/js/"] = false
 		paths["internal/syscall/"] = true
 		paths["internal/syscall/unix/"] = false
-	}
-
-	if goMinor >= 26 {
-		// Go 1.26 added SWAR optimizations to unicode/utf8 that use
-		// constants assuming at least 32-bit uintptr. TinyGo supports
-		// 16-bit targets (AVR) where these constants overflow, so we
-		// provide a patched version.
-		paths["unicode/"] = true
-		paths["unicode/utf8/"] = false
 	}
 
 	return paths

@@ -143,7 +143,7 @@ func Run(mod llvm.Module, timeout time.Duration, maxLoopIterations int, debug bo
 		if !subprogram.IsNil() {
 			r.builder.SetCurrentDebugLocation(subprogram.SubprogramLine(), 0, subprogram, llvm.Metadata{})
 		}
-		_, mem, callErr := r.run(r.getFunction(fn), nil, nil, "    ")
+		_, mem, callErr := r.run(r.getFunction(fn), nil, nil, 1)
 		call.EraseFromParentAsInstruction()
 		r.builder.SetInsertPointBefore(dummy)
 		if subprogram := initAll.Subprogram(); !subprogram.IsNil() {
@@ -295,7 +295,7 @@ func RunFunc(fn llvm.Value, timeout time.Duration, maxLoopIterations int, debug 
 	if r.debug {
 		fmt.Fprintln(os.Stderr, "interp:", fn.Name())
 	}
-	_, pkgMem, callErr := r.run(r.getFunction(fn), nil, nil, "    ")
+	_, pkgMem, callErr := r.run(r.getFunction(fn), nil, nil, 1)
 	if callErr != nil {
 		if isRecoverableError(callErr.Err) {
 			// Could not finish, but could recover from it.
