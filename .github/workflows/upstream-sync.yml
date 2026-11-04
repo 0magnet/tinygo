@@ -6,8 +6,11 @@
 # Anything else (a conflict, a failing test, a rejected push) opens an issue,
 # or comments on the one already open, for a person or session to resolve.
 #
-# Scheduled runs use the workflow file on the default branch, dev, so this file
-# lives there; it is on develop too only because develop merges dev's history.
+# Scheduled runs use the workflow file on the default branch, dev, so that is
+# the copy that counts; develop carries the same file so the two do not drift.
+#
+# GitHub turns scheduled workflows off after 60 days without activity in the
+# repository; the pushes this makes count, but a quiet upstream does not.
 #
 # The push uses the SYNC_TOKEN secret when there is one, else the workflow's
 # own token. The workflow token cannot push a merge that changes a file under
@@ -22,6 +25,10 @@ on:
     inputs:
       dry_run:
         description: Merge and test, but push nothing
+        type: boolean
+        default: false
+      test_anyway:
+        description: Run the tests even when there is nothing to merge
         type: boolean
         default: false
 
@@ -59,6 +66,9 @@ jobs:
           n=$(git rev-list --count HEAD..upstream/dev)
           echo "upstream/dev is $n commits ahead of develop"
           echo "behind=$n" >> "$GITHUB_OUTPUT"
+          d=$(git rev-list --count origin/dev..upstream/dev)
+          echo "upstream/dev is $d commits ahead of dev"
+          echo "dev_behind=$d" >> "$GITHUB_OUTPUT"
       - name: Merge upstream into develop
         if: steps.fetch.outputs.behind != '0'
         run: |
@@ -69,12 +79,12 @@ jobs:
             exit 1
           fi
       - uses: actions/setup-go@v6
-        if: steps.fetch.outputs.behind != '0'
+        if: steps.fetch.outputs.behind != '0' || inputs.test_anyway
         with:
           go-version: stable
           cache: false
       - name: Install LLVM ${{ env.LLVM }}
-        if: steps.fetch.outputs.behind != '0'
+        if: steps.fetch.outputs.behind != '0' || inputs.test_anyway
         run: |
           echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-$LLVM main" | sudo tee /etc/apt/sources.list.d/llvm.list
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
@@ -85,22 +95,29 @@ jobs:
       # Programs are built and run by the Toolchain workflow's smoke test, and
       # by the projects that build with the toolchain.
       - name: Test
-        if: steps.fetch.outputs.behind != '0'
+        if: steps.fetch.outputs.behind != '0' || inputs.test_anyway
         run: |
           git submodule update --init src/net
           go test -tags llvm$LLVM ./compiler ./interp ./transform ./compileopts
       - name: Push develop and dev
-        if: steps.fetch.outputs.behind != '0' && !inputs.dry_run
+        if: ${{ !inputs.dry_run }}
+        env:
+          BEHIND: ${{ steps.fetch.outputs.behind }}
+          DEV_BEHIND: ${{ steps.fetch.outputs.dev_behind }}
         run: |
-          git push origin HEAD:develop
+          if [ "$BEHIND" != 0 ]; then
+            git push origin HEAD:develop
+            # A push with the workflow token starts no workflow, so ask for
+            # the toolchain explicitly. (With SYNC_TOKEN the push started one
+            # too; the Toolchain workflow keeps only the newest of the two.)
+            gh workflow run toolchain.yml --ref develop
+          fi
           # dev mirrors upstream; this file is all it adds.
-          git checkout -q -B dev origin/dev
-          git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into dev" upstream/dev
-          git push origin dev
-          # A push with the workflow token starts no workflow, so ask for the
-          # toolchain explicitly. (With SYNC_TOKEN the push started one too;
-          # the Toolchain workflow keeps only the newest of the two.)
-          gh workflow run toolchain.yml --ref develop
+          if [ "$DEV_BEHIND" != 0 ]; then
+            git checkout -q -B dev origin/dev
+            git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into dev" upstream/dev
+            git push origin dev
+          fi
       - name: Report the failure
         if: failure() && !inputs.dry_run
         run: |
