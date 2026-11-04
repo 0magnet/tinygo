@@ -39,7 +39,7 @@ var testTarget = flag.String("target", "", "override test target")
 
 func TestBuildAndRunBuildErrorReturnsNil(t *testing.T) {
 	config := &compileopts.Config{
-		Options: &compileopts.Options{},
+		Options: &compileopts.Options{Semaphore: sema},
 		Target:  &compileopts.TargetSpec{Libc: "unknown"},
 	}
 	result, err := buildAndRun("", config, io.Discard, nil, nil, 0, func(cmd *exec.Cmd, result *builder.BuildResult) error {
@@ -55,7 +55,7 @@ func TestBuildAndRunBuildErrorReturnsNil(t *testing.T) {
 }
 
 func TestFlashRejectsUnsupportedFirmwareExtension(t *testing.T) {
-	err := Flash("testdata/print.go", "", "firmware.bin", &compileopts.Options{Target: "pico"})
+	err := Flash("testdata/print.go", "", "firmware.bin", &compileopts.Options{Target: "pico", Semaphore: sema})
 	want := "target pico does not support firmware output extension .bin; use .elf, .hex, or .uf2"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Flash() error = %v, want %q", err, want)
@@ -63,7 +63,7 @@ func TestFlashRejectsUnsupportedFirmwareExtension(t *testing.T) {
 }
 
 func TestFlashAcceptsSupportedFirmwareExtension(t *testing.T) {
-	err := Flash("github.com/tinygo-org/tinygo/testdata/does-not-exist-output-format", "", "firmware.uf2", &compileopts.Options{Target: "pico", Opt: "z"})
+	err := Flash("github.com/tinygo-org/tinygo/testdata/does-not-exist-output-format", "", "firmware.uf2", &compileopts.Options{Target: "pico", Opt: "z", Semaphore: sema})
 	if err == nil {
 		t.Fatal("Flash() succeeded for a missing package")
 	}
@@ -77,7 +77,7 @@ func TestBuildOutputDirectoryWithFirmwareSuffix(t *testing.T) {
 	if err := os.Mkdir(outputDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	config, err := builder.NewConfig(&compileopts.Options{Target: "pico", Opt: "z"})
+	config, err := builder.NewConfig(&compileopts.Options{Target: "pico", Opt: "z", Semaphore: sema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +197,23 @@ func TestTrimPath(t *testing.T) {
 	if !bytes.Equal(binaries[0], binaries[1]) {
 		t.Error("trimmed binaries built in different directories are not identical")
 	}
+	t.Run("cache-prefix-overlap", func(t *testing.T) {
+		dir := filepath.Join(root, "b")
+		cache := filepath.Join(root, "bc")
+		outpath := filepath.Join(root, "b.out")
+		cmd := trimPathCommand(t, dir, "build", "-trimpath", "-p=4", "-o", outpath, ".")
+		cmd.Env = append(cmd.Env, "XDG_CACHE_HOME="+cache, "HOME="+cache, "LocalAppData="+cache)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build failed: %v\n%s", err, output)
+		}
+		binary, err := os.ReadFile(outpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(binaries[1], binary) {
+			t.Error("trimmed binary changed when only the cache directory changed")
+		}
+	})
 	if config.GOOS() != "darwin" {
 		files := trimPathDWARFFiles(t, filepath.Join(root, "a.out"), config.GOOS())
 		headerPath := "/_/example.com/dependency@v1.2.3/include/shared.h"
