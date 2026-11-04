@@ -58,12 +58,17 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 
 	if speedLevel > 0 {
 		// Run some preparatory passes for the Go optimizer.
+		// sroa turns a composite literal built in a stack slot into values
+		// before escape analysis looks at it: go/ssa builds one with stores
+		// and a load, and since x/tools v0.52 orders those stores so that
+		// instcombine no longer forwards them, which left a pointer stored
+		// in the literal looking as if it escaped.
 		po := llvm.NewPassBuilderOptions()
 		defer po.Dispose()
-		optPasses := "globaldce,globalopt,ipsccp,instcombine<no-verify-fixpoint>,adce,function-attrs"
+		optPasses := "globaldce,globalopt,ipsccp,sroa,instcombine<no-verify-fixpoint>,adce,function-attrs"
 		if llvmutil.Version() < 18 {
 			// LLVM 17 doesn't have the no-verify-fixpoint flag.
-			optPasses = "globaldce,globalopt,ipsccp,instcombine,adce,function-attrs"
+			optPasses = "globaldce,globalopt,ipsccp,sroa,instcombine,adce,function-attrs"
 		}
 		blockGlobalAllocPromotion(mod)
 		err := mod.RunPasses(optPasses, llvm.TargetMachine{}, po)

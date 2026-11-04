@@ -230,6 +230,7 @@ func compileGoFileForTesting(t *testing.T, filename string) llvm.Module {
 		Debug:              true,
 		PanicStrategy:      config.PanicStrategy(),
 		PanicUnwind:        config.PanicUnwind(),
+		MaxStackAlloc:      256, // what a build uses: locals start on the stack
 	}
 	machine, err := compiler.NewTargetMachine(compilerConfig)
 	if err != nil {

@@ -177,10 +177,11 @@ func TestAllocs2(t *testing.T) {
 	)
 	mod := compileGoFileForTesting(t, goFile)
 
-	// Run functionattrs pass, which is necessary for escape analysis.
+	// Run the passes the optimizer runs before escape analysis: sroa, and
+	// functionattrs, which escape analysis needs.
 	po := llvm.NewPassBuilderOptions()
 	defer po.Dispose()
-	err := mod.RunPasses("function(instcombine),function-attrs", llvm.TargetMachine{}, po)
+	err := mod.RunPasses("function(sroa,instcombine),function-attrs", llvm.TargetMachine{}, po)
 	if err != nil {
 		t.Error("failed to run passes:", err)
 	}
