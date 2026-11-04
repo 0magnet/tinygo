@@ -126,9 +126,10 @@ func main() {
 	grow = append(grow, grow...)
 	printslice("grow", grow)
 
-	// append string to []bytes
+	// append string to []bytes; under gc.boehm the capacity is bdwgc's
+	// object size, so only check that it holds the bytes
 	bytes := append([]byte{1, 2, 3}, "foo"...)
-	print("bytes: len=", len(bytes), " cap=", cap(bytes), " data:")
+	print("bytes: len=", len(bytes), " cap>=len:", cap(bytes) >= len(bytes), " data:")
 	for _, n := range bytes {
 		print(" ", n)
 	}
