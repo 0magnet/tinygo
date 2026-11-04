@@ -1,0 +1,117 @@
+# Keep this fork current with tinygo-org/tinygo: once a day, merge upstream dev
+# into dev (which mirrors it) and into develop (which carries the 0magnet
+# changes), and push develop only when the merge is clean and the compiler's
+# own tests pass with it. A push to develop rebuilds the "toolchain" release.
+#
+# Anything else (a conflict, a failing test, a rejected push) opens an issue,
+# or comments on the one already open, for a person or session to resolve.
+#
+# Scheduled runs use the workflow file on the default branch, dev, so this file
+# lives there; it is on develop too only because develop merges dev's history.
+#
+# The push uses the SYNC_TOKEN secret when there is one, else the workflow's
+# own token. The workflow token cannot push a merge that changes a file under
+# .github/workflows, which upstream does now and then; SYNC_TOKEN, a token with
+# the workflow scope, can.
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Merge and test, but push nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LLVM: '23'
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v6
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/tinygo-org/tinygo.git
+          git fetch --no-tags upstream dev
+          git fetch --no-tags origin dev
+          n=$(git rev-list --count HEAD..upstream/dev)
+          echo "upstream/dev is $n commits ahead of develop"
+          echo "behind=$n" >> "$GITHUB_OUTPUT"
+      - name: Merge upstream into develop
+        if: steps.fetch.outputs.behind != '0'
+        run: |
+          if ! git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into develop" upstream/dev; then
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "::error::merge conflicts in $(tr '\n' ' ' < "$RUNNER_TEMP/conflicts.txt")"
+            exit 1
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.fetch.outputs.behind != '0'
+        with:
+          go-version: stable
+          cache: false
+      - name: Install LLVM ${{ env.LLVM }}
+        if: steps.fetch.outputs.behind != '0'
+        run: |
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-$LLVM main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          sudo apt-get update -q
+          sudo apt-get install --no-install-recommends -y llvm-$LLVM-dev clang-$LLVM libclang-$LLVM-dev lld-$LLVM liblld-$LLVM-dev
+      # The compiler, interp and transform tests compile Go into LLVM IR and
+      # check it, which needs the net submodule but none of the C libraries.
+      # Programs are built and run by the Toolchain workflow's smoke test, and
+      # by the projects that build with the toolchain.
+      - name: Test
+        if: steps.fetch.outputs.behind != '0'
+        run: |
+          git submodule update --init src/net
+          go test -tags llvm$LLVM ./compiler ./interp ./transform ./compileopts
+      - name: Push develop and dev
+        if: steps.fetch.outputs.behind != '0' && !inputs.dry_run
+        run: |
+          git push origin HEAD:develop
+          # dev mirrors upstream; this file is all it adds.
+          git checkout -q -B dev origin/dev
+          git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into dev" upstream/dev
+          git push origin dev
+          # A push with the workflow token starts no workflow, so ask for the
+          # toolchain explicitly. (With SYNC_TOKEN the push started one too;
+          # the Toolchain workflow keeps only the newest of the two.)
+          gh workflow run toolchain.yml --ref develop
+      - name: Report the failure
+        if: failure() && !inputs.dry_run
+        run: |
+          title='Upstream sync needs a hand'
+          body="The [upstream sync]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) could not merge tinygo-org/tinygo dev into develop by itself."
+          if [ -s "$RUNNER_TEMP/conflicts.txt" ]; then
+            body="$body Conflicts: $(sed 's/.*/`&`/' "$RUNNER_TEMP/conflicts.txt" | paste -sd, -)."
+          fi
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
