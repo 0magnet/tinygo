@@ -431,17 +431,15 @@ func hashmapCopy(m *hashmap, sizeBits uint8) hashmap {
 		return n
 	}
 
-	// Insert straight from the old buckets. Going through an iterator
-	// would need a key and a value buffer allocated for every copy.
-	numBuckets := uintptr(1) << m.bucketBits
-	for i := uintptr(0); i < numBuckets; i++ {
-		for bucket := hashmapBucketAddr(m, m.buckets, i); bucket != nil; bucket = bucket.next {
-			for j := uint8(0); j < 8; j++ {
-				if bucket.tophash[j] == 0 {
+	oldNumBuckets := uintptr(1) << m.bucketBits
+	for i := range oldNumBuckets {
+		for b := hashmapBucketAddr(m, m.buckets, i); b != nil; b = b.next {
+			for j := range uint8(8) {
+				if b.tophash[j] == 0 {
 					continue
 				}
-				key := hashmapSlotKeyData(m, hashmapSlotKey(m, bucket, j))
-				value := hashmapSlotValueData(m, hashmapSlotValue(m, bucket, j))
+				key := hashmapSlotKeyData(m, hashmapSlotKey(m, b, j))
+				value := hashmapSlotValueData(m, hashmapSlotValue(m, b, j))
 				h := n.keyHash(key, uintptr(n.keySize), n.seed)
 				hashmapSet(&n, key, value, h)
 			}

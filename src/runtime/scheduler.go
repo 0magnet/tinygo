@@ -25,8 +25,8 @@ func scheduleLogChan(msg string, ch *channel, t *task.Task) {
 	}
 }
 
-// timerHeap is a binary min-heap of timer nodes, ordered by when and then by
-// seq so that timers with the same deadline keep their insertion order.
+// timerHeap is a binary min-heap of timer nodes, ordered by timer.when and then
+// by seq so that timers with the same deadline keep their insertion order.
 type timerHeap struct {
 	nodes []*timerNode
 	seq   int64
@@ -43,15 +43,13 @@ func (h *timerHeap) peek() *timerNode {
 // deadline instead of after them.
 func (h *timerHeap) push(tn *timerNode, front bool) {
 	h.seq++
-	tn.when = tn.timer.when
 	tn.seq = h.seq
 	if front {
 		tn.seq = -h.seq
 	}
-	tn.index = len(h.nodes)
 	tn.timer.node = tn
 	h.nodes = append(h.nodes, tn)
-	h.up(tn.index)
+	h.fix(len(h.nodes)-1, tn)
 }
 
 func (h *timerHeap) pop() *timerNode {
@@ -70,14 +68,11 @@ func (h *timerHeap) remove(t *timer) *timerNode {
 func (h *timerHeap) removeAt(i int) *timerNode {
 	tn := h.nodes[i]
 	last := len(h.nodes) - 1
-	if i != last {
-		h.nodes[i] = h.nodes[last]
-		h.nodes[i].index = i
-	}
+	moved := h.nodes[last]
 	h.nodes[last] = nil
 	h.nodes = h.nodes[:last]
-	if i != last && !h.up(i) {
-		h.down(i)
+	if i != last {
+		h.fix(i, moved)
 	}
 	if tn.timer.node == tn {
 		tn.timer.node = nil
@@ -85,47 +80,31 @@ func (h *timerHeap) removeAt(i int) *timerNode {
 	return tn
 }
 
-func timerLess(a, b *timerNode) bool {
-	return a.when < b.when || (a.when == b.when && a.seq < b.seq)
-}
-
-// up moves the node at i towards the root and reports whether it moved.
-func (h *timerHeap) up(i int) bool {
-	start := i
-	tn := h.nodes[i]
+// fix places tn, which is not in the slice yet, at the hole at index i.
+// It moves up towards the root first and then down.
+func (h *timerHeap) fix(i int, tn *timerNode) {
+	nodes := h.nodes
 	for i > 0 {
-		p := (i - 1) / 2
-		if !timerLess(tn, h.nodes[p]) {
+		p := nodes[(i-1)/2]
+		if tn.timer.when > p.timer.when || tn.timer.when == p.timer.when && tn.seq > p.seq {
 			break
 		}
-		h.nodes[i] = h.nodes[p]
-		h.nodes[i].index = i
-		i = p
+		nodes[i] = p
+		p.index = i
+		i = (i - 1) / 2
 	}
-	h.nodes[i] = tn
-	tn.index = i
-	return i != start
-}
-
-func (h *timerHeap) down(i int) {
-	n := len(h.nodes)
-	tn := h.nodes[i]
-	for {
-		c := 2*i + 1
-		if c >= n {
+	for c := 2*i + 1; c < len(nodes); c = 2*i + 1 {
+		if c+1 < len(nodes) && (nodes[c+1].timer.when < nodes[c].timer.when || nodes[c+1].timer.when == nodes[c].timer.when && nodes[c+1].seq < nodes[c].seq) {
+			c++
+		}
+		if nodes[c].timer.when > tn.timer.when || nodes[c].timer.when == tn.timer.when && nodes[c].seq > tn.seq {
 			break
 		}
-		if r := c + 1; r < n && timerLess(h.nodes[r], h.nodes[c]) {
-			c = r
-		}
-		if !timerLess(h.nodes[c], tn) {
-			break
-		}
-		h.nodes[i] = h.nodes[c]
-		h.nodes[i].index = i
+		nodes[i] = nodes[c]
+		nodes[i].index = i
 		i = c
 	}
-	h.nodes[i] = tn
+	nodes[i] = tn
 	tn.index = i
 }
 
