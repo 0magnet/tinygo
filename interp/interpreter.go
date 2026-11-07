@@ -20,9 +20,11 @@ import (
 // the init function to runtime.
 const DefaultMaxInterpBlockEntries = 1000
 
-func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth int) (value, memoryView, *Error) {
+func (r *runner) run(fn *function, params []value, parentMem *memoryView, frames []value, depth int) (value, memoryView, *Error) {
 	mem := memoryView{r: r, parent: parentMem}
-	locals := make([]value, len(fn.locals))
+	frames = slices.Grow(frames, len(fn.locals))[:len(fn.locals)] // make room for this call's slots; a reallocation copies nothing
+	locals, frames := frames, frames[len(fn.locals):]             // take this call's slots from the head, keep the free space after them for children
+	clear(locals)                                                 // these slots may hold values from an earlier sibling
 	r.callsExecuted++
 
 	// Parameters are considered a kind of local values.
@@ -54,8 +56,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 			// to runtime.
 			blockCounts[currentBB]++
 			if r.maxLoopIterations > 0 && int(blockCounts[currentBB]) > r.maxLoopIterations {
-				err := &recoverableError{msg: "interp: loop ran too many iterations", fn: fn.name}
-				return nil, mem, r.errorAt(bb.instructions[0], err)
+				return nil, mem, r.rollbackAt(bb.instructions[0], "loop ran too many iterations")
 			}
 
 			if len(mem.instructions) != startRTInsts {
@@ -64,8 +65,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 					// Avoid doing this, as it can result in a large amount of extra machine code.
 					// This currently uses the branch from the last block, as there is no available information to give a better location.
 					lastBBInsts := fn.blocks[lastBB].instructions
-					err := &recoverableError{msg: "interp: loop unrolled", fn: fn.name}
-					return nil, mem, r.errorAt(lastBBInsts[len(lastBBInsts)-1], err)
+					return nil, mem, r.rollbackAt(lastBBInsts[len(lastBBInsts)-1], "loop unrolled")
 				}
 
 				// Flag the last block as having run stuff at runtime.
@@ -220,8 +220,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 		switch inst.opcode {
 		case llvm.Ret:
 			if !fn.deferFrame.IsNil() && len(mem.instructions) != 0 {
-				err := &recoverableError{msg: "interp: cannot partially evaluate a function with defer", fn: fn.name}
-				return nil, mem, r.errorAt(inst, err)
+				return nil, mem, r.rollbackAt(inst, "cannot partially evaluate a function with defer")
 			}
 			if time.Since(r.start) > r.timeout {
 				// Running for more than the allowed timeout; This shouldn't happen, but it does.
@@ -377,8 +376,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 				}
 			case callFn.name == "internal/task.Pause":
 				// Task scheduling isn't possible at compile time.
-				err := &recoverableError{msg: "interp: goroutine would block", fn: fn.name}
-				return nil, mem, r.errorAt(inst, err)
+				return nil, mem, r.rollbackAt(inst, "goroutine would block")
 			case callFn.name == "runtime.fastrand" || callFn.name == "runtime.fastrand64":
 				// Use a local sequence instead of the global RNG state. The
 				// state is replaced by initRand before initAll runs anyway.
@@ -689,7 +687,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 					}
 					r.debugf(depth, "call: %s(%s)", callFn.name, strings.Join(argStrings, ", "))
 				}
-				retval, callMem, callErr := r.run(callFn, operands[1:], &mem, depth+1)
+				retval, callMem, callErr := r.run(callFn, operands[1:], &mem, frames, depth+1)
 				if callErr != nil {
 					if isRecoverableError(callErr.Err) {
 						// This error can be recovered by doing the call at
@@ -961,15 +959,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 				// The lhs is a pointer. This sometimes happens for particular
 				// pointer tricks.
 				rhsUint, rhsErr := rhs.Uint(r)
-				if inst.opcode == llvm.Add && rhsErr == nil {
-					// This likely means this is part of a
-					// unsafe.Pointer(uintptr(ptr) + offset) pattern.
-					lhsPtr, err = lhsPtr.addOffset(int64(rhsUint))
-					if err != nil {
-						return nil, mem, r.errorAt(inst, err)
-					}
-					locals[inst.localIndex] = lhsPtr
-				} else if inst.opcode == llvm.Xor && rhsErr == nil && rhsUint == 0 {
+				if inst.opcode == llvm.Xor && rhsErr == nil && rhsUint == 0 {
 					// Special workaround for strings.noescape, see
 					// src/strings/builder.go in the Go source tree. This is
 					// the identity operator, so we can return the input.
@@ -1102,7 +1092,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, depth 
 			if r.debug {
 				r.debugf(depth, "%s", inst.String())
 			}
-			return nil, mem, r.errorAt(inst, errUnsupportedInst)
+			return nil, mem, r.rollbackAt(inst, "unsupported instruction: "+opcodeName(inst.llvmInst))
 		}
 	}
 	return nil, mem, r.errorAt(bb.instructions[len(bb.instructions)-1], errors.New("interp: reached end of basic block without terminator"))
@@ -1187,8 +1177,7 @@ func intOperands(r *runner, lhs, rhs value) (int64, int64, error) {
 
 func (r *runner) runAtRuntime(fn *function, inst instruction, locals []value, mem *memoryView, depth int) *Error {
 	if !fn.deferFrame.IsNil() {
-		err := &recoverableError{msg: "interp: cannot partially evaluate a function with defer", op: inst.opcodeName(), fn: fn.name}
-		return r.errorAt(inst, err)
+		return r.rollbackAt(inst, "cannot partially evaluate a function with defer: "+opcodeName(inst.llvmInst))
 	}
 	numOperands := inst.llvmInst.OperandsCount()
 	operands := make([]llvm.Value, numOperands)
@@ -1231,9 +1220,12 @@ func (r *runner) runAtRuntime(fn *function, inst instruction, locals []value, me
 			result.SetOrdering(ordering)
 		}
 	case llvm.Store:
-		err := mem.markExternalStore(operands[1])
-		if err != nil {
-			return r.errorAt(inst, err)
+		// Runtime code can read objects through the stored value.
+		for _, op := range operands {
+			err := mem.markExternalStore(op)
+			if err != nil {
+				return r.errorAt(inst, err)
+			}
 		}
 		result = r.builder.CreateStore(operands[0], operands[1])
 		if inst.llvmInst.IsVolatile() {
@@ -1298,11 +1290,9 @@ func (r *runner) runAtRuntime(fn *function, inst instruction, locals []value, me
 		result = r.builder.CreateZExt(operands[0], inst.llvmInst.Type(), inst.name)
 	default:
 		if inst.branch || inst.opcode == llvm.Switch || inst.opcode == llvm.IndirectBr {
-			err := &recoverableError{msg: "interp: branch on a value not known at compile time", fn: fn.name}
-			return r.errorAt(inst, err)
+			return r.rollbackAt(inst, "branch on a value not known at compile time")
 		}
-		err := &recoverableError{msg: "interp: cannot emit instruction at runtime", op: inst.opcodeName(), fn: fn.name}
-		return r.errorAt(inst, err)
+		return r.rollbackAt(inst, "cannot emit instruction at runtime: "+opcodeName(inst.llvmInst))
 	}
 	locals[inst.localIndex] = localValue{result}
 	mem.instructions = append(mem.instructions, result)

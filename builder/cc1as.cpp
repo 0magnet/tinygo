@@ -299,6 +299,9 @@ static bool ExecuteAssemblerImpl(AssemblerInvocation &Opts,
   MCOptions.ImplicitMapSyms = Opts.ImplicitMapsyms;
   MCOptions.X86RelaxRelocations = Opts.X86RelaxRelocations;
   MCOptions.X86Sse2Avx = Opts.X86Sse2Avx;
+#if LLVM_VERSION_MAJOR >= 23
+  MCOptions.MCNoExecStack = Opts.NoExecStack;
+#endif
   MCOptions.CompressDebugSections = Opts.CompressDebugSections;
   MCOptions.AsSecureLogFile = Opts.AsSecureLogFile;
 #if LLVM_VERSION_MAJOR >= 23

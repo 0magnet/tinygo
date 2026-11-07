@@ -181,6 +181,12 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 		defer unlock()
 		libcDependencies = append(libcDependencies, dummyCompileJob(filepath.Join(filepath.Dir(libcJob.result), "crt1.o")))
 		libcDependencies = append(libcDependencies, libcJob)
+	case "glibc":
+		libDir, err := compileopts.GlibcLibDir(config.GOARCH())
+		if err != nil {
+			return nil, err
+		}
+		libcDependencies = append(libcDependencies, glibcStartupJobs(libDir)...)
 	case "picolibc":
 		libcJob, unlock, err := libPicolibc.load(config, tmpdir)
 		if err != nil {
@@ -257,6 +263,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 	})
 	if err != nil {
 		return nil, err
+	}
+	if _, ok := globalValues["runtime"]["godebugDefault"]; !ok {
+		globalValues["runtime"]["godebugDefault"] = lprogram.MainPkg().DefaultGODEBUG
 	}
 	result := &BuildResult{
 		ModuleRoot: lprogram.MainPkg().Module.Dir,
@@ -494,7 +503,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 					flags = append(flags, "-working-directory="+tmpdir)
 					if config.TrimPath() {
 						flags = append(flags,
-							"-ffile-prefix-map="+tmpdir+"="+config.CSourcePath(pkg.RecordedDir()),
+							compileopts.FilePrefixMap(tmpdir, config.CSourcePath(pkg.RecordedDir())),
 						)
 					}
 					if config.Options.PrintCommands != nil {
@@ -853,10 +862,6 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 	if config.Options.BuildMode == "wasi-legacy" {
 		if !strings.HasPrefix(config.Triple(), "wasm32-") {
 			return nil, fmt.Errorf("buildmode wasi-legacy is only supported on wasm")
-		}
-
-		if config.Options.Scheduler != "none" {
-			return nil, fmt.Errorf("buildmode wasi-legacy only supports scheduler=none")
 		}
 	}
 
@@ -1414,6 +1419,9 @@ func createEmbedObjectFile(data, hexSum, sourceFile, sourceDir, tmpdir string, c
 // needed to convert a program to its final form. Some transformations are not
 // optional and must be run as the compiler expects them to run.
 func optimizeProgram(mod llvm.Module, config *compileopts.Config) error {
+	if err := transform.PrepareRuntimeStartup(mod); err != nil {
+		return err
+	}
 	err := interp.Run(mod, config.Options.InterpTimeout, config.Options.InterpMaxLoopIterations, config.DumpSSA())
 	if err != nil {
 		return err

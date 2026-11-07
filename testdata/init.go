@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -181,3 +182,26 @@ func init() {
 // A pointer converted to uintptr plus an offset, folded into a constant.
 var ptrArr [4]int64
 var ptrAdd = uintptr(unsafe.Pointer(&ptrArr)) + 8
+
+// escapeLeak runs at runtime, so the atomic store also runs at runtime and lets
+// runtime code read escapeValue. escapeObserve must see the value from before the next store.
+var (
+	escapeValue   = 1
+	escapePointer atomic.Pointer[int]
+)
+
+func init() {
+	escapeLeak(&escapePointer)
+	escapePointer.Store(&escapeValue)
+	escapeObserve()
+	escapeValue = 2
+}
+
+func escapeLeak(p *atomic.Pointer[int]) {
+	defer func() {}()
+	println("escape loaded:", p.Load() == nil)
+}
+
+func escapeObserve() {
+	println("escape:", *escapePointer.Load())
+}

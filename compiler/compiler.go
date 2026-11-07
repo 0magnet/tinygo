@@ -1740,6 +1740,10 @@ func (b *builder) getValuePointer(value ssa.Value) llvm.Value {
 	}
 	llvmType := b.getLLVMType(value.Type())
 	ptr := b.createIndirectStorage(llvmType, value.Name())
+	if c, ok := value.(*ssa.Const); ok && c.Value == nil {
+		// createIndirectStorage returns zeroed memory.
+		return ptr
+	}
 	b.storeValue(ptr, value)
 	return ptr
 }
@@ -2434,6 +2438,8 @@ func (b *builder) createBuiltin(argTypes []types.Type, argValues []llvm.Value, c
 //
 // This is also where compiler intrinsics are implemented.
 func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) {
+	b.markRuntimeFeatureUse(instr)
+
 	// See if this is an intrinsic function that is handled specially.
 	if fn := instr.StaticCallee(); fn != nil {
 		// Direct function call, either to a named or anonymous (directly

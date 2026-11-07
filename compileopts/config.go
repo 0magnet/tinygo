@@ -386,7 +386,7 @@ func (c *Config) LibraryPath(name string) string {
 		options += "+threads"
 	}
 	if c.TrimPath() {
-		options += "+trimpath-v1"
+		options += "+trimpath-v2"
 	}
 
 	// No precompiled library found. Determine the path name that will be used
@@ -442,13 +442,13 @@ func (c *Config) CFlags(libclang bool) []string {
 	}
 	if c.TrimPath() {
 		cflags = append(cflags,
-			"-ffile-prefix-map="+goenv.Get("TINYGOROOT")+"="+c.CSourcePath("github.com/tinygo-org/tinygo"),
-			"-ffile-prefix-map="+goenv.Get("GOCACHE")+"="+c.CSourcePath("tinygo-cache"),
+			FilePrefixMap(goenv.Get("TINYGOROOT"), c.CSourcePath("github.com/tinygo-org/tinygo")),
+			FilePrefixMap(goenv.Get("GOCACHE"), c.CSourcePath("tinygo-cache")),
 			"-fdebug-compilation-dir=.",
 			"-gno-record-command-line",
 		)
 		if resourceDir != "" {
-			cflags = append(cflags, "-ffile-prefix-map="+resourceDir+"="+c.CSourcePath("clang"))
+			cflags = append(cflags, FilePrefixMap(resourceDir, c.CSourcePath("clang")))
 		}
 	}
 	// Always emit debug information. It is optionally stripped at link time.
@@ -499,6 +499,12 @@ func (c *Config) LibcCFlags() []string {
 			"-isystem", filepath.Join(picolibcDir, "stdio"),
 			"-D__PICOLIBC_ERRNO_FUNCTION=__errno_location",
 		}
+	case "glibc":
+		// Use the system headers that belong to the installed glibc. The
+		// gnu triple makes clang look for a GCC install, and cgo treats the
+		// warning it prints with more than one GCC version as an error.
+		// Older clang does not know this warning, so silence that too.
+		return []string{"-Wno-unknown-warning-option", "-Wno-gcc-install-dir-libstdcxx"}
 	case "musl":
 		root := goenv.Get("TINYGOROOT")
 		path := c.LibraryPath("musl")
