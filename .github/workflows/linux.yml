@@ -89,7 +89,7 @@ jobs:
         uses: actions/cache/restore@v5
         id: cache-llvm-source
         with:
-          key: llvm-source-22-linux-alpine-v1-${{ hashFiles('llvm-version.txt') }}
+          key: llvm-source-22-linux-alpine-v1-${{ hashFiles('llvm-version.txt', 'llvm-patches/*.patch') }}
           path: |
             llvm-project/clang/lib/Headers
             llvm-project/clang/include
@@ -114,7 +114,7 @@ jobs:
         uses: actions/cache/restore@v5
         id: cache-llvm-build
         with:
-          key: llvm-build-22-linux-alpine-v1-${{ hashFiles('llvm-version.txt') }}
+          key: llvm-build-22-linux-alpine-v1-${{ hashFiles('llvm-version.txt', 'llvm-patches/*.patch') }}
           path: llvm-build
       - name: Build LLVM
         if: steps.cache-llvm-build.outputs.cache-hit != 'true'
@@ -469,7 +469,7 @@ jobs:
         uses: actions/cache/restore@v5
         id: cache-llvm-source
         with:
-          key: llvm-source-22-linux-v1-${{ hashFiles('llvm-version.txt') }}
+          key: llvm-source-22-linux-v1-${{ hashFiles('llvm-version.txt', 'llvm-patches/*.patch') }}
           path: |
             llvm-project/clang/lib/Headers
             llvm-project/clang/include
@@ -494,7 +494,7 @@ jobs:
         uses: actions/cache/restore@v5
         id: cache-llvm-build
         with:
-          key: llvm-build-22-linux-${{ matrix.goarch }}-v2-${{ hashFiles('llvm-version.txt') }}
+          key: llvm-build-22-linux-${{ matrix.goarch }}-v2-${{ hashFiles('llvm-version.txt', 'llvm-patches/*.patch') }}
           path: llvm-build
       - name: Build LLVM
         if: steps.cache-llvm-build.outputs.cache-hit != 'true'

@@ -75,9 +75,10 @@ endif
     CGO_LDFLAGS+=-L$(abspath $(LLVM_BUILDDIR)/lib) -lclang $(CLANG_LIBS) $(LLD_LIBS) $(shell $(LLVM_CONFIG_PREFIX) $(LLVM_BUILDDIR)/bin/llvm-config --ldflags --libs --system-libs $(LLVM_COMPONENTS)) -lstdc++ $(CGO_LDFLAGS_EXTRA)
 endif
 
-# Pinned in llvm-version.txt: llvmorg-23.1.3 of llvm/llvm-project. Xtensa (ESP32,
+# Pinned in llvm-version.txt: llvmorg-23.1.5 of llvm/llvm-project. Xtensa (ESP32,
 # ESP32-S3) is not built: its backend is Espressif's, in tinygo-org/llvm-project
 # tinygo_22.x and espressif/llvm-project esp_main, not in LLVM 23.1.
+# llvm-patches/ holds fixes from LLVM main that are not in the release yet.
 LLVM_REVISION = $(shell cat llvm-version.txt)
 
 llvm-source: ## Get or update LLVM sources
@@ -91,7 +92,8 @@ llvm-source: ## Get or update LLVM sources
 	    fi && \
 	    git fetch --depth=1 origin $(LLVM_REVISION); \
 	  fi && \
-	  git checkout $(LLVM_REVISION)
+	  git checkout -f $(LLVM_REVISION) && \
+	  for p in $(CURDIR)/llvm-patches/*.patch; do git apply $$p || exit 1; done
 
 # Configure LLVM.
 TINYGO_SOURCE_DIR=$(shell pwd)

@@ -203,7 +203,7 @@ jobs:
         uses: actions/cache/restore@v5
         id: cache-llvm-source
         with:
-          key: llvm-source-22-macos-homebrew-${{ hashFiles('llvm-version.txt') }}
+          key: llvm-source-22-macos-homebrew-${{ hashFiles('llvm-version.txt', 'llvm-patches/*.patch') }}
           path: llvm-project/compiler-rt
       - name: Download LLVM source
         if: steps.cache-llvm-source.outputs.cache-hit != 'true'

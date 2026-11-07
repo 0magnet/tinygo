@@ -1,0 +1,18 @@
+FunctionAttrs: check all uses when inferring captures for argument SCCs
+
+Code change of llvm/llvm-project#231536 (05b3eeffba), on main since
+2026-10-13 and not in 23.1.5. Without it an argument SCC can get a false
+captures(none), and TinyGo then puts an escaping allocation on the stack.
+
+diff --git a/llvm/lib/Transforms/IPO/FunctionAttrs.cpp b/llvm/lib/Transforms/IPO/FunctionAttrs.cpp
+index 1441c660abbd21..ac7ae381b1b574 100644
+--- a/llvm/lib/Transforms/IPO/FunctionAttrs.cpp
++++ b/llvm/lib/Transforms/IPO/FunctionAttrs.cpp
+@@ -1368,7 +1368,6 @@ static void addArgumentAttrs(const SCCNodeSet &SCCNodes,
+           CC |= Use->CC;
+         else
+           CC |= CaptureComponents(A->getAttributes().getCaptureInfo());
+-        break;
+       }
+       if (capturesAll(CC))
+         break;
