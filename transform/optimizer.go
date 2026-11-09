@@ -66,7 +66,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		po := llvm.NewPassBuilderOptions()
 		defer po.Dispose()
 		optPasses := "globaldce,globalopt,ipsccp,sroa,instcombine<no-verify-fixpoint>,adce,function-attrs"
-		if llvmutil.Version() < 18 {
+		if llvm.VersionMajor < 18 {
 			// LLVM 17 doesn't have the no-verify-fixpoint flag.
 			optPasses = "globaldce,globalopt,ipsccp,sroa,instcombine,adce,function-attrs"
 		}
@@ -173,7 +173,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	po := llvm.NewPassBuilderOptions()
 	defer po.Dispose()
 	pipelineLevel := optLevel
-	if llvmutil.Version() >= 23 && (pipelineLevel == "Os" || pipelineLevel == "Oz") {
+	if llvm.VersionMajor >= 23 && (pipelineLevel == "Os" || pipelineLevel == "Oz") {
 		// LLVM 23 removed the Os/Oz pipeline levels. Use O2 instead, since
 		// the optsize/minsize function attributes are already set elsewhere.
 		pipelineLevel = "O2"

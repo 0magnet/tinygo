@@ -64,7 +64,7 @@ func TestCompiler(t *testing.T) {
 	if goMinor >= 27 {
 		tests = append(tests, testCase{"go1.27.go", "", ""})
 	}
-	if llvmutil.Version() >= 23 {
+	if llvm.VersionMajor >= 23 {
 		// Only has LLVM 23 output so far.
 		tests = append(tests, testCase{"sliceend.go", "", ""})
 	}
@@ -122,7 +122,7 @@ func TestCompiler(t *testing.T) {
 			// float comparisons folded by instcombine). Where its output
 			// differs it has a golden file of its own, written by -update
 			// only when the output differs from the common one.
-			if llvmutil.Version() >= 23 {
+			if llvm.VersionMajor >= 23 {
 				versioned := "./testdata/" + outFilePrefix + ".llvm23.ll"
 				if *flagUpdate {
 					common, _ := os.ReadFile(outPath)
@@ -138,7 +138,7 @@ func TestCompiler(t *testing.T) {
 
 			// Update test if needed. Do not check the result.
 			if *flagUpdate {
-				err := os.WriteFile(outPath, []byte(ir.Normalize(mod.String())), 0666)
+				err := ir.WriteGolden(outPath, mod.String())
 				if err != nil {
 					t.Error("failed to write updated output file:", err)
 				}

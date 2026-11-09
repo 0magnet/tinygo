@@ -20,7 +20,7 @@ import (
 // each laid out as the fields of a struct. The stub loads the parameters,
 // calls code with context the way a call of the func value would, and stores
 // the results.
-func (c *compilerContext) getReflectCallStub(sig *types.Signature) llvm.Value {
+func (c *context) getReflectCallStub(sig *types.Signature) llvm.Value {
 	typeCodeName, isLocal := c.getTypeCodeName(sig)
 	name := "reflect/types.call:" + typeCodeName
 	if !isLocal {
@@ -43,8 +43,8 @@ func (c *compilerContext) getReflectCallStub(sig *types.Signature) llvm.Value {
 	stub.SetUnnamedAddr(true)
 
 	b := &builder{
-		compilerContext: c,
-		Builder:         c.ctx.NewBuilder(),
+		context: c,
+		Builder: c.ctx.NewBuilder(),
 	}
 	defer b.Dispose()
 	b.SetInsertPointAtEnd(c.ctx.AddBasicBlock(stub, "entry"))

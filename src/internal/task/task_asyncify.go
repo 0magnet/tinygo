@@ -23,6 +23,7 @@ type state struct {
 	stackState
 
 	stackBase uintptr
+	stackSize uintptr
 	launched  bool
 
 	// finishing marks a goroutine that paused after it completed.
@@ -87,8 +88,9 @@ func (s *state) initialize(fn uintptr, args unsafe.Pointer, stackSize uintptr) {
 	s.args = args
 
 	// Create a stack.
-	stack := takeStack(stackSize)
+	stack := allocStack(stackSize)
 	s.stackBase = uintptr(stack)
+	s.stackSize = stackSize
 
 	// Set up the stack canary, a random number that should be checked when
 	// switching from the task back to the scheduler. The stack canary pointer
@@ -240,7 +242,7 @@ func (t *Task) Resume() {
 		runtimeFatal("goroutine stack overflow; build with a larger -stack-size")
 	}
 	if t.Exited {
-		putStack(unsafe.Pointer(t.state.stackBase), uintptr(t.state.top)-t.state.stackBase)
+		releaseStack(t.state.stackBase, t.state.stackSize)
 		t.state = state{}
 		t.gcData = gcData{}
 		t.DeferFrame = nil

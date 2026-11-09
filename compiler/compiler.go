@@ -69,12 +69,12 @@ type Config struct {
 	ReflectMethods bool `json:",omitempty"`
 }
 
-// compilerContext contains function-independent data that should still be
+// context contains function-independent data that should still be
 // available while compiling every function. It is not strictly read-only, but
 // must not contain function-dependent data such as an IR builder.
-type compilerContext struct {
+type context struct {
 	*Config
-	DumpSSA          bool
+	dumpSSA          bool
 	mod              llvm.Module
 	ctx              llvm.Context
 	builder          llvm.Builder // only used for constant operations
@@ -113,12 +113,12 @@ type compilerContext struct {
 	reflectTypes     []types.Type // types that get a $reflectmethods table
 }
 
-// newCompilerContext returns a new compiler context ready for use, most
+// newContext returns a new compiler context ready for use, most
 // importantly with a newly created LLVM context and module.
-func newCompilerContext(moduleName string, machine llvm.TargetMachine, config *Config, dumpSSA bool) *compilerContext {
-	c := &compilerContext{
+func newContext(moduleName string, machine llvm.TargetMachine, config *Config, dumpSSA bool) *context {
+	c := &context{
 		Config:           config,
-		DumpSSA:          dumpSSA,
+		dumpSSA:          dumpSSA,
 		difiles:          make(map[string]llvm.Metadata),
 		ditypes:          make(map[types.Type]llvm.Metadata),
 		machine:          machine,
@@ -168,13 +168,13 @@ func newCompilerContext(moduleName string, machine llvm.TargetMachine, config *C
 
 // Dispose everything related to the context, _except_ for the IR module (and
 // the associated context).
-func (c *compilerContext) dispose() {
+func (c *context) dispose() {
 	c.builder.Dispose()
 }
 
 // builder contains all information relevant to build a single function.
 type builder struct {
-	*compilerContext
+	*context
 	llvm.Builder
 	fn                 *ssa.Function
 	llvmFnType         llvm.Type
@@ -216,18 +216,18 @@ type builder struct {
 	interfaceAssertBlock llvm.BasicBlock
 }
 
-func newBuilder(c *compilerContext, irbuilder llvm.Builder, f *ssa.Function) *builder {
+func newBuilder(c *context, irbuilder llvm.Builder, f *ssa.Function) *builder {
 	fnType, fn := c.getFunction(f)
 	return &builder{
-		compilerContext: c,
-		Builder:         irbuilder,
-		fn:              f,
-		llvmFnType:      fnType,
-		llvmFn:          fn,
-		info:            c.getFunctionInfo(f),
-		locals:          make(map[ssa.Value]llvm.Value),
-		indirectValues:  make(map[ssa.Value]llvm.Value),
-		dilocals:        make(map[*types.Var]llvm.Metadata),
+		context:        c,
+		Builder:        irbuilder,
+		fn:             f,
+		llvmFnType:     fnType,
+		llvmFn:         fn,
+		info:           c.getFunctionInfo(f),
+		locals:         make(map[ssa.Value]llvm.Value),
+		indirectValues: make(map[ssa.Value]llvm.Value),
+		dilocals:       make(map[*types.Var]llvm.Metadata),
 	}
 }
 
@@ -331,7 +331,7 @@ func Sizes(machine llvm.TargetMachine) types.Sizes {
 // The SSA package must already be built. When packages are compiled
 // concurrently, the entire SSA program must be built before compilation starts.
 func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package, machine llvm.TargetMachine, config *Config, dumpSSA bool) (llvm.Module, []error) {
-	c := newCompilerContext(moduleName, machine, config, dumpSSA)
+	c := newContext(moduleName, machine, config, dumpSSA)
 	defer c.dispose()
 	c.packageDir = pkg.OriginalDir()
 	c.embedGlobals = pkg.EmbedGlobals
@@ -415,21 +415,21 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 	return c.mod, c.diagnostics
 }
 
-func (c *compilerContext) getRuntimeType(name string) types.Type {
+func (c *context) getRuntimeType(name string) types.Type {
 	return c.runtimePkg.Scope().Lookup(name).(*types.TypeName).Type()
 }
 
 // getLLVMRuntimeType obtains a named type from the runtime package and returns
 // it as a LLVM type, creating it if necessary. It is a shorthand for
 // getLLVMType(getRuntimeType(name)).
-func (c *compilerContext) getLLVMRuntimeType(name string) llvm.Type {
+func (c *context) getLLVMRuntimeType(name string) llvm.Type {
 	return c.getLLVMType(c.getRuntimeType(name))
 }
 
 // getLLVMType returns a LLVM type for a Go type. It doesn't recreate already
 // created types. This is somewhat important for performance, but especially
 // important for named struct types (which should only be created once).
-func (c *compilerContext) getLLVMType(goType types.Type) llvm.Type {
+func (c *context) getLLVMType(goType types.Type) llvm.Type {
 	// Try to load the LLVM type from the cache.
 	// Note: *types.Named isn't unique when working with generics.
 	// See https://github.com/golang/go/issues/53914
@@ -446,7 +446,7 @@ func (c *compilerContext) getLLVMType(goType types.Type) llvm.Type {
 
 // makeLLVMType creates a LLVM type for a Go type. Don't call this, use
 // getLLVMType instead.
-func (c *compilerContext) makeLLVMType(goType types.Type) llvm.Type {
+func (c *context) makeLLVMType(goType types.Type) llvm.Type {
 	switch typ := types.Unalias(goType).(type) {
 	case *types.Array:
 		elemType := c.getLLVMType(typ.Elem())
@@ -540,7 +540,7 @@ func isPointer(typ types.Type) bool {
 }
 
 // Get the DWARF type for this Go type.
-func (c *compilerContext) getDIType(typ types.Type) llvm.Metadata {
+func (c *context) getDIType(typ types.Type) llvm.Metadata {
 	if md, ok := c.ditypes[typ]; ok {
 		return md
 	}
@@ -551,7 +551,7 @@ func (c *compilerContext) getDIType(typ types.Type) llvm.Metadata {
 
 // createDIType creates a new DWARF type. Don't call this function directly,
 // call getDIType instead.
-func (c *compilerContext) createDIType(typ types.Type) llvm.Metadata {
+func (c *context) createDIType(typ types.Type) llvm.Metadata {
 	llvmType := c.getLLVMType(typ)
 	sizeInBytes := c.targetData.TypeAllocSize(llvmType)
 	switch typ := typ.(type) {
@@ -825,7 +825,7 @@ func (b *builder) getLocalVariable(variable *types.Var) llvm.Metadata {
 
 // attachDebugInfo adds debug info to a function. It returns the
 // DISubprogram metadata node.
-func (c *compilerContext) attachDebugInfo(f *ssa.Function) llvm.Metadata {
+func (c *context) attachDebugInfo(f *ssa.Function) llvm.Metadata {
 	pos := c.program.Fset.Position(f.Syntax().Pos())
 	_, fn := c.getFunction(f)
 	return c.attachDebugInfoRaw(f, fn, "", pos.Filename, pos.Line)
@@ -834,15 +834,15 @@ func (c *compilerContext) attachDebugInfo(f *ssa.Function) llvm.Metadata {
 // attachDebugInfoRaw adds debug info to a function. It returns the
 // DISubprogram metadata node. This method allows some more control over how
 // debug info is added to the function.
-func (c *compilerContext) attachDebugInfoRaw(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int) llvm.Metadata {
+func (c *context) attachDebugInfoRaw(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int) llvm.Metadata {
 	return c.attachDebugInfoRawWithDefinition(f, llvmFn, suffix, filename, line, true)
 }
 
-func (c *compilerContext) attachDebugInfoDeclarationRaw(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int) llvm.Metadata {
+func (c *context) attachDebugInfoDeclarationRaw(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int) llvm.Metadata {
 	return c.attachDebugInfoRawWithDefinition(f, llvmFn, suffix, filename, line, false)
 }
 
-func (c *compilerContext) attachDebugInfoRawWithDefinition(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int, isDefinition bool) llvm.Metadata {
+func (c *context) attachDebugInfoRawWithDefinition(f *ssa.Function, llvmFn llvm.Value, suffix, filename string, line int, isDefinition bool) llvm.Metadata {
 	// Debug info for this function.
 	params := getParams(f.Signature)
 	diparams := make([]llvm.Metadata, 0, len(params))
@@ -873,7 +873,7 @@ func (c *compilerContext) attachDebugInfoRawWithDefinition(f *ssa.Function, llvm
 // getDIFile returns a DIFile metadata node for the given filename. It tries to
 // use one that was already created, otherwise it falls back to creating a new
 // one.
-func (c *compilerContext) getDIFile(filename string) llvm.Metadata {
+func (c *context) getDIFile(filename string) llvm.Metadata {
 	if _, ok := c.difiles[filename]; !ok {
 		recordedPath := c.loaderPkg.RecordedPath(filename)
 		dir, file := filepath.Split(recordedPath)
@@ -887,7 +887,7 @@ func (c *compilerContext) getDIFile(filename string) llvm.Metadata {
 
 // createPackage builds the LLVM IR for all types, methods, and global variables
 // in the given package.
-func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package) {
+func (c *context) createPackage(irbuilder llvm.Builder, pkg *ssa.Package) {
 	// Sort by position, so that the order of the functions in the IR matches
 	// the order of functions in the source file. This is useful for testing,
 	// for example.
@@ -1027,7 +1027,7 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 }
 
 // createEmbedGlobal creates an initializer for a //go:embed global variable.
-func (c *compilerContext) createEmbedGlobal(member *ssa.Global, global llvm.Value, files []*loader.EmbedFile) {
+func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files []*loader.EmbedFile) {
 	switch typ := member.Type().(*types.Pointer).Elem().Underlying().(type) {
 	case *types.Basic:
 		// String type.
@@ -1192,7 +1192,7 @@ func (c *compilerContext) createEmbedGlobal(member *ssa.Global, global llvm.Valu
 
 // getEmbedFileString returns the (constant) string object with the contents of
 // the given file. This is a llvm.Value of a regular Go string.
-func (c *compilerContext) getEmbedFileString(file *loader.EmbedFile) llvm.Value {
+func (c *context) getEmbedFileString(file *loader.EmbedFile) llvm.Value {
 	dataGlobalName := "embed/file_" + file.Hash
 	dataGlobal := c.mod.NamedGlobal(dataGlobalName)
 	dataGlobalType := llvm.ArrayType(c.ctx.Int8Type(), int(file.Size))
@@ -1212,7 +1212,7 @@ func (c *compilerContext) getEmbedFileString(file *loader.EmbedFile) llvm.Value 
 // This is separated out from createFunction() so that it is also usable to
 // define compiler intrinsics like the atomic operations in sync/atomic.
 func (b *builder) createFunctionStart(intrinsic bool) {
-	if b.DumpSSA {
+	if b.dumpSSA {
 		fmt.Printf("\nfunc %s:\n", b.fn)
 	}
 	if !b.llvmFn.IsDeclaration() {
@@ -1438,7 +1438,7 @@ func (b *builder) createFunction() {
 	// Fill blocks with instructions.
 	b.loweringBody = true
 	for _, block := range b.fn.DomPreorder() {
-		if b.DumpSSA {
+		if b.dumpSSA {
 			fmt.Printf("%d: %s:\n", block.Index, block.Comment)
 		}
 		b.currentBlock = block
@@ -1469,7 +1469,7 @@ func (b *builder) createFunction() {
 				}, b.GetInsertBlock())
 				continue
 			}
-			if b.DumpSSA {
+			if b.dumpSSA {
 				if val, ok := instr.(ssa.Value); ok && val.Name() != "" {
 					fmt.Printf("\t%s = %s\n", val.Name(), val.String())
 				} else {
@@ -1532,7 +1532,7 @@ func (b *builder) createFunction() {
 
 	// Create anonymous functions (closures etc.).
 	for _, sub := range b.fn.AnonFuncs {
-		b := newBuilder(b.compilerContext, b.Builder, sub)
+		b := newBuilder(b.context, b.Builder, sub)
 		b.llvmFn.SetLinkage(llvm.InternalLinkage)
 		b.createFunction()
 	}
@@ -1752,7 +1752,7 @@ func (b *builder) getValuePointer(value ssa.Value) llvm.Value {
 // memory is compared with memequal instead of field by field.
 const structCompareUnrollSize = 64
 
-func (c *compilerContext) isMemequalComparison(expr *ssa.BinOp) bool {
+func (c *context) isMemequalComparison(expr *ssa.BinOp) bool {
 	if expr.Op != token.EQL && expr.Op != token.NEQ {
 		return false
 	}
@@ -1767,7 +1767,7 @@ func (c *compilerContext) isMemequalComparison(expr *ssa.BinOp) bool {
 
 // isPlainComparable reports whether two values of typ are equal exactly when
 // their memory is: no blank fields, no padding, only binary comparable fields.
-func (c *compilerContext) isPlainComparable(typ types.Type) bool {
+func (c *context) isPlainComparable(typ types.Type) bool {
 	switch typ := typ.Underlying().(type) {
 	case *types.Struct:
 		size := uint64(0)
@@ -2648,7 +2648,7 @@ func (b *builder) getValue(expr ssa.Value, pos token.Pos) llvm.Value {
 
 // maxSliceSize determines the maximum size a slice of the given element type
 // can be.
-func (c *compilerContext) maxSliceSize(elementType llvm.Type) uint64 {
+func (c *context) maxSliceSize(elementType llvm.Type) uint64 {
 	// Calculate ^uintptr(0), which is the max value that fits in uintptr.
 	maxPointerValue := llvm.ConstNot(llvm.ConstInt(c.uintptrType, 0, false)).ZExtValue()
 	// Calculate (^uint(0))/2, which is the max value that fits in an int.
@@ -2674,7 +2674,7 @@ func (c *compilerContext) maxSliceSize(elementType llvm.Type) uint64 {
 const goHeapAddressBits = 48
 
 // maxSliceAllocationSize determines the maximum length of an allocated slice.
-func (c *compilerContext) maxSliceAllocationSize(elementType llvm.Type) uint64 {
+func (c *context) maxSliceAllocationSize(elementType llvm.Type) uint64 {
 	maxSize := c.maxSliceSize(elementType)
 	if c.uintptrType.IntTypeWidth() <= goHeapAddressBits {
 		return maxSize
@@ -3700,7 +3700,7 @@ func (b *builder) createBinOp(op token.Token, typ, ytyp types.Type, x, y llvm.Va
 }
 
 // createConst creates a LLVM constant value from a Go constant.
-func (c *compilerContext) createConst(expr *ssa.Const, pos token.Pos) llvm.Value {
+func (c *context) createConst(expr *ssa.Const, pos token.Pos) llvm.Value {
 	switch typ := expr.Type().Underlying().(type) {
 	case *types.Basic:
 		llvmType := c.getLLVMType(typ)

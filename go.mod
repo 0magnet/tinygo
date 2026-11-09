@@ -19,7 +19,7 @@ require (
 	golang.org/x/tools v0.52.0
 	gopkg.in/yaml.v2 v2.4.0
 	tinygo.org/x/espflasher v0.9.2
-	tinygo.org/x/go-llvm v0.0.0-20261104221029-b755dbb04265
+	tinygo.org/x/go-llvm v0.0.0-20261107095043-be64e5d735f4
 )
 
 require (
@@ -45,6 +45,7 @@ require (
 	go.bytecodealliance.org/cm v0.3.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
 
@@ -52,4 +53,5 @@ tool (
 	github.com/golangci/misspell/cmd/misspell
 	github.com/mgechev/revive
 	go.bytecodealliance.org/cmd/wit-bindgen-go
+	golang.org/x/tools/cmd/deadcode
 )

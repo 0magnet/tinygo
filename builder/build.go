@@ -33,7 +33,6 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
 	"github.com/tinygo-org/tinygo/interp"
 	"github.com/tinygo-org/tinygo/loader"
@@ -282,7 +281,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 	}
 	if config.TestConfig.CompileTestBinary && !strings.HasSuffix(result.ImportPath, ".test") {
 		// Validate the package even when there is no test binary to build.
-		return result, loader.NoTestFilesError{ImportPath: result.ImportPath}
+		return result, &loader.NoTestFilesError{ImportPath: result.ImportPath}
 	}
 	compilerConfig.ReflectMethods = lprogram.UsesReflectMethod()
 
@@ -1011,7 +1010,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 				ldflags = append(ldflags, "--lto-O"+strconv.Itoa(speedLevel))
 				// LLD 15 embeds cache paths in OSO symbols, unlike LLD 16+.
 				// Fixed in LLD 16 by https://reviews.llvm.org/D131624.
-				if !config.TrimPath() || llvmutil.Version() >= 16 {
+				if !config.TrimPath() || llvm.VersionMajor >= 16 {
 					ldflags = append(ldflags, "-cache_path_lto", filepath.Join(cacheDir, "thinlto"))
 				}
 				if config.TrimPath() {
@@ -1844,13 +1843,6 @@ func lock(path string) func() {
 	}
 
 	return func() { flock.Close() }
-}
-
-func b2u8(b bool) uint8 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // moduleBuildInfo constructs the module build-info string embedded into the

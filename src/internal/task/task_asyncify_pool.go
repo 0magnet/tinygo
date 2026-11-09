@@ -1,4 +1,4 @@
-//go:build scheduler.asyncify
+//go:build scheduler.asyncify && !gc.leaking
 
 package task
 

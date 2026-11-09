@@ -26,6 +26,7 @@ func TestBuild(t *testing.T) {
 		"calls.go",
 		"cgo/",
 		"channel.go",
+		"chanrecover.go",
 		"coreassign.go",
 		"embed/",
 		"finalizer.go",
@@ -426,6 +427,14 @@ func TestBuild(t *testing.T) {
 				runTest("cgo-realloc/", options, t, nil, nil)
 			})
 
+			// Test that -gc=leaking reuses the stacks of exited goroutines.
+			t.Run("goroutines-leaking", func(t *testing.T) {
+				t.Parallel()
+				optionsLeaking := optionsFromTarget("wasip1", sema)
+				optionsLeaking.GC = "leaking"
+				runTest("goroutines-leaking.go", optionsLeaking, t, nil, nil)
+			})
+
 			// Test with -gc=boehm.
 			t.Run("gc.go-boehm", func(t *testing.T) {
 				t.Parallel()
@@ -591,6 +600,10 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				// Does not pass due to high mark false positive rate.
 				continue
 
+			case "chanrecover.go":
+				// runtime.GC in testdata/chanrecover.go crashes in the AVR stack scanner.
+				continue
+
 			case "buildinfo.go", "json.go", "stdlib.go", "testing.go":
 				// Too big for AVR. Doesn't fit in flash/RAM.
 				continue
@@ -649,7 +662,7 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			t.Parallel()
 			testOptions := compileopts.Options(options)
 			switch name {
-			case "finalizerinvariants.go", "finalizerlarge.go", "interface.go", "interface-blank.go":
+			case "chanrecover.go", "finalizerinvariants.go", "finalizerlarge.go", "interface.go", "interface-blank.go":
 				testOptions.Tags = append(append([]string(nil), options.Tags...), "runtime_asserts")
 			}
 			if testOptions.Target == "simavr" && (name == "math.go" || name == "string.go") {

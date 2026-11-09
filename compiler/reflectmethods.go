@@ -13,7 +13,7 @@ import (
 
 // createReflectMethodTables emits {typecode, len, [len]{name, func type, func}}
 // for each type in c.reflectTypes, as methodTable in internal/reflectlite reads.
-func (c *compilerContext) createReflectMethodTables() {
+func (c *context) createReflectMethodTables() {
 	var tables []llvm.Value
 	for i := 0; i < len(c.reflectTypes); i++ {
 		if table := c.createReflectMethodTable(c.reflectTypes[i]); !table.IsNil() {
@@ -28,7 +28,7 @@ func (c *compilerContext) createReflectMethodTables() {
 	llvmutil.AppendToGlobal(c.mod, "tinygo.reflectmethods", tables...)
 }
 
-func (c *compilerContext) createReflectMethodTable(typ types.Type) llvm.Value {
+func (c *context) createReflectMethodTable(typ types.Type) llvm.Value {
 	typeCodeName, isLocal := c.getTypeCodeName(typ)
 	_, isInterface := typ.Underlying().(*types.Interface)
 	var methods []*types.Selection
@@ -84,7 +84,7 @@ func (c *compilerContext) createReflectMethodTable(typ types.Type) llvm.Value {
 }
 
 // getReflectMethodName returns a pointer to the bytes of a method name.
-func (c *compilerContext) getReflectMethodName(name string) llvm.Value {
+func (c *context) getReflectMethodName(name string) llvm.Value {
 	globalName := "reflect/types.methodname:" + name
 	global := c.mod.NamedGlobal(globalName)
 	if global.IsNil() {
@@ -101,7 +101,7 @@ func (c *compilerContext) getReflectMethodName(name string) llvm.Value {
 
 // getReflectMethodFunc returns a func of type funcType that calls the invoke
 // wrapper of method with its context as the receiver, or nil if it cannot.
-func (c *compilerContext) getReflectMethodFunc(method *types.Selection, funcType *types.Signature, isLocal bool) llvm.Value {
+func (c *context) getReflectMethodFunc(method *types.Selection, funcType *types.Signature, isLocal bool) llvm.Value {
 	fn := c.program.MethodValue(method)
 	if fn == nil {
 		return llvm.Value{}
@@ -148,8 +148,8 @@ func (c *compilerContext) getReflectMethodFunc(method *types.Selection, funcType
 	}
 	f.SetUnnamedAddr(true)
 	b := &builder{
-		compilerContext: c,
-		Builder:         c.ctx.NewBuilder(),
+		context: c,
+		Builder: c.ctx.NewBuilder(),
 	}
 	defer b.Dispose()
 	if c.Debug {
