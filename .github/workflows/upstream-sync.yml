@@ -69,6 +69,15 @@ jobs:
           d=$(git rev-list --count origin/dev..upstream/dev)
           echo "upstream/dev is $d commits ahead of dev"
           echo "dev_behind=$d" >> "$GITHUB_OUTPUT"
+      # dev mirrors upstream and this file is all it adds, so it never waits on
+      # a develop conflict or test failure.
+      - name: Push dev
+        if: ${{ !inputs.dry_run && steps.fetch.outputs.dev_behind != '0' }}
+        run: |
+          git checkout -q -B dev origin/dev
+          git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into dev" upstream/dev
+          git push origin dev
+          git checkout -q develop
       - name: Merge upstream into develop
         if: steps.fetch.outputs.behind != '0'
         run: |
@@ -99,11 +108,10 @@ jobs:
         run: |
           git submodule update --init src/net
           go test -tags llvm$LLVM ./compiler ./interp ./transform ./compileopts
-      - name: Push develop and dev
-        if: ${{ !inputs.dry_run }}
+      - name: Push develop
+        if: ${{ !inputs.dry_run && steps.fetch.outputs.behind != '0' }}
         env:
           BEHIND: ${{ steps.fetch.outputs.behind }}
-          DEV_BEHIND: ${{ steps.fetch.outputs.dev_behind }}
         run: |
           if [ "$BEHIND" != 0 ]; then
             git push origin HEAD:develop
@@ -111,12 +119,6 @@ jobs:
             # the toolchain explicitly. (With SYNC_TOKEN the push started one
             # too; the Toolchain workflow keeps only the newest of the two.)
             gh workflow run toolchain.yml --ref develop
-          fi
-          # dev mirrors upstream; this file is all it adds.
-          if [ "$DEV_BEHIND" != 0 ]; then
-            git checkout -q -B dev origin/dev
-            git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into dev" upstream/dev
-            git push origin dev
           fi
       - name: Report the failure
         if: failure() && !inputs.dry_run
