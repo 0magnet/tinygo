@@ -1,10 +1,10 @@
-//go:build linux && !baremetal && !tinygo.wasm && !nintendoswitch
+//go:build !baremetal && !tinygo.wasm && !nintendoswitch
 
 package os
 
 import "syscall"
 
-// Hostname follows Go's linux implementation: uname, then procfs.
+// Hostname tries uname and then procfs, as Go's linux implementation does.
 func Hostname() (name string, err error) {
 	var un syscall.Utsname
 	if err := syscall.Uname(&un); err == nil {

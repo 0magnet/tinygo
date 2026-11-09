@@ -18,7 +18,7 @@ func allocStack(s *state, size uintptr) unsafe.Pointer {
 
 func linkTask(t *Task) {}
 
-// unlinkStack does nothing here, since only asyncify keeps a list of stacks.
+// unlinkStack does nothing here, since only mapped stacks are kept in a list.
 func unlinkStack(t *Task) {}
 
 // releaseStack does nothing, since these stacks are on the heap.

@@ -80,7 +80,6 @@ func wasmExportExit() {
 	if finalizerIdleGC != nil {
 		task.MarkFinishing()
 	}
-	task.DetachStack()
 
 	task.Pause()
 
