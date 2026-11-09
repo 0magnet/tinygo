@@ -544,6 +544,44 @@ func TestTinySetCap(t *testing.T) {
 	})
 }
 
+func TestTinySetLen(t *testing.T) {
+	slice := []int{1, 2, 3}
+	value := ValueOf(&slice).Elem()
+	value.SetLen(1)
+	if len(slice) != 1 || cap(slice) != 3 || slice[0] != 1 {
+		t.Fatalf("SetLen changed the wrong slice data: %v, cap %d", slice, cap(slice))
+	}
+	value.SetLen(3)
+	shouldPanic("", func() { value.SetLen(-1) })
+	shouldPanic("", func() { value.SetLen(4) })
+	shouldPanic("", func() { ValueOf(slice).SetLen(1) })
+	shouldPanic("", func() { ValueOf(new(int)).Elem().SetLen(1) })
+
+	fields := struct{ slice []int }{slice}
+	shouldPanic("", func() { ValueOf(&fields).Elem().Field(0).SetLen(1) })
+	if len(fields.slice) != 3 {
+		t.Fatal("SetLen changed an unexported field")
+	}
+}
+
+func TestSliceAtSet(t *testing.T) {
+	array := [3]int{1, 2, 3}
+	value := SliceAt(TypeOf(0), unsafe.Pointer(&array[0]), len(array))
+	if got, want := value.Type(), TypeOf([]int{}); got != want {
+		t.Fatalf("SliceAt type = %v, want %v", got, want)
+	}
+	if got, want := value.Len(), len(array); got != want {
+		t.Fatalf("SliceAt len = %d, want %d", got, want)
+	}
+	if got, want := value.Cap(), len(array); got != want {
+		t.Fatalf("SliceAt cap = %d, want %d", got, want)
+	}
+	value.Index(1).SetInt(4)
+	if array[1] != 4 {
+		t.Fatalf("SliceAt update = %d, want 4", array[1])
+	}
+}
+
 func TestTinyBytes(t *testing.T) {
 	s := []byte("abcde")
 	refs := ValueOf(s)
@@ -1171,11 +1209,6 @@ func (v testTypeWithMethod) String() string { return v.val }
 func (v testTypeWithMethod) M()             {}
 
 func TestTypeAssertPanic(t *testing.T) {
-	if runtime.GOARCH == "wasm" {
-		t.Log("recover not supported")
-		return
-	}
-
 	t.Run("zero val", func(t *testing.T) {
 		defer func() { recover() }()
 		TypeAssert[int](Value{})
@@ -1265,18 +1298,6 @@ func TestTinyMakeChan(t *testing.T) {
 			t.Errorf("<-ch=%q, want %q", got, want)
 		}
 	})
-
-	// The three cases below rely on recovering from a panic, which wasm
-	// cannot do yet without exceptions. Log and return rather than Skip:
-	// t.Skip needs the same machinery it is standing in for.
-	//
-	// Checked on GOARCH rather than GOOS because the limitation is wasm's, not
-	// any one platform's: this covers wasip1, wasip2 and js/wasm alike.
-	// TODO: drop this once tinygo-org/tinygo#5550 lands.
-	if runtime.GOARCH == "wasm" {
-		t.Log("not running the panic cases: panic/recover on wasm needs #5550")
-		return
-	}
 
 	t.Run("not a channel", func(t *testing.T) {
 		defer func() { recover() }()

@@ -1,6 +1,6 @@
 module github.com/tinygo-org/tinygo
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/aykevl/go-wasm v0.0.2-0.20250317121156-42b86c494139
@@ -20,7 +20,7 @@ require (
 	golang.org/x/tools v0.47.0
 	gopkg.in/yaml.v2 v2.4.0
 	tinygo.org/x/espflasher v0.9.2
-	tinygo.org/x/go-llvm v0.0.0-20261023230756-8136c9aa7bda
+	tinygo.org/x/go-llvm v0.0.0-20261107095043-be64e5d735f4
 )
 
 require (
@@ -49,6 +49,7 @@ require (
 	go.bytecodealliance.org v0.6.2 // indirect
 	go.bytecodealliance.org/cm v0.2.2 // indirect
 	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260625142307-59b4966ccb57 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
 
@@ -56,4 +57,5 @@ tool (
 	github.com/golangci/misspell/cmd/misspell
 	github.com/mgechev/revive
 	go.bytecodealliance.org/cmd/wit-bindgen-go
+	golang.org/x/tools/cmd/deadcode
 )

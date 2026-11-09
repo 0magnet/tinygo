@@ -33,7 +33,6 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
 	"github.com/tinygo-org/tinygo/interp"
 	"github.com/tinygo-org/tinygo/loader"
@@ -181,6 +180,12 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 		defer unlock()
 		libcDependencies = append(libcDependencies, dummyCompileJob(filepath.Join(filepath.Dir(libcJob.result), "crt1.o")))
 		libcDependencies = append(libcDependencies, libcJob)
+	case "glibc":
+		libDir, err := compileopts.GlibcLibDir(config.GOARCH())
+		if err != nil {
+			return nil, err
+		}
+		libcDependencies = append(libcDependencies, glibcStartupJobs(libDir)...)
 	case "picolibc":
 		libcJob, unlock, err := libPicolibc.load(config, tmpdir)
 		if err != nil {
@@ -258,6 +263,9 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 	if err != nil {
 		return nil, err
 	}
+	if _, ok := globalValues["runtime"]["godebugDefault"]; !ok {
+		globalValues["runtime"]["godebugDefault"] = lprogram.MainPkg().DefaultGODEBUG
+	}
 	result := &BuildResult{
 		ModuleRoot: lprogram.MainPkg().Module.Dir,
 		MainDir:    lprogram.MainPkg().Dir,
@@ -273,7 +281,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 	}
 	if config.TestConfig.CompileTestBinary && !strings.HasSuffix(result.ImportPath, ".test") {
 		// Validate the package even when there is no test binary to build.
-		return result, loader.NoTestFilesError{ImportPath: result.ImportPath}
+		return result, &loader.NoTestFilesError{ImportPath: result.ImportPath}
 	}
 
 	// Embed module build information so runtime/debug.ReadBuildInfo() works,
@@ -492,7 +500,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 					flags = append(flags, "-working-directory="+tmpdir)
 					if config.TrimPath() {
 						flags = append(flags,
-							"-ffile-prefix-map="+tmpdir+"="+config.CSourcePath(pkg.RecordedDir()),
+							compileopts.FilePrefixMap(tmpdir, config.CSourcePath(pkg.RecordedDir())),
 						)
 					}
 					if config.Options.PrintCommands != nil {
@@ -838,10 +846,6 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 		if !strings.HasPrefix(config.Triple(), "wasm32-") {
 			return nil, fmt.Errorf("buildmode wasi-legacy is only supported on wasm")
 		}
-
-		if config.Options.Scheduler != "none" {
-			return nil, fmt.Errorf("buildmode wasi-legacy only supports scheduler=none")
-		}
 	}
 
 	// Add compiler-rt dependency if needed. Usually this is a simple load from
@@ -990,7 +994,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 				ldflags = append(ldflags, "--lto-O"+strconv.Itoa(speedLevel))
 				// LLD 15 embeds cache paths in OSO symbols, unlike LLD 16+.
 				// Fixed in LLD 16 by https://reviews.llvm.org/D131624.
-				if !config.TrimPath() || llvmutil.Version() >= 16 {
+				if !config.TrimPath() || llvm.VersionMajor >= 16 {
 					ldflags = append(ldflags, "-cache_path_lto", filepath.Join(cacheDir, "thinlto"))
 				}
 				if config.TrimPath() {
@@ -1387,6 +1391,9 @@ func createEmbedObjectFile(data, hexSum, sourceFile, sourceDir, tmpdir string, c
 // needed to convert a program to its final form. Some transformations are not
 // optional and must be run as the compiler expects them to run.
 func optimizeProgram(mod llvm.Module, config *compileopts.Config) error {
+	if err := transform.PrepareRuntimeStartup(mod); err != nil {
+		return err
+	}
 	err := interp.Run(mod, config.Options.InterpTimeout, config.Options.InterpMaxLoopIterations, config.DumpSSA())
 	if err != nil {
 		return err
@@ -1804,13 +1811,6 @@ func lock(path string) func() {
 	}
 
 	return func() { flock.Close() }
-}
-
-func b2u8(b bool) uint8 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // moduleBuildInfo constructs the module build-info string embedded into the

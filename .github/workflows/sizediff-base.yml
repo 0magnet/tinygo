@@ -23,8 +23,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          submodules: true
           persist-credentials: false
+      - uses: ./.github/actions/submodules
       - name: Install Go
         uses: actions/setup-go@v6
         with:
@@ -52,7 +52,7 @@ jobs:
         with:
           key: sizediff-base-go-modules-v1-${{ hashFiles('go.sum', 'drivers/go.sum') }}
           path: ~/go/pkg/mod
-      - run: make gen-device -j4
+      - uses: ./.github/actions/gen-device
         if: steps.base-cache.outputs.cache-hit != 'true'
       - name: Build tinygo binary for the dev branch
         if: steps.base-cache.outputs.cache-hit != 'true'

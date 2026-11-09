@@ -329,7 +329,7 @@ func Test(pkgName string, standardPackage bool, stdout, stderr io.Writer, option
 	if logToStdout {
 		w = os.Stdout
 	}
-	if err, ok := err.(loader.NoTestFilesError); ok {
+	if err, ok := errors.AsType[*loader.NoTestFilesError](err); ok {
 		fmt.Fprintf(w, "?   \t%s\t[no test files]\n", err.ImportPath)
 		// Pretend the test passed - it at least didn't fail.
 		return true, nil
@@ -1363,7 +1363,7 @@ func getDefaultPort(portFlag string, usbInterfaces []string) (port string, err e
 						if uint16(vid) == id[0] && uint16(pid) == id[1] {
 							primaryPorts = append(primaryPorts, p.Name)
 							foundPort = true
-							continue
+							break
 						}
 					}
 				}
@@ -1792,6 +1792,7 @@ func main() {
 
 	opt := flag.String("opt", "z", "optimization level: 0, 1, 2, s, z")
 	gc := flag.String("gc", "", "garbage collector to use (none, leaking, conservative, custom, precise, boehm)")
+	libc := flag.String("libc", "", "libc to use on linux (musl, glibc)")
 	panicStrategy := flag.String("panic", "print", "panic strategy (print, trap)")
 	panicUnwind := flag.String("panic-unwind", "", "panic unwind strategy (auto, explicit, none)")
 	scheduler := flag.String("scheduler", "", "which scheduler to use (none, tasks, cores, threads, asyncify)")
@@ -1974,6 +1975,7 @@ func main() {
 		Monitor:                 *monitor,
 		BaudRate:                *baudrate,
 		Timeout:                 *timeout,
+		Libc:                    *libc,
 		WITPackage:              witPackage,
 		WITWorld:                witWorld,
 		GoCompatibility:         *gocompatibility,
