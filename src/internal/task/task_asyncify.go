@@ -39,6 +39,9 @@ type state struct {
 	// running is set while Resume runs this task, so a task that resumed
 	// another from a JS callback is known to have frames below csp.
 	running bool
+
+	// listLinks is last: task_asyncify_wasm.S uses the offsets of the fields above.
+	listLinks
 }
 
 const hasReleasableStack = true

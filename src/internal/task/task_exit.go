@@ -14,6 +14,7 @@ func addLiveTask(t *Task) {
 	if mainTask == nil {
 		mainTask = t
 	}
+	listTask(t)
 	atomic.AddUint32(&liveTasks, 1)
 }
 
@@ -45,6 +46,7 @@ func exit(goexit bool, next *Task) {
 		synctestTaskWake(next)
 	}
 	exitSynctest(t)
+	unlistTask(t)
 	remaining := atomic.AddUint32(&liveTasks, ^uint32(0))
 	if t == mainTask {
 		if goexit {

@@ -1,4 +1,4 @@
-//go:build !(scheduler.tasks || scheduler.cores)
+//go:build !(scheduler.tasks || scheduler.cores) && !(scheduler.asyncify && goroutinelist)
 
 package task
 
