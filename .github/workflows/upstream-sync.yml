@@ -15,7 +15,8 @@
 # The push uses the SYNC_TOKEN secret when there is one, else the workflow's
 # own token. The workflow token cannot push a merge that changes a file under
 # .github/workflows, which upstream does now and then; SYNC_TOKEN, a token with
-# the workflow scope, can.
+# the workflow scope, can. Without it such a merge is left unpushed and the
+# issue says how to push it by hand.
 name: Upstream sync
 
 on:
@@ -47,6 +48,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
       LLVM: '23'
     steps:
       - name: Checkout develop
@@ -72,11 +74,18 @@ jobs:
       # dev mirrors upstream and this file is all it adds, so it never waits on
       # a develop conflict or test failure.
       - name: Push dev
+        id: dev
         if: ${{ !inputs.dry_run && steps.fetch.outputs.dev_behind != '0' }}
         run: |
           git checkout -q -B dev origin/dev
           git merge --no-edit -m "Merge remote-tracking branch 'upstream/dev' into dev" upstream/dev
-          git push origin dev
+          if [ "$HAS_SYNC_TOKEN" != true ] && ! git diff --quiet origin/dev HEAD -- .github/workflows; then
+            git diff --name-only origin/dev HEAD -- .github/workflows > "$RUNNER_TEMP/workflows-dev.txt"
+            echo "::warning::dev not pushed, the workflow token cannot change $(paste -sd' ' "$RUNNER_TEMP/workflows-dev.txt")"
+            echo "waiting=dev" >> "$GITHUB_OUTPUT"
+          else
+            git push origin dev
+          fi
           git checkout -q develop
       - name: Merge upstream into develop
         if: steps.fetch.outputs.behind != '0'
@@ -109,16 +118,37 @@ jobs:
           git submodule update --init src/net
           go test -tags llvm$LLVM ./compiler ./interp ./transform ./compileopts
       - name: Push develop
+        id: develop
         if: ${{ !inputs.dry_run && steps.fetch.outputs.behind != '0' }}
-        env:
-          BEHIND: ${{ steps.fetch.outputs.behind }}
         run: |
-          if [ "$BEHIND" != 0 ]; then
-            git push origin HEAD:develop
-            # A push with the workflow token starts no workflow, so ask for
-            # the toolchain explicitly. (With SYNC_TOKEN the push started one
-            # too; the Toolchain workflow keeps only the newest of the two.)
-            gh workflow run toolchain.yml --ref develop
+          if [ "$HAS_SYNC_TOKEN" != true ] && ! git diff --quiet origin/develop HEAD -- .github/workflows; then
+            git diff --name-only origin/develop HEAD -- .github/workflows > "$RUNNER_TEMP/workflows-develop.txt"
+            echo "::warning::develop not pushed, the workflow token cannot change $(paste -sd' ' "$RUNNER_TEMP/workflows-develop.txt")"
+            echo "waiting=develop" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git push origin HEAD:develop
+          # A push with the workflow token starts no workflow, so ask for
+          # the toolchain explicitly. (With SYNC_TOKEN the push started one
+          # too; the Toolchain workflow keeps only the newest of the two.)
+          gh workflow run toolchain.yml --ref develop
+      # Without SYNC_TOKEN a merge that changes a workflow file stays unpushed.
+      - name: Report a merge that waits for a push
+        if: ${{ !cancelled() && !inputs.dry_run && (steps.dev.outputs.waiting || steps.develop.outputs.waiting) }}
+        env:
+          WAITING: ${{ steps.dev.outputs.waiting }} ${{ steps.develop.outputs.waiting }}
+        run: |
+          title='Upstream sync needs a hand'
+          files=$(sort -u "$RUNNER_TEMP"/workflows-*.txt | sed 's/.*/`&`/' | paste -sd, -)
+          body="The [upstream sync]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) did not push its merge of tinygo-org/tinygo dev to: $WAITING. The merge changes $files, which the workflow token cannot push. Push it by hand from a clone with an upstream remote, or add a SYNC_TOKEN secret that can write workflows."
+          for b in $WAITING; do
+            body="$body"$'\n\n'"\`git fetch upstream dev && git checkout $b && git pull --ff-only origin $b && git merge --no-edit upstream/dev && git push origin $b\`"
+          done
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
           fi
       - name: Report the failure
         if: failure() && !inputs.dry_run
