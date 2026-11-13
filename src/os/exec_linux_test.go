@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	. "os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -126,5 +127,28 @@ func TestForkExecKill(t *testing.T) {
 	ws := state.Sys().(syscall.WaitStatus)
 	if !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
 		t.Fatalf("wanted SIGKILL, got %v", state)
+	}
+}
+
+// The caller keeps running and the command runs once.
+func TestForkExecParentContinues(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	proc, err := StartProcess("/bin/sh", []string{"sh", "-c", "echo child >> " + out}, &ProcAttr{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ws syscall.WaitStatus
+	if _, err := syscall.Wait4(proc.Pid, &ws, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !ws.Exited() || ws.ExitStatus() != 0 {
+		t.Fatalf("child did not exit cleanly: %v", ws)
+	}
+	data, err := ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "child\n" {
+		t.Fatalf("child output = %q, want %q", data, "child\n")
 	}
 }

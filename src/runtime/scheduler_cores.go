@@ -149,8 +149,31 @@ func assignCore(core int) {
 	task.PauseLocked()
 }
 
+// reserveTimerRoom makes sure the timer queue can take one more node, plus one
+// re-added node for each core running a timer callback, without allocating.
+// Allocating with the lock held can start a GC that waits for a core spinning on
+// the lock with interrupts off. The lock is released while allocating. Call with
+// the scheduler lock held.
+func reserveTimerRoom() {
+	for {
+		need := timerQueueRoom(numCPU)
+		if !timerQueueFull(need) {
+			return
+		}
+		n := 2*need + 1
+		if timerQueue != nil && 2*cap(timerQueue.nodes)+1 > n {
+			n = 2*cap(timerQueue.nodes) + 1
+		}
+		schedulerLock.Unlock()
+		h := &timerHeap{nodes: make([]*timerNode, 0, n)}
+		schedulerLock.Lock()
+		timerQueueGrow(h)
+	}
+}
+
 func addTimer(tn *timerNode) {
-	lockSchedulerWithTimerRoom()
+	schedulerLock.Lock()
+	reserveTimerRoom()
 	timerQueueAdd(tn)
 	interruptSleepTicksMulticore(tn.whenTicks())
 	schedulerLock.Unlock()
@@ -159,7 +182,7 @@ func addTimer(tn *timerNode) {
 // reAddTimer finishes firing a timer. It re-adds periodic timers unless they
 // were stopped or reset while the callback was running.
 func reAddTimer(tn *timerNode) {
-	lockSchedulerWithTimerRoom()
+	schedulerLock.Lock()
 
 	// Remove the timer from the firing list before re-adding it to the queue,
 	// so that another core popping it off the queue can't insert it into the
@@ -404,6 +427,17 @@ func unlockAtomics(mask interrupt.State) {
 	interrupt.Restore(mask)
 }
 
+// lockTimers takes the scheduler lock, which guards the timer queue and the
+// timer node free list.
+func lockTimers() interrupt.State {
+	schedulerLock.Lock()
+	return 0
+}
+
+func unlockTimers(mask interrupt.State) {
+	schedulerLock.Unlock()
+}
+
 var systemStack [numCPU]uintptr
 
 // Implementation detail of the internal/task package.
@@ -452,34 +486,3 @@ func printunlock() {
 		printLock.Unlock()
 	}
 }
-
-// lockSchedulerWithTimerRoom takes the scheduler lock once the timer queue
-// has room for one more timer. Growing the queue allocates, and an allocation
-// can wake a task, which takes the scheduler lock, so it must happen unlocked.
-func lockSchedulerWithTimerRoom() {
-	for {
-		schedulerLock.Lock()
-		if timerQueue != nil && len(timerQueue.nodes) < cap(timerQueue.nodes) {
-			return
-		}
-		n := 16
-		if timerQueue != nil {
-			n = 2 * cap(timerQueue.nodes)
-		}
-		schedulerLock.Unlock()
-
-		h := new(timerHeap)
-		nodes := make([]*timerNode, 0, n)
-		schedulerLock.Lock()
-		if timerQueue == nil {
-			timerQueue = h
-		}
-		if cap(timerQueue.nodes) < n && len(timerQueue.nodes) <= n {
-			timerQueue.nodes = append(nodes, timerQueue.nodes...)
-		}
-		schedulerLock.Unlock()
-	}
-}
-
-func lockTimerNodes()   { schedulerLock.Lock() }
-func unlockTimerNodes() { schedulerLock.Unlock() }

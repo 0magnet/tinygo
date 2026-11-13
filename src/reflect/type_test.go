@@ -371,6 +371,82 @@ func TestMapOfRuntimeConstruction(t *testing.T) {
 	reflect.MapOf(reflect.TypeOf((func())(nil)), reflect.TypeOf(false))
 }
 
+func TestFunctionSignatureIdentity(t *testing.T) {
+	tests := []struct {
+		typ      reflect.Type
+		name     string
+		variadic bool
+	}{
+		{reflect.TypeFor[func([]int)](), "func([]int)", false},
+		{reflect.TypeFor[func(...int)](), "func(...int)", true},
+		{reflect.TypeFor[func(...string)](), "func(...string)", true},
+		{reflect.TypeFor[func([]string)](), "func([]string)", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.typ.String() != test.name || test.typ.IsVariadic() != test.variadic {
+				t.Errorf("signature = %v, variadic %v; want %s, variadic %v",
+					test.typ, test.typ.IsVariadic(), test.name, test.variadic)
+			}
+			if test.typ.NumIn() != 1 || test.typ.NumOut() != 0 {
+				t.Fatal("function signature counts changed")
+			}
+		})
+	}
+	if tests[0].typ == tests[1].typ || tests[2].typ == tests[3].typ {
+		t.Fatal("fixed and variadic functions have the same type")
+	}
+}
+
+func TestFunctionResultCount(t *testing.T) {
+	type manyResults func() (
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+	)
+	type manyVariadicResults func(...int) (
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+		int, int, int, int, int, int, int, int,
+	)
+	for i, typ := range []reflect.Type{reflect.TypeFor[manyResults](), reflect.TypeFor[manyVariadicResults]()} {
+		if typ.NumIn() != i || typ.NumOut() != 128 || typ.IsVariadic() != (i != 0) {
+			t.Fatalf("function %v has %d inputs, %d outputs, variadic %v", typ, typ.NumIn(), typ.NumOut(), typ.IsVariadic())
+		}
+		for n := 0; n < typ.NumOut(); n++ {
+			if got := typ.Out(n); got != reflect.TypeFor[int]() {
+				t.Fatalf("Out(%d) = %v, want int", n, got)
+			}
+		}
+	}
+}
+
 func TestTypeFor(t *testing.T) {
 	type (
 		mystring string
@@ -706,5 +782,34 @@ func TestStructOfConcurrentConstruction(t *testing.T) {
 		if got := <-results; got != want {
 			t.Fatalf("concurrent StructOf returned %v, want %v", got, want)
 		}
+	}
+}
+
+func TestCanSeqFunction(t *testing.T) {
+	type namedBool bool
+
+	tests := []struct {
+		name     string
+		typ      reflect.Type
+		wantSeq  bool
+		wantSeq2 bool
+	}{
+		{"seq", reflect.TypeOf(func(func(int) bool) {}), true, false},
+		{"seq2", reflect.TypeOf(func(func(int, string) bool) {}), false, true},
+		{"no result", reflect.TypeOf(func(func(int)) {}), false, false},
+		{"named bool", reflect.TypeOf(func(func(int) namedBool) {}), false, false},
+		{"outer result", reflect.TypeOf(func(func(int) bool) bool { return false }), false, false},
+		{"two inputs", reflect.TypeOf(func(func(int) bool, int) {}), false, false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.typ.CanSeq(); got != test.wantSeq {
+				t.Errorf("CanSeq() = %v, want %v", got, test.wantSeq)
+			}
+			if got := test.typ.CanSeq2(); got != test.wantSeq2 {
+				t.Errorf("CanSeq2() = %v, want %v", got, test.wantSeq2)
+			}
+		})
 	}
 }

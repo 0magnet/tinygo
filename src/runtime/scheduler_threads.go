@@ -213,5 +213,13 @@ func unlockAtomics(mask interrupt.State) {
 	atomicsLock.Unlock()
 }
 
-func lockTimerNodes()   { timerQueueLock.Lock() }
-func unlockTimerNodes() { timerQueueLock.Unlock() }
+// lockTimers takes the timer queue lock, which also guards the timer node
+// free list.
+func lockTimers() interrupt.State {
+	timerQueueLock.Lock()
+	return 0
+}
+
+func unlockTimers(mask interrupt.State) {
+	timerQueueLock.Unlock()
+}

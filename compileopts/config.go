@@ -30,11 +30,13 @@ const (
 // builder.Library struct but that's hard to do since we want to know the
 // library path in advance in several places).
 var libVersions = map[string]int{
-	"musl":         3,
-	"bdwgc":        14,
-	"picolibc":     2,
-	"wasmbuiltins": 1,
-	"compiler-rt":  1,
+	"musl":             3,
+	"bdwgc":            14,
+	"picolibc":         2,
+	"wasmbuiltins":     1,
+	"compiler-rt":      1,
+	"wasi-libc":        1,
+	"wasi-libc-wasip2": 1,
 }
 
 // Config keeps all configuration affecting the build in a single struct.
@@ -570,6 +572,9 @@ func (c *Config) LDFlags() []string {
 	ldflags = append(ldflags, "-L", root)
 	if c.Target.LinkerScript != "" {
 		ldflags = append(ldflags, "-T", c.Target.LinkerScript)
+	}
+	if c.Target.Linker == "wasm-ld" && c.Scheduler() == "none" && c.Options.StackSize != 0 {
+		ldflags = append(ldflags, "-z", fmt.Sprintf("stack-size=%d", c.Options.StackSize))
 	}
 	ldflags = append(ldflags, c.Options.ExtLDFlags...)
 

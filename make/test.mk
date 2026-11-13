@@ -1,9 +1,13 @@
 # Test suites: compiler tests, standard library tests, benchmarks, and the corpus.
 
-.PHONY: test wasmtest
+.PHONY: test wasmtest golden-check
 
 test: check-nodejs-version
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GOTESTFLAGS) -timeout=1h -buildmode exe -tags "byollvm llvm23 osusergo" $(GOTESTPKGS)
+
+golden-check: ## Fail if regenerating the golden IR files changes them
+	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test -buildmode exe -tags "byollvm llvm22 osusergo" ./compiler ./transform -update
+	git diff --exit-code -- compiler/testdata transform/testdata
 
 # Standard library packages that pass tests on darwin, linux, wasi, and windows, but take over a minute in wasi
 TEST_PACKAGES_SLOW = \
@@ -224,8 +228,8 @@ TEST_OPTIONS_crypto/dsa := -short
 TEST_OPTIONS_crypto/sha256 := -skip='^(TestExtraMethods|TestAllocations|TestAllocatonsWithTypeAsserts)$$'
 TEST_OPTIONS_crypto/sha512 := -skip='^(TestExtraMethods|TestAllocations|TestAllocatonsWithTypeAsserts)$$'
 TEST_OPTIONS_strconv := -skip='^(TestCountMallocs|TestAllocationsFromBytes)$$'
-TEST_OPTIONS_unicode/utf16 := -skip='^(TestAllocationsDecode|TestRuneCountNonASCIIAllocation)$$'
-TEST_OPTIONS_unicode/utf8 := -skip='^(TestAllocationsDecode|TestRuneCountNonASCIIAllocation)$$'
+TEST_OPTIONS_unicode/utf16 := -skip='^(TestAllocationsDecode)$$'
+TEST_OPTIONS_unicode/utf8 := -skip='^(TestAllocationsDecode)$$'
 TEST_OPTIONS_context := -skip='^TestAllocs$$'
 TEST_OPTIONS_mime := -skip='^TestLookupMallocs$$'
 TEST_OPTIONS_net/textproto := -skip='^TestCommonHeaders$$'
@@ -256,8 +260,8 @@ tinygo-test: TEST_OPTIONS_testing/synctest := -skip='^(TestFatal|TestError|TestV
 tinygo-test-fast: HOST_TEST_STACK_SKIP_FLAG = $(TEST_SKIP_FLAG)
 
 tinygo-test-baremetal: TEST_OPTIONS_strconv := -skip='TestCountMallocs|TestAllocationsFromBytes'
-tinygo-test-baremetal: TEST_OPTIONS_unicode/utf16 := -skip='TestAllocationsDecode|TestRuneCountNonASCIIAllocation'
-tinygo-test-baremetal: TEST_OPTIONS_unicode/utf8 := -skip='TestAllocationsDecode|TestRuneCountNonASCIIAllocation'
+tinygo-test-baremetal: TEST_OPTIONS_unicode/utf16 := -skip='TestAllocationsDecode'
+tinygo-test-baremetal: TEST_OPTIONS_unicode/utf8 := -skip='TestAllocationsDecode'
 tinygo-test-baremetal: TEST_OPTIONS_reflect := -skip='TestMapIterSet'
 
 # Explicit options replace default flags, even when empty.

@@ -159,12 +159,6 @@ func libgc_set_free_space_divisor(uintptr)
 //export GC_gcollect_and_unmap
 func libgc_gcollect_and_unmap()
 
-//export GC_get_gc_no
-func libgc_get_gc_no() uintptr
-
-// poolGCCount is the number of collections so far, for sync.Pool.
-func poolGCCount() uint32 { return uint32(libgc_get_gc_no()) }
-
 // readMemProfileDepth is the number of pcs per site in readMemProfile.
 func readMemProfileDepth() int { return memProfDepth }
 

@@ -22,7 +22,7 @@ func (v Value) call(op string, in []Value, isSlice bool) []Value {
 		panic(&ValueError{Method: "reflect.Value." + op, Kind: v.Kind()})
 	}
 	t := v.typecode
-	ft := t.funcType(op)
+	ft := t.funcDescriptor()
 	// A func value is two words, so v.value points at it.
 	fn := *(*funcHeader)(v.value)
 	if fn.Code == nil {
@@ -42,7 +42,7 @@ func (v Value) call(op string, in []Value, isSlice bool) []Value {
 		if len(in) < fixed {
 			panic("reflect: Call with too few input arguments")
 		}
-		st := t.In(fixed)
+		st := t.in(fixed)
 		extra := MakeSlice(st, len(in)-fixed, len(in)-fixed)
 		for i := range len(in) - fixed {
 			extra.Index(i).Set(in[fixed+i])
@@ -55,10 +55,10 @@ func (v Value) call(op string, in []Value, isSlice bool) []Value {
 		panic("reflect: Call with too many input arguments")
 	}
 
-	argOffsets, argSize := tupleLayout(numIn, t.In)
+	argOffsets, argSize := tupleLayout(numIn, t.in)
 	args := allocWords(argSize)
 	for i, x := range in {
-		pt := t.In(i)
+		pt := t.in(i)
 		if !x.typecode.AssignableTo(pt) {
 			panic("reflect: " + op + " using " + x.typecode.String() + " as type " + pt.String())
 		}
@@ -66,7 +66,7 @@ func (v Value) call(op string, in []Value, isSlice bool) []Value {
 	}
 
 	numOut := t.NumOut()
-	resultOffsets, resultSize := tupleLayout(numOut, t.Out)
+	resultOffsets, resultSize := tupleLayout(numOut, t.out)
 	results := allocWords(resultSize)
 
 	// The call stub is a plain function; called as a func value it gets a
@@ -77,7 +77,7 @@ func (v Value) call(op string, in []Value, isSlice bool) []Value {
 
 	out := make([]Value, numOut)
 	for i := range out {
-		rt := t.Out(i)
+		rt := t.out(i)
 		p := unsafe.Add(results, resultOffsets[i])
 		// Results are not addressable: a small one is held in the Value
 		// itself, a larger one by a pointer without the indirect flag.
@@ -110,3 +110,6 @@ func tupleLayout(n int, at func(int) *RawType) (offsets []uintptr, size uintptr)
 	}
 	return offsets, size
 }
+
+func (t *RawType) in(i int) *RawType  { return t.In(i).(*RawType) }
+func (t *RawType) out(i int) *RawType { return t.Out(i).(*RawType) }

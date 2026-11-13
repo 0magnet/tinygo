@@ -265,21 +265,6 @@ type interfaceType struct {
 	methods methodSet
 }
 
-// funcType is a Func type descriptor. The params array holds numIn parameter
-// types followed by the result types; bit 15 of numOut (funcVariadic) marks a
-// variadic signature. ptrTo sits where it does in interfaceType.
-type funcType struct {
-	RawType
-	ptrTo  *RawType
-	numIn  uint16
-	numOut uint16
-	call   unsafe.Pointer
-	params [0]*RawType
-}
-
-// funcVariadic must match the constant in compiler/interface.go.
-const funcVariadic = 0x8000
-
 type arrayType struct {
 	RawType
 	numMethod uint16
@@ -383,6 +368,21 @@ type structField struct {
 	data unsafe.Pointer
 }
 
+// funcType is the type descriptor for function types. The high bit of numOut
+// marks a variadic function. The remaining bits hold the result count.
+// Parameter types are followed by result types in inOut. call is the stub
+// Value.Call uses, see compiler/reflectcall.go.
+type funcType struct {
+	RawType
+	numIn  uint8
+	numOut uint16
+	ptrTo  *RawType
+	call   unsafe.Pointer
+	inOut  [0]*RawType
+}
+
+const funcTypeVariadic = 0x8000
+
 // Method set, as emitted by the compiler.
 type methodSet struct {
 	length  uintptr
@@ -474,8 +474,10 @@ func pointerTo(t *RawType) *RawType {
 		// TODO(dgryski): This is blocking https://github.com/tinygo-org/tinygo/issues/3131
 		// We need to be able to create types that match existing types to prevent typecode equality.
 		panic("reflect: cannot make *****T type")
-	case Interface, Func:
+	case Interface:
 		return (*interfaceType)(unsafe.Pointer(t)).ptrTo
+	case Func:
+		return (*funcType)(unsafe.Pointer(t)).ptrTo
 	case Struct:
 		return (*structType)(unsafe.Pointer(t)).ptrTo
 	default:
@@ -545,29 +547,34 @@ func (t *RawType) String() string {
 		// TODO(dgryski): Needs actual method set info
 		return "interface {}"
 	case Func:
+		ft := t.funcDescriptor()
+		numIn := int(ft.numIn)
+		numOut := int(ft.numOut &^ funcTypeVariadic)
+		variadic := ft.numOut&funcTypeVariadic != 0
+		inOut := (*[1 << 16]*RawType)(unsafe.Pointer(&ft.inOut))
 		s := "func("
-		for i, n := 0, t.NumIn(); i < n; i++ {
+		for i := 0; i < numIn; i++ {
 			if i > 0 {
 				s += ", "
 			}
-			if i == n-1 && t.IsVariadic() {
-				s += "..." + t.In(i).elem().String()
+			if variadic && i == numIn-1 {
+				s += "..." + inOut[i].elem().String()
 			} else {
-				s += t.In(i).String()
+				s += inOut[i].String()
 			}
 		}
 		s += ")"
-		switch n := t.NumOut(); n {
+		switch numOut {
 		case 0:
 		case 1:
-			s += " " + t.Out(0).String()
+			s += " " + inOut[numIn].String()
 		default:
 			s += " ("
-			for i := 0; i < n; i++ {
+			for i := 0; i < numOut; i++ {
 				if i > 0 {
 					s += ", "
 				}
-				s += t.Out(i).String()
+				s += inOut[numIn+i].String()
 			}
 			s += ")"
 		}
@@ -651,6 +658,13 @@ func (t *RawType) Field(i int) StructField {
 		Offset:    uintptr(offset),
 		Index:     index,
 	}
+}
+
+// StructFieldName returns the name of field i of struct type t.
+func StructFieldName(t *RawType, i int) string {
+	_, field := t.rawFieldDescriptor(i)
+	_, name, _ := field.decode()
+	return name
 }
 
 // structFieldTag reads the tag that follows the NUL after name.
@@ -965,9 +979,6 @@ func (t *RawType) FieldAlign() int {
 
 // ConvertibleTo returns whether a value of type t can be converted to a variable of type u
 func (r *RawType) ConvertibleTo(u *RawType) bool {
-
-	// This logic is mostly copied from Value.CanConvert
-
 	switch r.Kind() {
 	case Int, Int8, Int16, Int32, Int64:
 		switch u.Kind() {
@@ -1034,25 +1045,89 @@ func (r *RawType) ConvertibleTo(u *RawType) bool {
 		}
 
 	case Pointer:
-		if !r.isNamed() && u.Kind() == Pointer && !u.isNamed() && r.elem().underlying() == u.elem().underlying() {
+		if !r.isNamed() && u.Kind() == Pointer && !u.isNamed() &&
+			haveIdenticalUnderlyingType(r.elem(), u.elem(), false) {
+			return true
+		}
+
+	case Chan:
+		if u.Kind() == Chan && r.underlying().ChanDir() == BothDir &&
+			(!r.isNamed() || !u.isNamed()) && r.elem() == u.elem() {
 			return true
 		}
 	}
 
-	if r.underlying() == u.underlying() {
+	if haveIdenticalUnderlyingType(r, u, false) {
 		return true
 	}
 
-	if u.Kind() == Interface && u.NumMethod() == 0 {
+	if u.Kind() == Interface && r.Implements(u) {
 		return true
 	}
-
-	// TODO(dgryski): Unimplemented
-	// struct types
-	// channels
 
 	return false
 
+}
+
+func haveIdenticalType(t, u *RawType, compareTags bool) bool {
+	if t == u {
+		return true
+	}
+	// Named types use declaration and argument identity, not display names.
+	// https://go.dev/ref/spec#Type_identity
+	if t.Kind() != u.Kind() || t.isNamed() || u.isNamed() {
+		return false
+	}
+	return haveIdenticalUnderlyingType(t, u, compareTags)
+}
+
+func haveIdenticalUnderlyingType(t, u *RawType, compareTags bool) bool {
+	t = t.underlying()
+	u = u.underlying()
+	if t == u {
+		return true
+	}
+	if t.Kind() != u.Kind() {
+		return false
+	}
+
+	switch t.Kind() {
+	case Bool, Int, Int8, Int16, Int32, Int64,
+		Uint, Uint8, Uint16, Uint32, Uint64, Uintptr,
+		Float32, Float64, Complex64, Complex128, String, UnsafePointer:
+		return true
+	case Array:
+		return t.Len() == u.Len() && haveIdenticalType(t.elem(), u.elem(), compareTags)
+	case Chan:
+		return t.ChanDir() == u.ChanDir() && haveIdenticalType(t.elem(), u.elem(), compareTags)
+	case Interface:
+		return (*interfaceType)(unsafe.Pointer(t)).methods.length == 0 &&
+			(*interfaceType)(unsafe.Pointer(u)).methods.length == 0
+	case Map:
+		return haveIdenticalType(t.key(), u.key(), compareTags) &&
+			haveIdenticalType(t.elem(), u.elem(), compareTags)
+	case Pointer, Slice:
+		return haveIdenticalType(t.elem(), u.elem(), compareTags)
+	case Struct:
+		if t.NumField() != u.NumField() {
+			return false
+		}
+		for i := 0; i < t.NumField(); i++ {
+			tf := t.rawField(i)
+			uf := u.rawField(i)
+			if tf.Name != uf.Name ||
+				tf.PkgPath != uf.PkgPath ||
+				!haveIdenticalType(tf.Type, uf.Type, compareTags) ||
+				compareTags && tf.Tag != uf.Tag ||
+				tf.Offset != uf.Offset ||
+				tf.Anonymous != uf.Anonymous {
+				return false
+			}
+		}
+		return true
+	}
+
+	return false
 }
 
 // AssignableTo returns whether a value of type t can be assigned to a variable
@@ -1197,6 +1272,58 @@ func (t *RawType) ChanDir() ChanDir {
 
 	// nummethod is overloaded for channel to store channel direction
 	return ChanDir(dir)
+}
+
+func (t *RawType) funcDescriptor() *funcType {
+	return (*funcType)(unsafe.Pointer(t.underlying()))
+}
+
+func (t *RawType) NumIn() int {
+	if t.Kind() != Func {
+		panic(TypeError{"NumIn"})
+	}
+	return int(t.funcDescriptor().numIn)
+}
+
+func (t *RawType) NumOut() int {
+	if t.Kind() != Func {
+		panic(TypeError{"NumOut"})
+	}
+	return int(t.funcDescriptor().numOut &^ funcTypeVariadic)
+}
+
+func (t *RawType) IsVariadic() bool {
+	if t.Kind() != Func {
+		panic(TypeError{"IsVariadic"})
+	}
+	return t.funcDescriptor().numOut&funcTypeVariadic != 0
+}
+
+func (t *RawType) In(i int) Type {
+	if t.Kind() != Func {
+		panic(TypeError{"In"})
+	}
+	ft := t.funcDescriptor()
+	numIn := int(ft.numIn)
+	if i < 0 || i >= numIn {
+		panic("reflect: Type.In: index out of range")
+	}
+	inOut := (*[1 << 16]*RawType)(unsafe.Pointer(&ft.inOut))
+	return inOut[i]
+}
+
+func (t *RawType) Out(i int) Type {
+	if t.Kind() != Func {
+		panic(TypeError{"Out"})
+	}
+	ft := t.funcDescriptor()
+	numIn := int(ft.numIn)
+	numOut := int(ft.numOut &^ funcTypeVariadic)
+	if i < 0 || i >= numOut {
+		panic("reflect: Type.Out: index out of range")
+	}
+	inOut := (*[1 << 16]*RawType)(unsafe.Pointer(&ft.inOut))
+	return inOut[numIn+i]
 }
 
 func (t *RawType) NumMethod() int {
@@ -1943,43 +2070,4 @@ func uvarint32(buf []byte) (uint32, int) {
 func TypeFor[T any]() Type {
 	// This function was copied from the Go 1.22 source tree.
 	return TypeOf((*T)(nil)).Elem()
-}
-
-func (t *RawType) funcType(method string) *funcType {
-	if t.Kind() != Func {
-		panic(&TypeError{Method: method})
-	}
-	return (*funcType)(unsafe.Pointer(t.underlying()))
-}
-
-// NumIn returns a function type's input parameter count.
-func (t *RawType) NumIn() int { return int(t.funcType("NumIn").numIn) }
-
-// NumOut returns a function type's output parameter count.
-func (t *RawType) NumOut() int { return int(t.funcType("NumOut").numOut &^ funcVariadic) }
-
-// IsVariadic reports whether a function type's final input parameter is a
-// "..." parameter.
-func (t *RawType) IsVariadic() bool { return t.funcType("IsVariadic").numOut&funcVariadic != 0 }
-
-// In returns the type of a function type's i'th input parameter.
-func (t *RawType) In(i int) *RawType {
-	ft := t.funcType("In")
-	if i < 0 || i >= int(ft.numIn) {
-		panic("reflect: Function index out of range")
-	}
-	return ft.param(i)
-}
-
-// Out returns the type of a function type's i'th output parameter.
-func (t *RawType) Out(i int) *RawType {
-	ft := t.funcType("Out")
-	if i < 0 || i >= int(ft.numOut&^funcVariadic) {
-		panic("reflect: Function index out of range")
-	}
-	return ft.param(int(ft.numIn) + i)
-}
-
-func (ft *funcType) param(i int) *RawType {
-	return *(**RawType)(unsafe.Add(unsafe.Pointer(&ft.params), uintptr(i)*unsafe.Sizeof(uintptr(0))))
 }

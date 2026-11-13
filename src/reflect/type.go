@@ -47,9 +47,12 @@
 // - interface types (this is missing the interface methods):
 //     meta         uint8
 //     ptrTo        *typeStruct
-// - signature types (this is missing input and output parameters):
+// - signature types:
 //     meta         uint8
+//     numIn        uint8
+//     numOut       uint8       // high bit indicates a variadic signature
 //     ptrTo        *typeStruct
+//     inOut        [...]typeStruct // input types followed by output types
 // - named types
 //     meta         uint8
 //     nmethods     uint16      // number of methods
@@ -394,8 +397,7 @@ func (t *rawType) CanSeq() bool {
 	case Int8, Int16, Int32, Int64, Int, Uint8, Uint16, Uint32, Uint64, Uint, Uintptr, Array, Slice, Chan, String, Map:
 		return true
 	case Func:
-		// TINYGO: func signatures are not kept, so iterator funcs are not detected.
-		return false
+		return canRangeFunc(t, 1)
 	case Pointer:
 		return t.Elem().Kind() == Array
 	}
@@ -407,11 +409,23 @@ func (t *rawType) CanSeq2() bool {
 	case Array, Slice, String, Map:
 		return true
 	case Func:
-		return false
+		return canRangeFunc(t, 2)
 	case Pointer:
 		return t.Elem().Kind() == Array
 	}
 	return false
+}
+
+func canRangeFunc(t Type, seq int) bool {
+	if t.NumIn() != 1 || t.NumOut() != 0 {
+		return false
+	}
+	yield := t.In(0)
+	return yield.Kind() == Func &&
+		yield.NumIn() == seq &&
+		yield.NumOut() == 1 &&
+		yield.Out(0).Kind() == Bool &&
+		yield.Out(0).PkgPath() == ""
 }
 
 func (t *rawType) ConvertibleTo(u Type) bool {
@@ -458,7 +472,7 @@ func (t *rawType) Implements(u Type) bool {
 
 func (t *rawType) In(i int) Type {
 	t.mustBeFunc("In")
-	return toType(t.RawType.In(i))
+	return toType(t.RawType.In(i).(*reflectlite.RawType))
 }
 
 func (t *rawType) Ins() iter.Seq[Type] {
@@ -516,7 +530,7 @@ func (t *rawType) NumOut() int {
 
 func (t *rawType) Out(i int) Type {
 	t.mustBeFunc("Out")
-	return toType(t.RawType.Out(i))
+	return toType(t.RawType.Out(i).(*reflectlite.RawType))
 }
 
 func (t *rawType) mustBeFunc(method string) {

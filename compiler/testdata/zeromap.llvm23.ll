@@ -11,7 +11,7 @@ target triple = "wasm32-unknown-wasi"
 @"runtime/gc.layout:92-545555555555555555550500" = linkonce_odr unnamed_addr constant { i32, [12 x i8] } { i32 92, [12 x i8] c"TUUUUUUUUU\05\00" }
 @"runtime.hashmapType:[5]string:int" = linkonce_odr unnamed_addr constant { ptr, ptr, ptr } { ptr inttoptr (i32 69 to ptr), ptr inttoptr (i32 3 to ptr), ptr @"runtime/gc.layout:92-545555555555555555550500" }
 
-declare void @runtime.trackPointer(ptr nocapture readonly, ptr, ptr) #0
+declare void @runtime.trackPointer(ptr readonly captures(none), ptr, ptr) #0
 
 ; Function Attrs: nounwind
 define hidden void @main.init(ptr %context) unnamed_addr #1 {
@@ -37,13 +37,13 @@ entry:
   ret i32 %4
 }
 
-; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.start.p0(ptr nocapture) #3
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.start.p0(ptr captures(none)) #3
 
-declare i1 @runtime.hashmapGenericGet(ptr dereferenceable_or_null(52), ptr nocapture, ptr nocapture, i32, ptr) #0
+declare i1 @runtime.hashmapGenericGet(ptr dereferenceable_or_null(52), ptr captures(none), ptr captures(none), i32, ptr) #0
 
-; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.lifetime.end.p0(ptr nocapture) #3
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.end.p0(ptr captures(none)) #3
 
 ; Function Attrs: noinline nounwind
 define hidden void @main.testZeroSet(ptr dereferenceable_or_null(52) %m, i1 %s.b1, i32 %s.i, i1 %s.b2, ptr %context) unnamed_addr #2 {
@@ -63,7 +63,7 @@ entry:
   ret void
 }
 
-declare void @runtime.hashmapGenericSet(ptr dereferenceable_or_null(52), ptr nocapture, ptr nocapture, ptr) #0
+declare void @runtime.hashmapGenericSet(ptr dereferenceable_or_null(52), ptr captures(none), ptr captures(none), ptr) #0
 
 ; Function Attrs: noinline nounwind
 define hidden i32 @main.testZeroArrayGet(ptr dereferenceable_or_null(52) %m, [2 x %main.hasPadding] %s, ptr %context) unnamed_addr #2 {
@@ -249,6 +249,66 @@ eq.array.done:                                    ; preds = %eq.array.body
   ret i1 %eq
 }
 
+; Function Attrs: noinline nounwind
+define hidden void @main.testBinarySet(ptr dereferenceable_or_null(52) %m, i32 %key, i32 %value, ptr %context) unnamed_addr #2 {
+entry:
+  %hashmap.key = alloca i32, align 4
+  %hashmap.value = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(ptr nonnull %hashmap.value)
+  store i32 %value, ptr %hashmap.value, align 4
+  call void @llvm.lifetime.start.p0(ptr nonnull %hashmap.key)
+  store i32 %key, ptr %hashmap.key, align 4
+  call void @runtime.hashmapBinarySet(ptr %m, ptr nonnull %hashmap.key, ptr nonnull %hashmap.value, ptr undef) #4
+  call void @llvm.lifetime.end.p0(ptr nonnull %hashmap.key)
+  call void @llvm.lifetime.end.p0(ptr nonnull %hashmap.value)
+  ret void
+}
+
+declare void @runtime.hashmapBinarySet(ptr dereferenceable_or_null(52), ptr captures(none), ptr captures(none), ptr) #0
+
+; Function Attrs: noinline nounwind
+define hidden i32 @main.testBinaryGet(ptr dereferenceable_or_null(52) %m, i32 %key, ptr %context) unnamed_addr #2 {
+entry:
+  %hashmap.key = alloca i32, align 4
+  %hashmap.value = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(ptr nonnull %hashmap.value)
+  call void @llvm.lifetime.start.p0(ptr nonnull %hashmap.key)
+  store i32 %key, ptr %hashmap.key, align 4
+  %0 = call i1 @runtime.hashmapBinaryGet(ptr %m, ptr nonnull %hashmap.key, ptr nonnull %hashmap.value, i32 4, ptr undef) #4
+  call void @llvm.lifetime.end.p0(ptr nonnull %hashmap.key)
+  %1 = load i32, ptr %hashmap.value, align 4
+  call void @llvm.lifetime.end.p0(ptr nonnull %hashmap.value)
+  ret i32 %1
+}
+
+declare i1 @runtime.hashmapBinaryGet(ptr dereferenceable_or_null(52), ptr captures(none), ptr captures(none), i32, ptr) #0
+
+; Function Attrs: noinline nounwind
+define hidden void @main.testBinaryDelete(ptr dereferenceable_or_null(52) %m, i32 %key, ptr %context) unnamed_addr #2 {
+entry:
+  %hashmap.key = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(ptr nonnull %hashmap.key)
+  store i32 %key, ptr %hashmap.key, align 4
+  call void @runtime.hashmapBinaryDelete(ptr %m, ptr nonnull %hashmap.key, ptr undef) #4
+  call void @llvm.lifetime.end.p0(ptr nonnull %hashmap.key)
+  ret void
+}
+
+declare void @runtime.hashmapBinaryDelete(ptr dereferenceable_or_null(52), ptr captures(none), ptr) #0
+
+; Function Attrs: noinline nounwind
+define hidden void @main.testStringSet(ptr dereferenceable_or_null(52) %m, ptr readonly %key.data, i32 %key.len, i32 %value, ptr %context) unnamed_addr #2 {
+entry:
+  %hashmap.value = alloca i32, align 4
+  call void @llvm.lifetime.start.p0(ptr nonnull %hashmap.value)
+  store i32 %value, ptr %hashmap.value, align 4
+  call void @runtime.hashmapStringSet(ptr %m, ptr %key.data, i32 %key.len, ptr nonnull %hashmap.value, ptr undef) #4
+  call void @llvm.lifetime.end.p0(ptr nonnull %hashmap.value)
+  ret void
+}
+
+declare void @runtime.hashmapStringSet(ptr dereferenceable_or_null(52), ptr readonly, i32, ptr captures(none), ptr) #0
+
 ; Function Attrs: nounwind
 define hidden void @main.main(ptr %context) unnamed_addr #1 {
 entry:
@@ -258,5 +318,5 @@ entry:
 attributes #0 = { "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
 attributes #1 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
 attributes #2 = { noinline nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
-attributes #3 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
+attributes #3 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
 attributes #4 = { nounwind }

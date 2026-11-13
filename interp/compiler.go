@@ -253,6 +253,25 @@ func (r *runner) compileFunction(llvmFn llvm.Value) *function {
 					r.getValue(llvmInst.Operand(0)),
 					r.getValue(llvmInst.Operand(1)),
 				}
+			case llvm.AtomicRMW:
+				// atomicrmw: [ptr, value, binop]
+				inst.name = llvmInst.Name()
+				inst.operands = []value{
+					r.getValue(llvmInst.Operand(0)),
+					r.getValue(llvmInst.Operand(1)),
+					literalValue{uint8(llvmInst.AtomicRMWBinOp())},
+				}
+			case llvm.AtomicCmpXchg:
+				// cmpxchg: [ptr, cmp, new, resultSize, successOffset]
+				inst.name = llvmInst.Name()
+				resultType := llvmInst.Type()
+				inst.operands = []value{
+					r.getValue(llvmInst.Operand(0)),
+					r.getValue(llvmInst.Operand(1)),
+					r.getValue(llvmInst.Operand(2)),
+					literalValue{r.targetData.TypeAllocSize(resultType)},
+					literalValue{r.targetData.ElementOffset(resultType, 1)},
+				}
 			case llvm.Alloca:
 				// Alloca allocates stack space for local variables.
 				numElements := r.getValue(inst.llvmInst.Operand(0)).(literalValue).value.(uint32)
@@ -288,7 +307,7 @@ func (r *runner) compileFunction(llvmFn llvm.Value) *function {
 						// struct field index for when the GEP must be done at
 						// runtime.
 						inst.operands = append(inst.operands, literalValue{elementOffset}, literalValue{^uint64(index)})
-						elementType = elementType.StructElementTypes()[index]
+						elementType = elementType.StructTypeAtIndex(int(index))
 					case llvm.ArrayTypeKind:
 						elementType = elementType.ElementType()
 						elementSize := r.targetData.TypeAllocSize(elementType)
@@ -316,7 +335,7 @@ func (r *runner) compileFunction(llvmFn llvm.Value) *function {
 					switch indexingType.TypeKind() {
 					case llvm.StructTypeKind:
 						offset += r.targetData.ElementOffset(indexingType, int(index))
-						indexingType = indexingType.StructElementTypes()[index]
+						indexingType = indexingType.StructTypeAtIndex(int(index))
 					case llvm.ArrayTypeKind:
 						indexingType = indexingType.ElementType()
 						elementSize := r.targetData.TypeAllocSize(indexingType)
@@ -341,7 +360,7 @@ func (r *runner) compileFunction(llvmFn llvm.Value) *function {
 					switch indexingType.TypeKind() {
 					case llvm.StructTypeKind:
 						offset += r.targetData.ElementOffset(indexingType, int(index))
-						indexingType = indexingType.StructElementTypes()[index]
+						indexingType = indexingType.StructTypeAtIndex(int(index))
 					case llvm.ArrayTypeKind:
 						indexingType = indexingType.ElementType()
 						elementSize := r.targetData.TypeAllocSize(indexingType)
@@ -449,6 +468,8 @@ var instructionNameMap = [...]string{
 	llvm.Load:          "load",
 	llvm.Store:         "store",
 	llvm.GetElementPtr: "getelementptr",
+	llvm.AtomicCmpXchg: "cmpxchg",
+	llvm.AtomicRMW:     "atomicrmw",
 
 	// Cast Operators
 	llvm.Trunc:    "trunc",

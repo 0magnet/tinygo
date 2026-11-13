@@ -78,6 +78,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		}
 		// Run TinyGo-specific optimization passes.
 		OptimizeStringToBytes(mod)
+		OptimizeStringFromBytes(mod)
 		maxStackSize := config.MaxStackAlloc()
 		if err := InlineAllocConstructors(mod, maxStackSize); err != nil {
 			return []error{err}
@@ -122,6 +123,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 			},
 		)
 		OptimizeStringToBytes(mod)
+		OptimizeStringFromBytes(mod)
 		OptimizeStringEqual(mod)
 
 	} else {
@@ -201,9 +203,9 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		// Check only after temporary ABI roots have been removed and dead code
 		// eliminated. Otherwise, a dead function kept alive solely to prevent
 		// argument promotion can produce a spurious scheduler error.
-		if start := mod.NamedFunction("internal/task.start"); !start.IsNil() && len(getUses(start)) > 0 {
+		if uses := getUses(mod.NamedFunction("internal/task.start")); len(uses) > 0 {
 			errs := []error{}
-			for _, call := range getUses(start) {
+			for _, call := range uses {
 				errs = append(errs, errorAt(call, "attempted to start a goroutine without a scheduler"))
 			}
 			return errs
