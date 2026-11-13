@@ -60,6 +60,7 @@ func TestBuild(t *testing.T) {
 		"signal.go",
 		"signalnotify.go",
 		"slice.go",
+		"slicegrow.go",
 		"sort.go",
 		"stdlib.go",
 		"string.go",
@@ -67,6 +68,7 @@ func TestBuild(t *testing.T) {
 		"stringfrombytes_stress.go",
 		"structs.go",
 		"testing.go",
+		"timer_node_reuse_gc.go",
 		"timers.go",
 		"typealias.go",
 		"zeroalloc.go",
@@ -515,8 +517,19 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// output order, so only run it with non-threaded schedulers.
 			continue
 		}
+		if name == "timer_node_reuse_gc.go" {
+			// Other targets are too slow or lack 64-bit atomics.
+			isHost := options.Target == "" && options.GOOS == goenv.Get("GOOS") && options.GOARCH == goenv.Get("GOARCH")
+			if !isHost && options.Target != "wasip1" && options.Target != "riscv-qemu" {
+				continue
+			}
+		}
 		if name == "coreassign.go" && scheduler != "cores" {
 			// Core assignment needs the cores scheduler.
+			continue
+		}
+		if name == "slicegrow.go" && (isBaremetal || spec.GC == "leaking") {
+			// These targets grow slices to the next power of two.
 			continue
 		}
 		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386") {

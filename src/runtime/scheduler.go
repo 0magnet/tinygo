@@ -80,13 +80,18 @@ func (h *timerHeap) removeAt(i int) *timerNode {
 	return tn
 }
 
+// before reports whether tn goes before other in the heap.
+func (tn *timerNode) before(other *timerNode) bool {
+	return tn.timer.when < other.timer.when || tn.timer.when == other.timer.when && tn.seq < other.seq
+}
+
 // fix places tn, which is not in the slice yet, at the hole at index i.
 // It moves up towards the root first and then down.
 func (h *timerHeap) fix(i int, tn *timerNode) {
 	nodes := h.nodes
 	for i > 0 {
 		p := nodes[(i-1)/2]
-		if tn.timer.when > p.timer.when || tn.timer.when == p.timer.when && tn.seq > p.seq {
+		if p.before(tn) {
 			break
 		}
 		nodes[i] = p
@@ -94,10 +99,10 @@ func (h *timerHeap) fix(i int, tn *timerNode) {
 		i = (i - 1) / 2
 	}
 	for c := 2*i + 1; c < len(nodes); c = 2*i + 1 {
-		if c+1 < len(nodes) && (nodes[c+1].timer.when < nodes[c].timer.when || nodes[c+1].timer.when == nodes[c].timer.when && nodes[c+1].seq < nodes[c].seq) {
+		if c+1 < len(nodes) && nodes[c+1].before(nodes[c]) {
 			c++
 		}
-		if nodes[c].timer.when > tn.timer.when || nodes[c].timer.when == tn.timer.when && nodes[c].seq > tn.seq {
+		if tn.before(nodes[c]) {
 			break
 		}
 		nodes[i] = nodes[c]
@@ -117,6 +122,36 @@ func timerQueuePeek() *timerNode {
 		return nil
 	}
 	return timerQueue.peek()
+}
+
+// timerQueueRoom returns the capacity needed to add one more node while
+// leaving room for extra nodes that are currently not in the queue.
+func timerQueueRoom(extra int) int {
+	if timerQueue == nil {
+		return 1 + extra
+	}
+	return len(timerQueue.nodes) + 1 + extra
+}
+
+// timerQueueFull reports whether the queue has less capacity than need.
+func timerQueueFull(need int) bool {
+	return timerQueue == nil || cap(timerQueue.nodes) < need
+}
+
+// timerQueueGrow installs h, an empty heap with spare capacity allocated by the
+// caller. It does not allocate, so it can run while holding a scheduler lock.
+func timerQueueGrow(h *timerHeap) {
+	if timerQueue == nil {
+		timerQueue = h
+		return
+	}
+	if cap(h.nodes) <= cap(timerQueue.nodes) {
+		// Another core already grew the queue.
+		return
+	}
+	h.nodes = append(h.nodes, timerQueue.nodes...)
+	h.seq = timerQueue.seq
+	timerQueue = h
 }
 
 func timerQueueAdd(tn *timerNode) {

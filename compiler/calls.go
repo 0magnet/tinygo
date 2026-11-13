@@ -45,7 +45,7 @@ const (
 // createRuntimeInvoke instead.
 func (b *builder) createRuntimeCallCommon(fnName string, args []llvm.Value, name string, isInvoke bool) llvm.Value {
 	fnType, llvmFn := b.getRuntimeFunction(fnName)
-	args = append(args, llvm.Undef(b.dataPtrType)) // unused context parameter
+	args = append(args, b.dataPtrUndef) // unused context parameter
 	if isInvoke {
 		maySuspend := fnName == "chanSend" || fnName == "chanSelect"
 		return b.createInvokeWithAnalysis(fnType, llvmFn, args, name, true, maySuspend)
@@ -163,19 +163,15 @@ func (b *builder) createAsyncifyNoSuspendInvoke(fnType llvm.Type, fn llvm.Value,
 	builder := b.ctx.NewBuilder()
 	entry := b.ctx.AddBasicBlock(wrapper, "entry")
 	builder.SetInsertPointAtEnd(entry)
+	wrapperParams := wrapper.Params()
 	target := fn
-	paramOffset := 0
 	if !direct {
-		target = wrapper.Param(0)
-		paramOffset = 1
+		target = wrapperParams[0]
+		wrapperParams = wrapperParams[1:]
 	}
-	callArgs := make([]llvm.Value, len(fnType.ParamTypes()))
-	for i := range callArgs {
-		callArgs[i] = wrapper.Param(i + paramOffset)
-	}
-	result := builder.CreateCall(fnType, target, callArgs, "")
+	result := builder.CreateCall(fnType, target, wrapperParams, "")
 	unwindType, unwindLLVMFn := b.getRuntimeFunction("unwindPending")
-	unwinding := builder.CreateCall(unwindType, unwindLLVMFn, []llvm.Value{llvm.Undef(b.dataPtrType)}, "")
+	unwinding := builder.CreateCall(unwindType, unwindLLVMFn, []llvm.Value{b.dataPtrUndef}, "")
 	replay := b.createAsyncifyPanicReplay(wrapperType)
 	b.emitAsyncifyCatchReturn(builder, fnType, result, entry, unwinding, replay, wrapper)
 	builder.Dispose()
@@ -223,8 +219,8 @@ func (b *builder) createAsyncifySuspendInvoke(fnType llvm.Type, fn llvm.Value, a
 
 	targetType := wrapperType
 	var resultGlobal llvm.Value
-	if fnType.ReturnType().TypeKind() != llvm.VoidTypeKind {
-		targetType = llvm.FunctionType(b.ctx.VoidType(), paramTypes, false)
+	if fnType.ReturnType() != b.void {
+		targetType = llvm.FunctionType(b.void, paramTypes, false)
 		resultGlobal = llvm.AddGlobal(b.mod, fnType.ReturnType(), wrapperName+".result")
 		resultGlobal.SetLinkage(llvm.InternalLinkage)
 		resultGlobal.SetInitializer(llvm.ConstNull(fnType.ReturnType()))
@@ -235,13 +231,9 @@ func (b *builder) createAsyncifySuspendInvoke(fnType llvm.Type, fn llvm.Value, a
 	builder := b.ctx.NewBuilder()
 	entry := b.ctx.AddBasicBlock(targetWrapper, "entry")
 	builder.SetInsertPointAtEnd(entry)
-	target := targetWrapper.Param(0)
-	callArgs := make([]llvm.Value, len(fnType.ParamTypes()))
-	for i := range callArgs {
-		callArgs[i] = targetWrapper.Param(i + 1)
-	}
-	result := builder.CreateCall(fnType, target, callArgs, "")
-	if fnType.ReturnType().TypeKind() == llvm.VoidTypeKind {
+	targetParams := targetWrapper.Params()
+	result := builder.CreateCall(fnType, targetParams[0], targetParams[1:], "")
+	if fnType.ReturnType() == b.void {
 		builder.CreateRetVoid()
 	} else {
 		storeResult := builder.CreateStore(result, resultGlobal)
@@ -260,7 +252,7 @@ func (b *builder) createAsyncifySuspendInvoke(fnType llvm.Type, fn llvm.Value, a
 	for i := range catchArgs {
 		catchArgs[i] = catchWrapper.Param(i)
 	}
-	if fnType.ReturnType().TypeKind() == llvm.VoidTypeKind {
+	if fnType.ReturnType() == b.void {
 		result = builder.CreateCall(targetType, targetWrapper, catchArgs, "")
 	} else {
 		// Asyncify runs one task at a time, and the target stores its result only
@@ -280,7 +272,7 @@ func (b *builder) createAsyncifySuspendInvoke(fnType llvm.Type, fn llvm.Value, a
 	unwindGlobal.SetInitializer(unwindLLVMFn)
 	unwindPointer := builder.CreateLoad(unwindLLVMFn.Type(), unwindGlobal, "")
 	unwindPointer.SetVolatile(true)
-	unwinding := builder.CreateCall(unwindType, unwindPointer, []llvm.Value{llvm.Undef(b.dataPtrType)}, "")
+	unwinding := builder.CreateCall(unwindType, unwindPointer, []llvm.Value{b.dataPtrUndef}, "")
 	replay := b.createAsyncifyPanicReplay(wrapperType)
 	b.emitAsyncifyCatchReturn(builder, fnType, result, entry, unwinding, replay, catchWrapper)
 	builder.Dispose()
@@ -301,7 +293,7 @@ func (b *builder) createAsyncifyPanicReplay(catcherType llvm.Type) llvm.Value {
 		return replay
 	}
 
-	replayType := llvm.FunctionType(b.ctx.VoidType(), []llvm.Type{b.uintptrType}, false)
+	replayType := llvm.FunctionType(b.void, []llvm.Type{b.uintptrType}, false)
 	replay := llvm.AddFunction(b.mod, "tinygo.asyncify.panicreplay."+strconv.Itoa(len(b.asyncifyReplays)), replayType)
 	replay.SetLinkage(llvm.InternalLinkage)
 	replay.AddFunctionAttr(b.ctx.CreateEnumAttribute(llvm.AttributeKindID("noinline"), 0))
@@ -313,30 +305,31 @@ func (b *builder) createAsyncifyPanicReplay(catcherType llvm.Type) llvm.Value {
 	builder.SetInsertPointAtEnd(entry)
 
 	dataType, dataFn := b.getRuntimeFunction("panicRewindData")
-	data := builder.CreateCall(dataType, dataFn, []llvm.Value{llvm.Undef(b.dataPtrType)}, "")
+	data := builder.CreateCall(dataType, dataFn, []llvm.Value{b.dataPtrUndef}, "")
 	stackType, stackFn := b.getRuntimeFunction("panicRewindStackPointer")
-	stackPointer := builder.CreateCall(stackType, stackFn, []llvm.Value{llvm.Undef(b.dataPtrType)}, "")
+	stackPointer := builder.CreateCall(stackType, stackFn, []llvm.Value{b.dataPtrUndef}, "")
 	targetPointer := builder.CreateIntToPtr(replay.Param(0), b.dataPtrType, "")
 	setStackType, setStackFn := b.getRuntimeFunction("setPanicRewindStackPointer")
-	builder.CreateCall(setStackType, setStackFn, []llvm.Value{stackPointer, llvm.Undef(b.dataPtrType)}, "")
+	builder.CreateCall(setStackType, setStackFn, []llvm.Value{stackPointer, b.dataPtrUndef}, "")
 
 	rewinding := b.mod.NamedGlobal("tinygo_rewinding")
 	if rewinding.IsNil() {
-		rewinding = llvm.AddGlobal(b.mod, b.ctx.Int8Type(), "tinygo_rewinding")
+		rewinding = llvm.AddGlobal(b.mod, b.i8, "tinygo_rewinding")
 		rewinding.SetLinkage(llvm.ExternalLinkage)
 	}
-	builder.CreateStore(llvm.ConstInt(b.ctx.Int8Type(), 1, false), rewinding)
+	builder.CreateStore(llvm.ConstInt(b.i8, 1, false), rewinding)
 	panicRewinding := b.mod.NamedGlobal("tinygo_panic_rewinding")
 	if panicRewinding.IsNil() {
-		panicRewinding = llvm.AddGlobal(b.mod, b.ctx.Int8Type(), "tinygo_panic_rewinding")
+		panicRewinding = llvm.AddGlobal(b.mod, b.i8, "tinygo_panic_rewinding")
 		panicRewinding.SetLinkage(llvm.ExternalLinkage)
 	}
-	builder.CreateStore(llvm.ConstInt(b.ctx.Int8Type(), 1, false), panicRewinding)
+	builder.CreateStore(llvm.ConstInt(b.i8, 1, false), panicRewinding)
 
 	startType, startFn := b.getRuntimeFunction("asyncifyStartRewindImport")
 	builder.CreateCall(startType, startFn, []llvm.Value{data}, "")
-	args := make([]llvm.Value, len(catcherType.ParamTypes()))
-	for i, typ := range catcherType.ParamTypes() {
+	paramTypes := catcherType.ParamTypes()
+	args := make([]llvm.Value, len(paramTypes))
+	for i, typ := range paramTypes {
 		args[i] = llvm.Undef(typ)
 	}
 	builder.CreateCall(catcherType, targetPointer, args, "")
@@ -356,11 +349,11 @@ func (b *builder) emitAsyncifyCatchReturn(builder llvm.Builder, fnType llvm.Type
 	saveType, saveFn := b.getRuntimeFunction("savePanicReplay")
 	replayPointer := builder.CreatePtrToInt(replay, b.uintptrType, "")
 	targetPointer := builder.CreatePtrToInt(replayTarget, b.uintptrType, "")
-	builder.CreateCall(saveType, saveFn, []llvm.Value{replayPointer, targetPointer, llvm.Undef(b.dataPtrType)}, "")
+	builder.CreateCall(saveType, saveFn, []llvm.Value{replayPointer, targetPointer, b.dataPtrUndef}, "")
 	builder.CreateBr(returnBlock)
 
 	builder.SetInsertPointAtEnd(returnBlock)
-	if fnType.ReturnType().TypeKind() == llvm.VoidTypeKind {
+	if fnType.ReturnType() == b.void {
 		builder.CreateRetVoid()
 		return
 	}
@@ -580,7 +573,7 @@ func (b *builder) unwindReturnBlock() llvm.BasicBlock {
 	b.unwindReturn = b.ctx.AddBasicBlock(b.llvmFn, "unwind.return")
 	b.SetInsertPointAtEnd(b.unwindReturn)
 	returnType := b.llvmFn.GlobalValueType().ReturnType()
-	if returnType.TypeKind() == llvm.VoidTypeKind {
+	if returnType == b.void {
 		b.CreateRetVoid()
 	} else {
 		b.CreateRet(llvm.Undef(returnType))

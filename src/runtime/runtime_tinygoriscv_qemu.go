@@ -38,11 +38,8 @@ func main() {
 			riscv.Asm("wfi")
 		}
 
-		// Clear the software interrupt.
-		aclintMSWI.MSIP[hartID].Set(0)
-
-		// Now that we've cleared the software interrupt, we can enable
-		// interrupts as was already done on hart 0.
+		// Leave the start interrupt pending. handleInterrupt clears it and then
+		// handles a GC pause request that may have arrived with it.
 		riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
 
 		// Also enable timer interrupts, for sleepTicksMulticore.
@@ -385,26 +382,6 @@ var (
 	atomicsLock   spinLock
 	printLock     spinLock
 )
-
-// schedulerSpinLock keeps interrupts off while held. Otherwise the GC IPI can
-// park this hart with the lock held while another hart spins on it.
-type schedulerSpinLock struct {
-	spinLock
-	mstatus [numCPU]uintptr
-}
-
-func (l *schedulerSpinLock) Lock() {
-	hart := currentCPU()
-	state := riscv.DisableInterrupts()
-	l.spinLock.Lock()
-	l.mstatus[hart] = state
-}
-
-func (l *schedulerSpinLock) Unlock() {
-	state := l.mstatus[currentCPU()]
-	l.spinLock.Unlock()
-	riscv.EnableInterrupts(state)
-}
 
 type spinLock struct {
 	atomic.Uint32
