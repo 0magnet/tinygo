@@ -109,13 +109,15 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install --no-install-recommends -y llvm-$LLVM-dev clang-$LLVM libclang-$LLVM-dev lld-$LLVM liblld-$LLVM-dev
       # The compiler, interp and transform tests compile Go into LLVM IR and
-      # check it, which needs the net submodule but none of the C libraries.
+      # check it, which needs the net submodule and the generated AVR device
+      # files but none of the C libraries.
       # Programs are built and run by the Toolchain workflow's smoke test, and
       # by the projects that build with the toolchain.
       - name: Test
         if: steps.fetch.outputs.behind != '0' || inputs.test_anyway
         run: |
-          git submodule update --init src/net
+          git submodule update --init --depth 1 src/net lib/avr
+          make gen-device-avr
           go test -tags llvm$LLVM ./compiler ./interp ./transform ./compileopts
       - name: Push develop
         id: develop
