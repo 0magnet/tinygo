@@ -212,6 +212,10 @@ func startProcess(name string, argv []string, attr *ProcAttr) (p *Process, err e
 }
 
 func (p *Process) wait() (*ProcessState, error) {
+	// wait4 with a pid of 0 or less waits for any child in a process group, see wait(2).
+	if p.Pid <= 0 {
+		return nil, errors.New("os: process not initialized")
+	}
 	waitChild(p.Pid)
 	if h := p.h; h != nil {
 		// Wait until the child is waitable without reaping it, then mark it

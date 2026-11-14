@@ -259,13 +259,11 @@ func pathsToOverride(config *compileopts.Config) map[string]bool {
 		"hash/maphash/":                   false,
 		"internal/":                       true,
 		"internal/abi/":                   false,
-		"internal/binary/":                false,
 		"internal/bytealg/":               false,
 		"internal/cm/":                    false,
 		"internal/futex/":                 false,
 		"internal/fuzz/":                  false,
 		"internal/itoa/":                  false,
-		"internal/poll/":                  false,
 		"internal/reflectlite/":           false,
 		"internal/gclayout":               false,
 		"internal/task/":                  false,
@@ -305,6 +303,7 @@ func pathsToOverride(config *compileopts.Config) map[string]bool {
 	}
 
 	if needsSyscallPackage(config.BuildTags()) {
+		paths["internal/poll/"] = false
 		paths["syscall/"] = true
 		// Go's syscall/js with property access that panics when JS throws.
 		paths["syscall/js/"] = false
