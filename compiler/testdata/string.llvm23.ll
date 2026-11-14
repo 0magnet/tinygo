@@ -46,13 +46,13 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i32 @main.stringLen(ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i32 @main.stringLen(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   ret i32 %s.len
 }
 
 ; Function Attrs: nounwind
-define hidden i8 @main.stringIndex(ptr readonly %s.data, i32 %s.len, i32 %index, ptr %context) unnamed_addr #1 {
+define hidden i8 @main.stringIndex(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, i32 %index, ptr %context) unnamed_addr #1 {
 entry:
   %.not = icmp ult i32 %index, %s.len
   br i1 %.not, label %lookup.next, label %lookup.throw
@@ -73,16 +73,16 @@ unwind.return:                                    ; preds = %lookup.throw
 declare void @runtime.lookupPanic(ptr) #0
 
 ; Function Attrs: nounwind
-define hidden i1 @main.stringCompareEqual(ptr readonly %s1.data, i32 %s1.len, ptr readonly %s2.data, i32 %s2.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.stringCompareEqual(ptr readonly %s1.data, i32 range(i32 0, -2147483648) %s1.len, ptr readonly %s2.data, i32 range(i32 0, -2147483648) %s2.len, ptr %context) unnamed_addr #1 {
 entry:
   %0 = call i1 @runtime.stringEqual(ptr %s1.data, i32 %s1.len, ptr %s2.data, i32 %s2.len, ptr undef) #6
   ret i1 %0
 }
 
-declare i1 @runtime.stringEqual(ptr readonly, i32, ptr readonly, i32, ptr) #0
+declare i1 @runtime.stringEqual(ptr readonly, i32 range(i32 0, -2147483648), ptr readonly, i32 range(i32 0, -2147483648), ptr) #0
 
 ; Function Attrs: nounwind
-define hidden i1 @main.stringCompareUnequal(ptr readonly %s1.data, i32 %s1.len, ptr readonly %s2.data, i32 %s2.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.stringCompareUnequal(ptr readonly %s1.data, i32 range(i32 0, -2147483648) %s1.len, ptr readonly %s2.data, i32 range(i32 0, -2147483648) %s2.len, ptr %context) unnamed_addr #1 {
 entry:
   %0 = call i1 @runtime.stringEqual(ptr %s1.data, i32 %s1.len, ptr %s2.data, i32 %s2.len, ptr undef) #6
   %1 = xor i1 %0, true
@@ -90,7 +90,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareEqual(ptr %s1.data, i32 %s1.len, i32 %s1.cap, ptr %s2.data, i32 %s2.len, i32 %s2.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareEqual(ptr %s1.data, i32 range(i32 0, -2147483648) %s1.len, i32 range(i32 0, -2147483648) %s1.cap, ptr %s2.data, i32 range(i32 0, -2147483648) %s2.len, i32 range(i32 0, -2147483648) %s2.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %s1.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -100,7 +100,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareUnequal(ptr %s1.data, i32 %s1.len, i32 %s1.cap, ptr %s2.data, i32 %s2.len, i32 %s2.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareUnequal(ptr %s1.data, i32 range(i32 0, -2147483648) %s1.len, i32 range(i32 0, -2147483648) %s1.cap, ptr %s2.data, i32 range(i32 0, -2147483648) %s2.len, i32 range(i32 0, -2147483648) %s2.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %s1.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -111,7 +111,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareSideEffects(ptr %s1.data, i32 %s1.len, i32 %s1.cap, ptr %s2.data, i32 %s2.len, i32 %s2.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareSideEffects(ptr %s1.data, i32 range(i32 0, -2147483648) %s1.len, i32 range(i32 0, -2147483648) %s1.cap, ptr %s2.data, i32 range(i32 0, -2147483648) %s2.len, i32 range(i32 0, -2147483648) %s2.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %s1.data, i32 %s1.len, i32 %s1.cap, ptr undef) #6
@@ -132,7 +132,7 @@ entry:
 declare %runtime._string @runtime.stringFromBytes(ptr readonly captures(none) dereferenceable_or_null(1), i32, i32, ptr) #0
 
 ; Function Attrs: noinline nounwind
-define hidden { ptr, i32, i32 } @main.mutateBytes(ptr %s.data, i32 %s.len, i32 %s.cap, ptr %context) unnamed_addr #2 {
+define hidden { ptr, i32, i32 } @main.mutateBytes(ptr %s.data, i32 range(i32 0, -2147483648) %s.len, i32 range(i32 0, -2147483648) %s.cap, ptr %context) unnamed_addr #2 {
 entry:
   %0 = icmp eq i32 %s.len, 0
   br i1 %0, label %lookup.throw, label %lookup.next
@@ -158,7 +158,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareNil(ptr %s.data, i32 %s.len, i32 %s.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareNil(ptr %s.data, i32 range(i32 0, -2147483648) %s.len, i32 range(i32 0, -2147483648) %s.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %s.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -168,7 +168,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareUint8(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareUint8(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -178,7 +178,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareEmpty(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareEmpty(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   br i1 false, label %slice.throw, label %slice.next
@@ -206,7 +206,7 @@ unwind.return:                                    ; preds = %slice.throw
 declare void @runtime.slicePanic(ptr) #0
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareLocal(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareLocal(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -216,7 +216,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.byteSliceStringCompareEscape(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.byteSliceStringCompareEscape(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -232,7 +232,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareStore(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr dereferenceable_or_null(8) %dst, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareStore(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr dereferenceable_or_null(8) %dst, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -264,7 +264,7 @@ unwind.return:                                    ; preds = %store.throw
 declare void @runtime.nilPanic(ptr) #0
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._interface } @main.byteSliceStringCompareBox(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._interface } @main.byteSliceStringCompareBox(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -293,7 +293,7 @@ entry:
 declare noalias nonnull ptr @runtime.alloc(i32, ptr, ptr) #3
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -310,7 +310,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.byteSliceStringCompareAfterMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.byteSliceStringCompareAfterMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -329,17 +329,17 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareSlices(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareSlices(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
-  %slice.highmax = icmp ult i32 %a.cap, 2
+  %slice.highmax = icmp samesign ult i32 %a.cap, 2
   br i1 %slice.highmax, label %slice.throw, label %slice.next
 
 slice.next:                                       ; preds = %entry
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 2, i32 %a.cap, ptr undef) #6
   %1 = extractvalue %runtime._string %0, 0
   call void @runtime.trackPointer(ptr %1, ptr nonnull %stackalloc, ptr undef) #6
-  %slice.highmax1 = icmp ult i32 %b.cap, 2
+  %slice.highmax1 = icmp samesign ult i32 %b.cap, 2
   br i1 %slice.highmax1, label %slice.throw, label %slice.next3
 
 slice.next3:                                      ; preds = %slice.next
@@ -358,7 +358,7 @@ unwind.return:                                    ; preds = %slice.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareLiteral(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareLiteral(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -367,7 +367,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.namedByteSliceStringCompare(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.namedByteSliceStringCompare(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -377,7 +377,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceNamedStringCompare(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceNamedStringCompare(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -388,7 +388,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden %runtime._string @main.namedByteSliceToString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden %runtime._string @main.namedByteSliceToString(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -398,7 +398,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden %runtime._string @main.namedByteSliceToNamedString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden %runtime._string @main.namedByteSliceToNamedString(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -408,7 +408,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden %runtime._string @main.namedRuneSliceToString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden %runtime._string @main.namedRuneSliceToString(ptr %a.data, i32 range(i32 0, 1073741824) %a.len, i32 range(i32 0, 1073741824) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromRunes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -417,10 +417,10 @@ entry:
   ret %runtime._string %0
 }
 
-declare %runtime._string @runtime.stringFromRunes(ptr readonly captures(none), i32, i32, ptr) #0
+declare %runtime._string @runtime.stringFromRunes(ptr readonly captures(none), i32 range(i32 0, 1073741824), i32 range(i32 0, 1073741824), ptr) #0
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareLess(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareLess(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -429,10 +429,10 @@ entry:
   ret i1 %0
 }
 
-declare i1 @runtime.stringLess(ptr readonly, i32, ptr readonly, i32, ptr) #0
+declare i1 @runtime.stringLess(ptr readonly, i32 range(i32 0, -2147483648), ptr readonly, i32 range(i32 0, -2147483648), ptr) #0
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.byteSliceStringLessEscape(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.byteSliceStringLessEscape(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -448,7 +448,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringLessMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringLessMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -474,7 +474,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.namedByteSliceStringLess(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.namedByteSliceStringLess(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -484,7 +484,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, i1 } @main.byteSliceStringLessReuse(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, i1 } @main.byteSliceStringLessReuse(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -509,7 +509,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringLessLiteral(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringLessLiteral(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -518,7 +518,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareLessEqual(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareLessEqual(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -529,7 +529,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.byteSliceStringLessEqualEscape(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.byteSliceStringLessEqualEscape(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -546,7 +546,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringLessEqualMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringLessEqualMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -573,7 +573,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.namedByteSliceStringLessEqual(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.namedByteSliceStringLessEqual(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -584,7 +584,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareGreater(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareGreater(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -594,7 +594,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.byteSliceStringGreaterEscape(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.byteSliceStringGreaterEscape(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -610,7 +610,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringGreaterMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringGreaterMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -636,7 +636,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.namedByteSliceStringGreater(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.namedByteSliceStringGreater(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -646,7 +646,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringCompareGreaterEqual(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringCompareGreaterEqual(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -657,7 +657,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.byteSliceStringGreaterEqualEscape(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.byteSliceStringGreaterEqualEscape(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -674,7 +674,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.byteSliceStringGreaterEqualMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.byteSliceStringGreaterEqualMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, i8 %c, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -701,7 +701,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.namedByteSliceStringGreaterEqual(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.namedByteSliceStringGreaterEqual(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -712,7 +712,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden [6 x i1] @main.mixedByteString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden [6 x i1] @main.mixedByteString(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %complit = call align 1 dereferenceable(6) ptr @runtime.alloc(i32 6, ptr nonnull inttoptr (i32 3 to ptr), ptr undef) #6
@@ -764,7 +764,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden [6 x i1] @main.mixedStringByte(ptr readonly %s.data, i32 %s.len, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden [6 x i1] @main.mixedStringByte(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %complit = call align 1 dereferenceable(6) ptr @runtime.alloc(i32 6, ptr nonnull inttoptr (i32 3 to ptr), ptr undef) #6
@@ -816,7 +816,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden [6 x i1] @main.mixedByteLiteral(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden [6 x i1] @main.mixedByteLiteral(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %complit = call align 1 dereferenceable(6) ptr @runtime.alloc(i32 6, ptr nonnull inttoptr (i32 3 to ptr), ptr undef) #6
@@ -868,7 +868,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden [6 x i1] @main.mixedLiteralByte(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden [6 x i1] @main.mixedLiteralByte(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %complit = call align 1 dereferenceable(6) ptr @runtime.alloc(i32 6, ptr nonnull inttoptr (i32 3 to ptr), ptr undef) #6
@@ -920,7 +920,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden [6 x i1] @main.mixedNamedByteString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden [6 x i1] @main.mixedNamedByteString(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %complit = call align 1 dereferenceable(6) ptr @runtime.alloc(i32 6, ptr nonnull inttoptr (i32 3 to ptr), ptr undef) #6
@@ -972,7 +972,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden [6 x i1] @main.mixedNamedStringByte(ptr readonly %s.data, i32 %s.len, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden [6 x i1] @main.mixedNamedStringByte(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %complit = call align 1 dereferenceable(6) ptr @runtime.alloc(i32 6, ptr nonnull inttoptr (i32 3 to ptr), ptr undef) #6
@@ -1024,7 +1024,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedLocalByteString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedLocalByteString(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -1033,7 +1033,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedLocalStringByte(ptr readonly %s.data, i32 %s.len, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedLocalStringByte(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -1042,10 +1042,10 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedSliceByteString(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedSliceByteString(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
-  %slice.highmax = icmp ult i32 %a.cap, 2
+  %slice.highmax = icmp samesign ult i32 %a.cap, 2
   br i1 %slice.highmax, label %slice.throw, label %slice.next
 
 slice.next:                                       ; preds = %entry
@@ -1062,10 +1062,10 @@ unwind.return:                                    ; preds = %slice.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedPrecomputedStringSlice(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedPrecomputedStringSlice(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
-  %slice.maxcap = icmp ult i32 %s.len, 2
+  %slice.maxcap = icmp samesign ult i32 %s.len, 2
   br i1 %slice.maxcap, label %slice.throw, label %slice.next
 
 slice.next:                                       ; preds = %entry
@@ -1082,7 +1082,7 @@ unwind.return:                                    ; preds = %slice.throw
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, i1 } @main.mixedByteStringReuse(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden { i1, i1 } @main.mixedByteStringReuse(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1100,7 +1100,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._string } @main.mixedByteStringEscape(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._string } @main.mixedByteStringEscape(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1115,7 +1115,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringStore(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr dereferenceable_or_null(8) %dst, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringStore(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr dereferenceable_or_null(8) %dst, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1144,7 +1144,7 @@ unwind.return:                                    ; preds = %store.throw
 }
 
 ; Function Attrs: nounwind
-define hidden { i1, %runtime._interface } @main.mixedByteStringBox(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden { i1, %runtime._interface } @main.mixedByteStringBox(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1169,7 +1169,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringMutation(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringMutation(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1194,7 +1194,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringCall(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringCall(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1210,7 +1210,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringAcrossBlock(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %b.data, i32 %b.len, i32 %b.cap, ptr readonly %s.data, i32 %s.len, i1 %mutate, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringAcrossBlock(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %b.data, i32 range(i32 0, -2147483648) %b.len, i32 range(i32 0, -2147483648) %b.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, i1 %mutate, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1241,7 +1241,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringLoad(ptr %a.data, i32 %a.len, i32 %a.cap, ptr dereferenceable_or_null(8) %s, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringLoad(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr dereferenceable_or_null(8) %s, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
@@ -1265,7 +1265,7 @@ unwind.return:                                    ; preds = %deref.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedStringLoadByte(ptr dereferenceable_or_null(8) %s, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedStringLoadByte(ptr dereferenceable_or_null(8) %s, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = icmp eq ptr %s, null
@@ -1289,11 +1289,11 @@ unwind.return:                                    ; preds = %deref.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringSlice(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringSlice(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr %a.data, ptr nonnull %stackalloc, ptr undef) #6
-  %slice.maxcap = icmp ult i32 %s.len, 2
+  %slice.maxcap = icmp samesign ult i32 %s.len, 2
   br i1 %slice.maxcap, label %slice.throw, label %slice.next
 
 slice.next:                                       ; preds = %entry
@@ -1309,7 +1309,7 @@ unwind.return:                                    ; preds = %slice.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringChangeType(ptr %a.data, i32 %a.len, i32 %a.cap, ptr readonly %s.data, i32 %s.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringChangeType(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1322,7 +1322,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i1 @main.mixedByteStringInterface(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %s.typecode, ptr %s.value, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.mixedByteStringInterface(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %s.typecode, ptr %s.value, ptr %context) unnamed_addr #1 {
 entry:
   %stackalloc = alloca i8, align 1
   %0 = call %runtime._string @runtime.stringFromBytes(ptr %a.data, i32 %a.len, i32 %a.cap, ptr undef) #6
@@ -1344,17 +1344,17 @@ entry:
 declare i1 @runtime.interfaceEqual(ptr, ptr, ptr, ptr, ptr) #0
 
 ; Function Attrs: nounwind
-define hidden i1 @main.stringCompareLarger(ptr readonly %s1.data, i32 %s1.len, ptr readonly %s2.data, i32 %s2.len, ptr %context) unnamed_addr #1 {
+define hidden i1 @main.stringCompareLarger(ptr readonly %s1.data, i32 range(i32 0, -2147483648) %s1.len, ptr readonly %s2.data, i32 range(i32 0, -2147483648) %s2.len, ptr %context) unnamed_addr #1 {
 entry:
   %0 = call i1 @runtime.stringLess(ptr %s2.data, i32 %s2.len, ptr %s1.data, i32 %s1.len, ptr undef) #6
   ret i1 %0
 }
 
 ; Function Attrs: nounwind
-define hidden i8 @main.stringLookup(ptr readonly %s.data, i32 %s.len, i8 %x, ptr %context) unnamed_addr #1 {
+define hidden i8 @main.stringLookup(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, i8 %x, ptr %context) unnamed_addr #1 {
 entry:
   %0 = zext i8 %x to i32
-  %.not = icmp ugt i32 %s.len, %0
+  %.not = icmp samesign ugt i32 %s.len, %0
   br i1 %.not, label %lookup.next, label %lookup.throw
 
 lookup.next:                                      ; preds = %entry
@@ -1371,7 +1371,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden i32 @main.mapIndexBytes(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i32 @main.mapIndexBytes(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %hashmap.value = alloca i32, align 4
   %stackalloc = alloca i8, align 1
@@ -1386,13 +1386,13 @@ entry:
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.start.p0(ptr captures(none)) #4
 
-declare i1 @runtime.hashmapStringGet(ptr readonly captures(none) dereferenceable_or_null(52), ptr readonly captures(none), i32, ptr captures(none), i32, ptr) #5
+declare i1 @runtime.hashmapStringGet(ptr readonly captures(none) dereferenceable_or_null(52), ptr readonly captures(none), i32 range(i32 0, -2147483648), ptr captures(none), i32, ptr) #5
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(ptr captures(none)) #4
 
 ; Function Attrs: nounwind
-define hidden { i32, i1 } @main.mapIndexBytesCommaOk(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden { i32, i1 } @main.mapIndexBytesCommaOk(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %hashmap.value = alloca i32, align 4
   %stackalloc = alloca i8, align 1
@@ -1407,7 +1407,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i32 @main.mapIndexBytesGlobal(ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i32 @main.mapIndexBytesGlobal(ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %hashmap.value = alloca i32, align 4
   %stackalloc = alloca i8, align 1
@@ -1422,7 +1422,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden i32 @main.mapIndexBytesMutation(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden i32 @main.mapIndexBytesMutation(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %hashmap.value = alloca i32, align 4
   %stackalloc = alloca i8, align 1
@@ -1451,7 +1451,7 @@ unwind.return:                                    ; preds = %lookup.throw
 }
 
 ; Function Attrs: nounwind
-define hidden void @main.mapIndexBytesStore(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 %a.len, i32 %a.cap, ptr %context) unnamed_addr #1 {
+define hidden void @main.mapIndexBytesStore(ptr dereferenceable_or_null(52) %m, ptr %a.data, i32 range(i32 0, -2147483648) %a.len, i32 range(i32 0, -2147483648) %a.cap, ptr %context) unnamed_addr #1 {
 entry:
   %hashmap.value = alloca i32, align 4
   %stackalloc = alloca i8, align 1
@@ -1467,7 +1467,7 @@ entry:
   ret void
 }
 
-declare void @runtime.hashmapStringSet(ptr dereferenceable_or_null(52), ptr readonly, i32, ptr captures(none), ptr) #0
+declare void @runtime.hashmapStringSet(ptr dereferenceable_or_null(52), ptr readonly, i32 range(i32 0, -2147483648), ptr captures(none), ptr) #0
 
 attributes #0 = { "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
 attributes #1 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }

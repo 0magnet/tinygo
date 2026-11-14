@@ -5,7 +5,7 @@ target triple = "wasm32-unknown-wasi"
 
 %runtime._string = type { ptr, i32 }
 
-declare void @runtime.trackPointer(ptr nocapture readonly, ptr, ptr) #0
+declare void @runtime.trackPointer(ptr readonly captures(none), ptr, ptr) #0
 
 ; Function Attrs: nounwind
 define hidden void @main.init(ptr %context) unnamed_addr #1 {
@@ -14,7 +14,7 @@ entry:
 }
 
 ; Function Attrs: nounwind
-define hidden { ptr, i32, i32 } @main.sliceTail(ptr %ints.data, i32 %ints.len, i32 %ints.cap, i32 %low, ptr %context) unnamed_addr #1 {
+define hidden { ptr, i32, i32 } @main.sliceTail(ptr %ints.data, i32 range(i32 0, 1073741824) %ints.len, i32 range(i32 0, 1073741824) %ints.cap, i32 %low, ptr %context) unnamed_addr #1 {
 entry:
   %slice.lowhigh = icmp ugt i32 %low, %ints.len
   br i1 %slice.lowhigh, label %slice.throw, label %slice.next
@@ -41,7 +41,7 @@ unwind.return:                                    ; preds = %slice.throw
 declare void @runtime.slicePanic(ptr) #0
 
 ; Function Attrs: nounwind
-define hidden { ptr, i32, i32 } @main.sliceTailMax(ptr %ints.data, i32 %ints.len, i32 %ints.cap, i32 %low, i32 %high, i32 %max, ptr %context) unnamed_addr #1 {
+define hidden { ptr, i32, i32 } @main.sliceTailMax(ptr %ints.data, i32 range(i32 0, 1073741824) %ints.len, i32 range(i32 0, 1073741824) %ints.cap, i32 %low, i32 %high, i32 %max, ptr %context) unnamed_addr #1 {
 entry:
   %slice.lowhigh = icmp ugt i32 %low, %high
   %slice.highmax = icmp ugt i32 %high, %max
@@ -105,7 +105,7 @@ slice.throw1:                                     ; preds = %slice.next
 declare void @runtime.nilPanic(ptr) #0
 
 ; Function Attrs: nounwind
-define hidden %runtime._string @main.stringTail(ptr readonly %s.data, i32 %s.len, i32 %low, ptr %context) unnamed_addr #1 {
+define hidden %runtime._string @main.stringTail(ptr readonly %s.data, i32 range(i32 0, -2147483648) %s.len, i32 %low, ptr %context) unnamed_addr #1 {
 entry:
   %slice.lowhigh = icmp ugt i32 %low, %s.len
   br i1 %slice.lowhigh, label %slice.throw, label %slice.next
@@ -128,7 +128,7 @@ unwind.return:                                    ; preds = %slice.throw
 }
 
 ; Function Attrs: nounwind
-define hidden { ptr, i32, i32 } @main.sliceConstMax(ptr %ints.data, i32 %ints.len, i32 %ints.cap, i32 %low, ptr %context) unnamed_addr #1 {
+define hidden { ptr, i32, i32 } @main.sliceConstMax(ptr %ints.data, i32 range(i32 0, 1073741824) %ints.len, i32 range(i32 0, 1073741824) %ints.cap, i32 %low, ptr %context) unnamed_addr #1 {
 entry:
   %0 = add i32 %low, 2
   %slice.lowmax = icmp ugt i32 %low, -3

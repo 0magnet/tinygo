@@ -26,10 +26,6 @@ var (
 	Kill      Signal = syscall.SIGKILL
 )
 
-// openCloexec is added to the flags of every file opened by OpenFile, so a
-// child process only inherits the files it is given.
-const openCloexec = syscall.O_CLOEXEC
-
 // processHandle tracks whether a started process has been reaped, so that
 // Signal never reaches a recycled pid.
 type processHandle struct {

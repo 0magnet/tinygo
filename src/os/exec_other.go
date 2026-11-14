@@ -9,9 +9,6 @@ var (
 	Kill      Signal = syscall.SIGKILL
 )
 
-// openCloexec is added to the flags of every file opened by OpenFile.
-const openCloexec = 0
-
 type processHandle struct{}
 
 type ProcessState struct {
