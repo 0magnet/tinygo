@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/src/tinygo"
@@ -103,7 +104,7 @@ type context struct {
 	indirectCatchers            map[llvm.Type]llvm.Value
 	asyncifyReplays             map[llvm.Type]llvm.Value
 	functionABIs                map[functionABIKey]functionABI
-	astComments                 map[string]*ast.CommentGroup
+	astComments                 map[string]astGlobalInfo
 	cgoImportDynamic            map[string]string // //go:cgo_import_dynamic local name -> remote symbol
 	embedGlobals                map[string][]*loader.EmbedFile
 	pkg                         *types.Package
@@ -132,7 +133,7 @@ func newContext(moduleName string, machine llvm.TargetMachine, config *Config, d
 		indirectCatchers: map[llvm.Type]llvm.Value{},
 		asyncifyReplays:  map[llvm.Type]llvm.Value{},
 		functionABIs:     map[functionABIKey]functionABI{},
-		astComments:      map[string]*ast.CommentGroup{},
+		astComments:      map[string]astGlobalInfo{},
 		cgoImportDynamic: map[string]string{},
 	}
 
@@ -146,7 +147,7 @@ func newContext(moduleName string, machine llvm.TargetMachine, config *Config, d
 	c.i1False = llvm.ConstNull(c.i1)
 	c.i1True = llvm.ConstAllOnes(c.i1)
 	c.mod = c.ctx.NewModule(moduleName)
-	c.mod.SetTarget(config.Triple)
+	c.mod.SetTarget(compileopts.LLVMTriple(config.Triple))
 	c.mod.SetDataLayout(c.targetData.String())
 	if c.Debug {
 		c.dibuilder = llvm.NewDIBuilder(c.mod)
@@ -1460,7 +1461,20 @@ func (b *builder) createFunction() {
 				}
 				dbgVar := b.getLocalVariable(variable)
 				pos := b.program.Fset.Position(instr.Pos())
-				b.dibuilder.InsertValueAtEnd(b.getValue(instr.X, getPos(instr)), dbgVar, b.dibuilder.CreateExpression(nil), llvm.DebugLoc{
+				expr := b.dibuilder.CreateExpression(nil)
+				var value llvm.Value
+				ptr, indirect := b.indirectValues[instr.X]
+				if unop, ok := instr.X.(*ssa.UnOp); indirect && ok && canUseDereferencePointer(unop) {
+					// ptr is the source of the dereference, which can change later.
+					indirect = false
+				}
+				if indirect {
+					value = ptr
+					expr = b.dibuilder.CreateExpression([]uint64{0x06}) // DW_OP_deref, DWARF 5 section 2.5.1.3.
+				} else {
+					value = b.getValue(instr.X, getPos(instr))
+				}
+				b.dibuilder.InsertValueAtEnd(value, dbgVar, expr, llvm.DebugLoc{
 					Line:  uint(pos.Line),
 					Col:   uint(pos.Column),
 					Scope: b.difunc,
@@ -1867,7 +1881,9 @@ func (b *builder) copyIndirectAggregate(dst, src llvm.Value, typ llvm.Type) {
 
 func (b *builder) storeValue(dst llvm.Value, value ssa.Value) {
 	typ := b.getLLVMType(value.Type())
-	if src, ok := b.indirectValues[value]; ok {
+	if _, ok := value.(*ssa.Const); ok && b.isIndirectAggregate(typ) {
+		b.zeroIndirectStorage(dst, typ)
+	} else if src, ok := b.indirectValues[value]; ok {
 		b.copyIndirectAggregate(dst, src, typ)
 	} else {
 		b.CreateStore(b.getValue(value, getPos(value)), dst)
