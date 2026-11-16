@@ -259,6 +259,21 @@ type ptrType struct {
 	methods   methodSet // only present when numMethod & numMethodHasMethodSet != 0
 }
 
+type pointerCacheEntry struct {
+	elem       *RawType
+	typ        *RawType
+	allocation unsafe.Pointer
+	next       *pointerCacheEntry
+}
+
+var pointerTypeCache atomic.Pointer[pointerCacheEntry]
+
+//go:extern internal/reflectlite.pointerTypeLinks
+var pointerTypeLinks **RawType
+
+//go:extern internal/reflectlite.pointerTypeLinksLen
+var pointerTypeLinksLen uintptr
+
 type interfaceType struct {
 	RawType
 	ptrTo   *RawType
@@ -381,10 +396,15 @@ type funcType struct {
 
 const funcTypeVariadic = 0x8000
 
+type methodEntry struct {
+	name *byte
+	typ  *RawType
+}
+
 // Method set, as emitted by the compiler.
 type methodSet struct {
-	length  uintptr
-	methods [0]unsafe.Pointer // variable number of method signature pointers
+	length     uintptr
+	signatures [0]unsafe.Pointer
 }
 
 // Equivalent to (go/types.Type).Underlying(): if this is a named type return
@@ -456,7 +476,74 @@ func SliceOf(t Type) Type {
 	return loadOrStoreCachedType(key, &typ.RawType)
 }
 
+func loadPointerType(elem *RawType) *RawType {
+	for entry := pointerTypeCache.Load(); entry != nil; entry = entry.next {
+		if entry.elem == elem {
+			return entry.typ
+		}
+	}
+	return nil
+}
+
+func loadLinkedPointerType(elem *RawType) *RawType {
+	for _, typ := range unsafe.Slice(pointerTypeLinks, pointerTypeLinksLen) {
+		if (*ptrType)(unsafe.Pointer(typ)).elem == elem {
+			return typ
+		}
+	}
+	return nil
+}
+
+func isLinkedPointerType(typ *RawType) bool {
+	for _, linked := range unsafe.Slice(pointerTypeLinks, pointerTypeLinksLen) {
+		if linked == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func loadOrStorePointerType(elem, typ *RawType, allocation unsafe.Pointer) *RawType {
+	entry := &pointerCacheEntry{elem: elem, typ: typ, allocation: allocation}
+	for {
+		head := pointerTypeCache.Load()
+		for existing := head; existing != nil; existing = existing.next {
+			if existing.elem == elem {
+				return existing.typ
+			}
+		}
+		entry.next = head
+		if pointerTypeCache.CompareAndSwap(head, entry) {
+			return typ
+		}
+	}
+}
+
+func makePointerType(elem *RawType) (*RawType, unsafe.Pointer) {
+	allocation := new([unsafe.Sizeof(ptrType{}) + 3]byte)
+	address := (uintptr(unsafe.Pointer(allocation)) + 3) &^ 3
+	typ := (*ptrType)(unsafe.Pointer(address))
+	*typ = ptrType{
+		RawType: RawType{meta: uint8(Pointer) | flagComparable | flagIsBinary},
+		elem:    elem,
+	}
+	return &typ.RawType, unsafe.Pointer(allocation)
+}
+
+func isDynamicPointerType(typ *RawType) bool {
+	for entry := pointerTypeCache.Load(); entry != nil; entry = entry.next {
+		if entry.typ == typ {
+			return true
+		}
+	}
+	return false
+}
+
 func pointerTo(t *RawType) *RawType {
+	if typ := loadPointerType(t); typ != nil {
+		return typ
+	}
+
 	if t.isNamed() {
 		return (*elemType)(unsafe.Pointer(t)).ptrTo
 	}
@@ -465,13 +552,17 @@ func pointerTo(t *RawType) *RawType {
 	case Bool, Int, Int8, Int16, Int32, Int64, Uint, Uint8, Uint16, Uint32, Uint64, Uintptr, Complex64, Complex128, Float32, Float64, String, UnsafePointer:
 		return (*basicType)(unsafe.Pointer(t)).ptrTo
 	case Pointer:
-		if tag := t.ptrtag(); tag < 3 {
+		if typ := loadLinkedPointerType(t); typ != nil {
+			return loadOrStorePointerType(t, typ, nil)
+		}
+
+		if tag := t.ptrtag(); tag < 3 &&
+			(tag != 0 || (!isDynamicPointerType(t) && !isLinkedPointerType(t))) {
 			return (*RawType)(unsafe.Add(unsafe.Pointer(t), 1))
 		}
 
-		// TODO(dgryski): This is blocking https://github.com/tinygo-org/tinygo/issues/3131
-		// We need to be able to create types that match existing types to prevent typecode equality.
-		panic("reflect: cannot make *****T type")
+		typ, allocation := makePointerType(t)
+		return loadOrStorePointerType(t, typ, allocation)
 	case Interface:
 		return (*interfaceType)(unsafe.Pointer(t)).ptrTo
 	case Func:
@@ -542,14 +633,29 @@ func (t *RawType) String() string {
 		s += " }"
 		return s
 	case Interface:
-		// TODO(dgryski): Needs actual method set info
-		return "interface {}"
+		methods := &(*interfaceType)(unsafe.Pointer(t)).methods
+		if methods.length == 0 {
+			return "interface {}"
+		}
+		s := "interface { "
+		for i := 0; i < int(methods.length); i++ {
+			if i != 0 {
+				s += "; "
+			}
+			entry := methodSetEntry(methods, i)
+			name, _, pkgName := methodName(entry)
+			if pkgName != "" {
+				s += pkgName + "."
+			}
+			s += name + entry.typ.String()[4:]
+		}
+		return s + " }"
 	case Func:
 		ft := t.funcDescriptor()
 		numIn := int(ft.numIn)
 		numOut := int(ft.numOut &^ funcTypeVariadic)
 		variadic := ft.numOut&funcTypeVariadic != 0
-		inOut := (*[1 << 16]*RawType)(unsafe.Pointer(&ft.inOut))
+		inOut := unsafe.Slice((**RawType)(unsafe.Pointer(&ft.inOut)), numIn+numOut)
 		s := "func("
 		for i := 0; i < numIn; i++ {
 			if i > 0 {
@@ -1175,9 +1281,8 @@ func (t *RawType) Implements(u Type) bool {
 }
 
 // typeImplementsMethodSet checks whether the concrete type (identified by its
-// typecode pointer) implements the given method set. Both the concrete type's
-// method set and the asserted method set are sorted arrays of method signature
-// pointers, so comparison is O(n+m).
+// typecode pointer) implements the given method set. Both method sets are
+// sorted by signature, so comparison is O(n+m).
 //
 //go:linkname typeImplementsMethodSet runtime.typeImplementsMethodSet
 func typeImplementsMethodSet(concreteType, assertedMethodSet unsafe.Pointer) bool {
@@ -1185,7 +1290,6 @@ func typeImplementsMethodSet(concreteType, assertedMethodSet unsafe.Pointer) boo
 		return false
 	}
 
-	const ptrSize = unsafe.Sizeof((*byte)(nil))
 	itfNumMethod := *(*uintptr)(assertedMethodSet)
 	if itfNumMethod == 0 {
 		return true
@@ -1223,14 +1327,14 @@ func typeImplementsMethodSet(concreteType, assertedMethodSet unsafe.Pointer) boo
 		return false
 	}
 
-	concreteTypePtr := unsafe.Pointer(&methods.methods)
-	concreteTypeEnd := unsafe.Add(concreteTypePtr, uintptr(methods.length)*ptrSize)
+	concreteTypePtr := unsafe.Pointer(&methods.signatures)
+	concreteTypeEnd := unsafe.Add(concreteTypePtr, uintptr(methods.length)*unsafe.Sizeof(unsafe.Pointer(nil)))
 
 	// Iterate over each method in the interface method set, and check whether
 	// the method exists in the method set of the concrete type.
 	// Both method sets are sorted, so we can use a linear scan.
-	assertedTypePtr := unsafe.Add(assertedMethodSet, ptrSize)
-	assertedTypeEnd := unsafe.Add(assertedTypePtr, itfNumMethod*ptrSize)
+	assertedTypePtr := unsafe.Add(assertedMethodSet, unsafe.Sizeof(uintptr(0)))
+	assertedTypeEnd := unsafe.Add(assertedTypePtr, itfNumMethod*unsafe.Sizeof(unsafe.Pointer(nil)))
 	for assertedTypePtr != assertedTypeEnd {
 		assertedMethod := *(*unsafe.Pointer)(assertedTypePtr)
 
@@ -1239,13 +1343,13 @@ func typeImplementsMethodSet(concreteType, assertedMethodSet unsafe.Pointer) boo
 				return false
 			}
 			concreteMethod := *(*unsafe.Pointer)(concreteTypePtr)
-			concreteTypePtr = unsafe.Add(concreteTypePtr, ptrSize)
+			concreteTypePtr = unsafe.Add(concreteTypePtr, unsafe.Sizeof(unsafe.Pointer(nil)))
 			if concreteMethod == assertedMethod {
 				break
 			}
 		}
 
-		assertedTypePtr = unsafe.Add(assertedTypePtr, ptrSize)
+		assertedTypePtr = unsafe.Add(assertedTypePtr, unsafe.Sizeof(unsafe.Pointer(nil)))
 	}
 
 	return true
@@ -1325,23 +1429,150 @@ func (t *RawType) Out(i int) Type {
 }
 
 func (t *RawType) NumMethod() int {
-
 	if t.isNamed() {
 		return int((*namedType)(unsafe.Pointer(t)).numMethod & ^uint16(numMethodHasMethodSet))
 	}
-
+	if t.ptrtag() != 0 {
+		return 0
+	}
 	switch t.Kind() {
 	case Pointer:
 		return int((*ptrType)(unsafe.Pointer(t)).numMethod & ^uint16(numMethodHasMethodSet))
 	case Struct:
 		return int((*structType)(unsafe.Pointer(t)).numMethod & ^uint16(numMethodHasMethodSet))
 	case Interface:
-		//FIXME: Use len(methods)
-		return (*interfaceType)(unsafe.Pointer(t)).ptrTo.NumMethod()
+		return int((*interfaceType)(unsafe.Pointer(t.underlying())).methods.length)
 	}
 
 	// Other types have no methods attached.  Note we don't panic here.
 	return 0
+}
+
+func (t *RawType) getMethodSet() *methodSet {
+	if t.isNamed() {
+		typ := (*namedType)(unsafe.Pointer(t))
+		if typ.numMethod&numMethodHasMethodSet == 0 {
+			return nil
+		}
+		return (*methodSet)(unsafe.Add(unsafe.Pointer(typ), unsafe.Sizeof(*typ)))
+	}
+	if t.ptrtag() != 0 {
+		return nil
+	}
+	switch t.Kind() {
+	case Interface:
+		return &(*interfaceType)(unsafe.Pointer(t.underlying())).methods
+	case Pointer:
+		typ := (*ptrType)(unsafe.Pointer(t))
+		if typ.numMethod&numMethodHasMethodSet == 0 {
+			return nil
+		}
+		return &typ.methods
+	case Struct:
+		typ := (*structType)(unsafe.Pointer(t))
+		if typ.numMethod&numMethodHasMethodSet == 0 {
+			return nil
+		}
+		fieldSize := unsafe.Sizeof(structField{})
+		return (*methodSet)(unsafe.Add(unsafe.Pointer(&typ.fields[0]), uintptr(typ.numField)*fieldSize))
+	default:
+		return nil
+	}
+}
+
+func methodSetEntry(methods *methodSet, i int) methodEntry {
+	ptrSize := unsafe.Sizeof(unsafe.Pointer(nil))
+	signatures := unsafe.Pointer(&methods.signatures)
+	count := uintptr(methods.length)
+	return methodEntry{
+		name: *(**byte)(unsafe.Add(signatures, (count+uintptr(i))*ptrSize)),
+		typ:  *(**RawType)(unsafe.Add(signatures, (2*count+uintptr(i))*ptrSize)),
+	}
+}
+
+func methodName(entry methodEntry) (name, pkgPath, pkgName string) {
+	if entry.name == nil {
+		return "", "", ""
+	}
+	ptr := unsafe.Pointer(entry.name)
+	pkgPath = readStringZ(ptr)
+	ptr = unsafe.Add(ptr, uintptr(len(pkgPath)+1))
+	pkgName = readStringZ(ptr)
+	ptr = unsafe.Add(ptr, uintptr(len(pkgName)+1))
+	return readStringZ(ptr), pkgPath, pkgName
+}
+
+func isExportedMethod(entry methodEntry) bool {
+	name, pkgPath, _ := methodName(entry)
+	return name != "" && pkgPath == ""
+}
+
+func (t *RawType) Method(i int) MethodInfo {
+	if i < 0 || i >= t.NumMethod() {
+		if t.Kind() == Interface {
+			return MethodInfo{}
+		}
+		panic("reflect: Method index out of range")
+	}
+	methods := t.getMethodSet()
+	if methods == nil {
+		panic("reflect: method metadata is unavailable")
+	}
+	isInterface := t.Kind() == Interface
+	index := 0
+	for j := 0; j < int(methods.length); j++ {
+		entry := methodSetEntry(methods, j)
+		if !isInterface && !isExportedMethod(entry) {
+			continue
+		}
+		if index == i {
+			name, pkgPath, _ := methodName(entry)
+			return MethodInfo{
+				Name:    name,
+				PkgPath: pkgPath,
+				Type:    entry.typ,
+				Index:   i,
+			}
+		}
+		index++
+	}
+	return MethodInfo{Index: i}
+}
+
+func (t *RawType) MethodByName(name string) (MethodInfo, bool) {
+	methods := t.getMethodSet()
+	if methods == nil {
+		if t.NumMethod() != 0 {
+			panic("reflect: method metadata is unavailable")
+		}
+		return MethodInfo{}, false
+	}
+	isInterface := t.Kind() == Interface
+	index := 0
+	for j := 0; j < int(methods.length); j++ {
+		entry := methodSetEntry(methods, j)
+		if !isInterface && !isExportedMethod(entry) {
+			continue
+		}
+		entryName, pkgPath, _ := methodName(entry)
+		if entryName == name {
+			return MethodInfo{
+				Name:    entryName,
+				PkgPath: pkgPath,
+				Type:    entry.typ,
+				Index:   index,
+			}, true
+		}
+		index++
+	}
+	return MethodInfo{}, false
+}
+
+type MethodInfo struct {
+	Name    string
+	PkgPath string
+	Type    *RawType
+	Index   int
 }
 
 // Read and return a null terminated string starting from data.
@@ -1362,8 +1593,8 @@ func (t *RawType) name() string {
 	ptr := unsafe.Add(unsafe.Pointer(ntype), unsafe.Sizeof(*ntype))
 	if ntype.numMethod&numMethodHasMethodSet != 0 {
 		ms := (*methodSet)(ptr)
-		// Skip past the length field and the method pointer entries.
-		ptr = unsafe.Add(ptr, unsafe.Sizeof(uintptr(0))+uintptr(ms.length)*unsafe.Sizeof(unsafe.Pointer(nil)))
+		// Skip past the length field and method entries.
+		ptr = unsafe.Add(ptr, unsafe.Sizeof(uintptr(0))+3*uintptr(ms.length)*unsafe.Sizeof(unsafe.Pointer(nil)))
 	}
 	return readStringZ(ptr)
 }

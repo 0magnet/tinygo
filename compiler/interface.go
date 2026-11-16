@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tinygo-org/tinygo/compileopts"
 	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
@@ -309,16 +310,22 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 
 	// Short-circuit all the global pointer logic here for pointers to pointers.
 	if typ, ok := typ.(*types.Pointer); ok {
-		if _, ok := typ.Elem().(*types.Pointer); ok {
-			// For a pointer to a pointer, we just increase the pointer by 1
-			ptr := c.getTypeCode(typ.Elem())
-			// if the type is already *****T or higher, we can't make it.
-			if typstr := typ.String(); strings.HasPrefix(typstr, "*****") {
-				c.addError(token.NoPos, fmt.Sprintf("too many levels of pointers for typecode: %s", typstr))
+		if _, ok := types.Unalias(typ.Elem()).(*types.Pointer); ok {
+			depth := 1
+			for elem := typ.Elem(); ; depth++ {
+				pointer, ok := types.Unalias(elem).(*types.Pointer)
+				if !ok {
+					break
+				}
+				elem = pointer.Elem()
 			}
-			return llvm.ConstGEP(c.i8, ptr, []llvm.Value{
-				llvm.ConstInt(c.i32, 1, false),
-			})
+			if depth < compileopts.MaxTypePointerDepth {
+				// For shallow pointers to pointers, increase the pointer by 1.
+				ptr := c.getTypeCode(typ.Elem())
+				return llvm.ConstGEP(c.i8, ptr, []llvm.Value{
+					llvm.ConstInt(c.i32, 1, false),
+				})
+			}
 		}
 	}
 
@@ -359,9 +366,11 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 		}
 		methodSetType := types.NewStruct([]*types.Var{
 			types.NewVar(token.NoPos, nil, "length", types.Typ[types.Uintptr]),
-			types.NewVar(token.NoPos, nil, "methods", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
+			types.NewVar(token.NoPos, nil, "signatures", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
+			types.NewVar(token.NoPos, nil, "names", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
+			types.NewVar(token.NoPos, nil, "types", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
 		}, nil)
-		methodSetValue := c.getMethodSetValue(methods)
+		var methodSetValue llvm.Value
 		switch typ := typ.(type) {
 		case *types.Basic:
 			typeFieldTypes = append(typeFieldTypes,
@@ -481,6 +490,7 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 		if isLocal {
 			c.interfaceTypes.Set(typ, global)
 		}
+		methodSetValue = c.getMethodSetValue(typ, methods)
 		metabyte := getTypeKind(typ)
 
 		// Precompute these so we don't have to calculate them at runtime.
@@ -1298,7 +1308,7 @@ func (c *context) getMethodSignature(method *types.Func) llvm.Value {
 	signatureGlobal := c.mod.NamedGlobal(globalName)
 	if signatureGlobal.IsNil() {
 		// TODO: put something useful in these globals, such as the method
-		// signature. Useful to one day implement reflect.Value.Method(n).
+		// signature.
 		signatureGlobal = llvm.AddGlobal(c.mod, c.i8, globalName)
 		signatureGlobal.SetInitializer(llvm.ConstInt(c.i8, 0, false))
 		signatureGlobal.SetLinkage(llvm.LinkOnceODRLinkage)
@@ -1335,16 +1345,22 @@ func (b *builder) createTypeAssert(expr *ssa.TypeAssert) llvm.Value {
 		}
 	} else {
 		baseType := types.Unalias(expr.AssertedType)
+		pointerDepth := 0
 		for {
 			ptr, ok := baseType.(*types.Pointer)
 			if !ok {
 				break
 			}
 			baseType = types.Unalias(ptr.Elem())
+			pointerDepth++
 		}
 		// getTypeCode emits pointer descriptors with basic, named, and interface types.
+		var useTypeID bool
 		switch baseType.(type) {
 		case *types.Basic, *types.Named, *types.Interface:
+			useTypeID = pointerDepth < compileopts.MaxTypePointerDepth
+		}
+		if useTypeID {
 			name, _ := b.getTypeCodeName(expr.AssertedType)
 			globalName := "reflect/types.typeid:" + name
 			assertedTypeCodeGlobal := b.mod.NamedGlobal(globalName)
@@ -1353,7 +1369,7 @@ func (b *builder) createTypeAssert(expr *ssa.TypeAssert) llvm.Value {
 				assertedTypeCodeGlobal.SetGlobalConstant(true)
 			}
 			commaOk = b.createRuntimeCall("typeAssert", []llvm.Value{actualTypeNum, assertedTypeCodeGlobal}, "typecode")
-		default:
+		} else {
 			assertedTypeCode := b.getTypeCode(expr.AssertedType)
 			commaOk = b.CreateICmp(llvm.IntEQ, actualTypeNum, assertedTypeCode, "typecode")
 		}
@@ -1462,21 +1478,33 @@ func (c *context) getMethodsString(itf *types.Interface) string {
 }
 
 // getMethodSetValue creates the method set struct value for a list of methods.
-// The struct contains a length and a sorted array of method signature pointers.
-func (c *context) getMethodSetValue(methods []*types.Func) llvm.Value {
-	// Create a sorted list of method signature global names.
+func (c *context) getMethodSetValue(owner types.Type, methods []*types.Func) llvm.Value {
+	// Create a sorted list of methods.
 	type methodRef struct {
-		name  string
-		value llvm.Value
+		signatureName string
+		metadataName  string
+		name          string
+		pkgPath       string
+		pkgName       string
+		signature     llvm.Value
+		methodType    llvm.Value
 	}
 	var refs []methodRef
+	_, ownerIsInterface := owner.Underlying().(*types.Interface)
 	for _, method := range methods {
 		name := method.Name()
+		var pkgPath, pkgName string
 		if !token.IsExported(name) {
-			name = method.Pkg().Path() + "." + name
+			pkgPath = method.Pkg().Path()
+			pkgName = method.Pkg().Name()
 		}
 		s, _ := c.getTypeCodeName(method.Type())
-		globalName := "reflect/types.signature:" + name + ":" + s
+		signatureName := name
+		if pkgPath != "" {
+			signatureName = pkgPath + "." + name
+		}
+		metadataName := signatureName + ":" + s
+		globalName := "reflect/types.signature:" + metadataName
 		value := c.mod.NamedGlobal(globalName)
 		if value.IsNil() {
 			value = llvm.AddGlobal(c.mod, c.i8, globalName)
@@ -1498,21 +1526,68 @@ func (c *context) getMethodSetValue(methods []*types.Func) llvm.Value {
 				value.AddMetadata(0, diglobal)
 			}
 		}
-		refs = append(refs, methodRef{globalName, value})
+		reflectedType := method.Type()
+		if !ownerIsInterface {
+			signature := method.Type().(*types.Signature)
+			params := make([]*types.Var, 0, signature.Params().Len()+1)
+			params = append(params, types.NewVar(token.NoPos, nil, "", owner))
+			for param := range signature.Params().Variables() {
+				params = append(params, param)
+			}
+			reflectedType = types.NewSignatureType(
+				nil,
+				nil,
+				nil,
+				types.NewTuple(params...),
+				signature.Results(),
+				signature.Variadic(),
+			)
+		}
+		refs = append(refs, methodRef{
+			signatureName: signatureName,
+			metadataName:  metadataName,
+			name:          name,
+			pkgPath:       pkgPath,
+			pkgName:       pkgName,
+			signature:     value,
+			methodType:    c.getTypeCode(reflectedType),
+		})
 	}
 	sort.Slice(refs, func(i, j int) bool {
-		return refs[i].name < refs[j].name
+		return refs[i].signatureName < refs[j].signatureName
 	})
 
-	var values []llvm.Value
+	var signatures []llvm.Value
+	var names []llvm.Value
+	var types []llvm.Value
 	for _, ref := range refs {
-		values = append(values, ref.value)
+		signatures = append(signatures, ref.signature)
+		names = append(names, c.getMethodNameGlobal(ref.metadataName, ref.pkgPath, ref.pkgName, ref.name))
+		types = append(types, ref.methodType)
 	}
 
 	return c.ctx.ConstStruct([]llvm.Value{
-		llvm.ConstInt(c.uintptrType, uint64(len(values)), false),
-		llvm.ConstArray(c.dataPtrType, values),
+		llvm.ConstInt(c.uintptrType, uint64(len(refs)), false),
+		llvm.ConstArray(c.dataPtrType, signatures),
+		llvm.ConstArray(c.dataPtrType, names),
+		llvm.ConstArray(c.dataPtrType, types),
 	}, false)
+}
+
+func (c *context) getMethodNameGlobal(identity, pkgPath, pkgName, name string) llvm.Value {
+	globalName := "reflect/types.methodname:" + identity
+	global := c.mod.NamedGlobal(globalName)
+	if !global.IsNil() {
+		return global
+	}
+	value := c.ctx.ConstString(pkgPath+"\x00"+pkgName+"\x00"+name+"\x00", false)
+	global = llvm.AddGlobal(c.mod, value.Type(), globalName)
+	global.SetInitializer(value)
+	global.SetGlobalConstant(true)
+	global.SetLinkage(llvm.LinkOnceODRLinkage)
+	global.SetAlignment(1)
+	global.SetUnnamedAddr(true)
+	return global
 }
 
 // getInvokeFunction returns the thunk to call the given interface method. The
