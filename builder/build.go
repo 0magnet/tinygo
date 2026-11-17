@@ -33,6 +33,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler"
+	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
 	"github.com/tinygo-org/tinygo/interp"
 	"github.com/tinygo-org/tinygo/loader"
@@ -651,37 +652,12 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 			// module on every call.
 			linker := llvm.NewLinker(mod)
 			defer linker.Dispose()
-			// Resolve duplicate function definitions before linking.
-			// This can happen when a newer Go version adds a function
-			// body in a standard library package that was previously
-			// just a declaration provided by //go:linkname from the
-			// runtime. In that case, keep the first (runtime) definition
-			// by weakening the later one's linkage so the LLVM linker
-			// discards it in favor of the strong one.
-			defined := make(map[string]struct{})
 			for _, pkgJob := range packageJobs {
 				pkgMod, err := ctx.ParseBitcodeFile(pkgJob.result)
 				if err != nil {
 					return fmt.Errorf("failed to load bitcode file: %w", err)
 				}
-				for fn := pkgMod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
-					if fn.IsDeclaration() {
-						continue
-					}
-					if l := fn.Linkage(); l == llvm.InternalLinkage || l == llvm.PrivateLinkage {
-						// The linker renames a local function whose name is
-						// taken. Weakening it would merge it with another
-						// package's function of that name instead.
-						continue
-					}
-					name := fn.Name()
-					if _, ok := defined[name]; ok {
-						fn.SetLinkage(llvm.LinkOnceODRLinkage)
-						continue
-					}
-					defined[name] = struct{}{}
-				}
-				err = linker.LinkModule(pkgMod)
+				err = linkPackageModule(linker, mod, pkgMod)
 				if err != nil {
 					return fmt.Errorf("failed to link module: %w", err)
 				}
@@ -728,7 +704,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 			// non-exported functions by setting the visibility to hidden or
 			// (for thunks) to linkonce_odr linkage. Change the linkage here to
 			// internal to benefit much more from interprocedural optimizations.
-			for fn := mod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
+			for fn := range llvmutil.Functions(mod) {
 				if fn.Visibility() == llvm.HiddenVisibility {
 					fn.SetVisibility(llvm.DefaultVisibility)
 					fn.SetLinkage(llvm.InternalLinkage)
@@ -738,7 +714,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 			}
 
 			// Do the same for globals.
-			for global := mod.FirstGlobal(); !global.IsNil(); global = llvm.NextGlobal(global) {
+			for global := range llvmutil.Globals(mod) {
 				if global.Visibility() == llvm.HiddenVisibility {
 					global.SetVisibility(llvm.DefaultVisibility)
 					global.SetLinkage(llvm.InternalLinkage)
@@ -1421,6 +1397,28 @@ func createEmbedObjectFile(data, hexSum, sourceFile, sourceDir, tmpdir string, c
 	return outfile.Name(), outfile.Close()
 }
 
+// linkPackageModule links pkgMod into mod.
+//
+// Resolve duplicate function definitions before linking. This can happen when
+// a newer Go version adds a function body in a standard library package that
+// was previously just a declaration provided by //go:linkname from the
+// runtime. In that case, keep the existing (runtime) definition by weakening
+// the new one's linkage so the LLVM linker discards it in favor of the
+// existing one. Internal functions never clash, the linker renames them.
+func linkPackageModule(linker llvm.Linker, mod, pkgMod llvm.Module) error {
+	for fn := range llvmutil.Functions(pkgMod) {
+		if fn.IsDeclaration() || fn.Linkage() == llvm.InternalLinkage || fn.Linkage() == llvm.PrivateLinkage {
+			continue
+		}
+		existing := mod.NamedFunction(fn.Name())
+		if existing.IsNil() || existing.IsDeclaration() {
+			continue
+		}
+		fn.SetLinkage(llvm.LinkOnceODRLinkage)
+	}
+	return linker.LinkModule(pkgMod)
+}
+
 // optimizeProgram runs a series of optimizations and transformations that are
 // needed to convert a program to its final form. Some transformations are not
 // optional and must be run as the compiler expects them to run.
@@ -1570,10 +1568,10 @@ func determineStackSizes(mod llvm.Module, executable string) ([]string, map[stri
 	var callsIndirectFunction []string
 	gowrappers := []string{}
 	gowrapperNames := make(map[string]string)
-	for fn := mod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
+	for fn := range llvmutil.Functions(mod) {
 		// Determine which functions call a function pointer.
-		for bb := fn.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
-			for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+		for bb := range llvmutil.BasicBlocks(fn) {
+			for inst := range llvmutil.Instructions(bb) {
 				if inst.IsACallInst().IsNil() {
 					continue
 				}

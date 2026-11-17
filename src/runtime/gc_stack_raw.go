@@ -48,6 +48,7 @@ func scanstack(sp uintptr) {
 	} else {
 		// This is a goroutine stack.
 		markCurrentGoroutineStack(sp)
+		markLiveStack(sp)
 	}
 }
 

@@ -23,6 +23,8 @@ const (
 	MaximumGoMinorVersion = 27
 )
 
+const MaxTypePointerDepth = 5
+
 // Library versions. Whenever an existing library is changed, this number should
 // be added/increased so that existing caches are invalidated.
 //
@@ -458,7 +460,7 @@ func (c *Config) CFlags(libclang bool) []string {
 	// Use the same optimization level as TinyGo.
 	cflags = append(cflags, "-O"+c.Options.Opt)
 	// Set the LLVM target triple.
-	cflags = append(cflags, "--target="+ClangTriple(c.Triple()))
+	cflags = append(cflags, "--target="+LLVMTriple(c.Triple()))
 	// Set the -mcpu (or similar) flag.
 	if c.Target.CPU != "" {
 		if c.GOARCH() == "amd64" || c.GOARCH() == "386" {

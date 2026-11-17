@@ -212,8 +212,12 @@ func (a *escapeAnalysis) valueEscapesAt(value llvm.Value, allowReturn bool) (res
 			if !result.merge(a.valueEscapesAt(use, allowReturn)) {
 				return result
 			}
-		case llvm.BitCast:
-			// A bitcast escapes if the casted-to value escapes.
+		case llvm.PHI:
+			if use.InstructionParent().InCycle() {
+				return escapeResult{escapeAt: use}
+			}
+			fallthrough
+		case llvm.BitCast, llvm.Select:
 			if !result.merge(a.valueEscapesAt(use, allowReturn)) {
 				return result
 			}
@@ -226,22 +230,6 @@ func (a *escapeAnalysis) valueEscapesAt(value llvm.Value, allowReturn bool) (res
 				if !result.merge(a.valueEscapesAt(use, allowReturn)) {
 					return result
 				}
-			}
-		case llvm.Select:
-			// A select escapes if the selected value escapes.
-			if !result.merge(a.valueEscapesAt(use, allowReturn)) {
-				return result
-			}
-		case llvm.PHI:
-			// In a callee a phi only merges this call's argument, such as
-			// return nil, err or return p, nil. In the allocating function
-			// a phi can carry the object into the next loop iteration,
-			// where the same stack slot is reused.
-			if !allowReturn {
-				return escapeResult{escapeAt: use}
-			}
-			if !result.merge(a.valueEscapesAt(use, allowReturn)) {
-				return result
 			}
 		case llvm.Load:
 			// Load does not escape.

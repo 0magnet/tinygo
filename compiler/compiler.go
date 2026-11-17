@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/src/tinygo"
@@ -108,7 +109,7 @@ type context struct {
 	indirectCatchers            map[llvm.Type]llvm.Value
 	asyncifyReplays             map[llvm.Type]llvm.Value
 	functionABIs                map[functionABIKey]functionABI
-	astComments                 map[string]*ast.CommentGroup
+	astComments                 map[string]astGlobalInfo
 	cgoImportDynamic            map[string]string // //go:cgo_import_dynamic local name -> remote symbol
 	embedGlobals                map[string][]*loader.EmbedFile
 	pkg                         *types.Package
@@ -138,7 +139,7 @@ func newContext(moduleName string, machine llvm.TargetMachine, config *Config, d
 		indirectCatchers: map[llvm.Type]llvm.Value{},
 		asyncifyReplays:  map[llvm.Type]llvm.Value{},
 		functionABIs:     map[functionABIKey]functionABI{},
-		astComments:      map[string]*ast.CommentGroup{},
+		astComments:      map[string]astGlobalInfo{},
 		cgoImportDynamic: map[string]string{},
 	}
 
@@ -152,7 +153,7 @@ func newContext(moduleName string, machine llvm.TargetMachine, config *Config, d
 	c.i1False = llvm.ConstNull(c.i1)
 	c.i1True = llvm.ConstAllOnes(c.i1)
 	c.mod = c.ctx.NewModule(moduleName)
-	c.mod.SetTarget(config.Triple)
+	c.mod.SetTarget(compileopts.LLVMTriple(config.Triple))
 	c.mod.SetDataLayout(c.targetData.String())
 	if c.Debug {
 		c.dibuilder = llvm.NewDIBuilder(c.mod)
@@ -1002,9 +1003,9 @@ func (c *context) createPackage(irbuilder llvm.Builder, pkg *ssa.Package) {
 			} else if !info.extern {
 				global.SetInitializer(llvm.ConstNull(global.GlobalValueType()))
 				global.SetVisibility(llvm.HiddenVisibility)
-				if i := strings.LastIndexByte(info.linkName, '.'); i > 0 && info.linkName[:i] != member.Pkg.Pkg.Path() {
-					// A //go:linkname to another package's variable. Go merges
-					// it with that definition, so let the definition win.
+				if info.linkedDeclaration {
+					// Go merges it with the other package's definition, which
+					// may not be linked in (klauspost/cpuid reads internal/cpu.HWCap).
 					global.SetLinkage(llvm.WeakAnyLinkage)
 				}
 				if info.section != "" {
@@ -1310,7 +1311,6 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 			pos := b.program.Fset.Position(b.fn.Pos())
 			b.difunc = b.attachDebugInfoRaw(b.fn, b.llvmFn, "", pos.Filename, pos.Line)
 		}
-		b.setDebugLocation(b.fn.Pos())
 	}
 
 	// Pre-create all basic blocks in the function.
@@ -1345,6 +1345,9 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		entryBlock = blockInfo[0].entry
 	}
 	b.SetInsertPointAtEnd(entryBlock)
+	if b.Debug {
+		b.setDebugLocation(b.fn.Pos())
+	}
 
 	if b.fn.Synthetic == "package initializer" {
 		b.initPseudoFuncs = make(map[string]llvm.Metadata)
@@ -1479,7 +1482,20 @@ func (b *builder) createFunction() {
 				}
 				dbgVar := b.getLocalVariable(variable)
 				pos := b.program.Fset.Position(instr.Pos())
-				b.dibuilder.InsertValueAtEnd(b.getValue(instr.X, getPos(instr)), dbgVar, b.dibuilder.CreateExpression(nil), llvm.DebugLoc{
+				expr := b.dibuilder.CreateExpression(nil)
+				var value llvm.Value
+				ptr, indirect := b.indirectValues[instr.X]
+				if unop, ok := instr.X.(*ssa.UnOp); indirect && ok && b.canUseDereferencePointer(unop) {
+					// ptr is the source of the dereference, which can change later.
+					indirect = false
+				}
+				if indirect {
+					value = ptr
+					expr = b.dibuilder.CreateExpression([]uint64{0x06}) // DW_OP_deref, DWARF 5 section 2.5.1.3.
+				} else {
+					value = b.getValue(instr.X, getPos(instr))
+				}
+				b.dibuilder.InsertValueAtEnd(value, dbgVar, expr, llvm.DebugLoc{
 					Line:  uint(pos.Line),
 					Col:   uint(pos.Column),
 					Scope: b.difunc,
@@ -1619,6 +1635,9 @@ func (b *builder) createInstruction(instr ssa.Instruction) {
 
 	switch instr := instr.(type) {
 	case ssa.Value:
+		if call, ok := instr.(*ssa.Call); ok {
+			b.markReflectMethodUse(&call.Call)
+		}
 		if value, err := b.createExpr(instr); err != nil {
 			// This expression could not be parsed. Add the error to the list
 			// of diagnostics and continue with an undef value.
@@ -1634,8 +1653,10 @@ func (b *builder) createInstruction(instr ssa.Instruction) {
 	case *ssa.DebugRef:
 		// ignore
 	case *ssa.Defer:
+		b.markReflectMethodUse(&instr.Call)
 		b.createDefer(instr)
 	case *ssa.Go:
+		b.markReflectMethodUse(&instr.Call)
 		// Start a new goroutine.
 		b.createGo(instr)
 	case *ssa.If:
@@ -1685,6 +1706,48 @@ func (b *builder) createInstruction(instr ssa.Instruction) {
 		b.storeValue(llvmAddr, instr.Val)
 	default:
 		b.addError(instr.Pos(), "unknown instruction: "+instr.String())
+	}
+}
+
+func (b *builder) markReflectMethodUse(call *ssa.CallCommon) {
+	pkg := b.fn.Pkg
+	if pkg == nil && b.fn.Origin() != nil {
+		pkg = b.fn.Origin().Pkg
+	}
+	var callerPkg *types.Package
+	if pkg != nil {
+		callerPkg = pkg.Pkg
+	} else if recv := b.fn.Signature.Recv(); recv != nil {
+		receiver := types.Unalias(recv.Type())
+		if pointer, ok := receiver.(*types.Pointer); ok {
+			receiver = types.Unalias(pointer.Elem())
+		}
+		if named, ok := receiver.(*types.Named); ok {
+			callerPkg = named.Obj().Pkg()
+		}
+	}
+	if callerPkg != nil {
+		switch callerPkg.Path() {
+		case "reflect", "internal/reflectlite":
+			return
+		}
+	}
+
+	var method *types.Func
+	if call.IsInvoke() {
+		method = call.Method
+	} else if callee := call.StaticCallee(); callee != nil {
+		if object := callee.Object(); object != nil {
+			method, _ = object.(*types.Func)
+		}
+	}
+	if method == nil || method.Pkg() == nil || method.Pkg().Path() != "reflect" {
+		return
+	}
+	switch method.Name() {
+	case "Method", "MethodByName", "Methods":
+		attr := b.ctx.CreateStringAttribute("tinygo-reflect-method", "")
+		b.llvmFn.AddFunctionAttr(attr)
 	}
 }
 
@@ -1946,7 +2009,9 @@ func (b *builder) copyIndirectAggregate(dst, src llvm.Value, typ llvm.Type) {
 
 func (b *builder) storeValue(dst llvm.Value, value ssa.Value) {
 	typ := b.getLLVMType(value.Type())
-	if src, ok := b.indirectValues[value]; ok {
+	if _, ok := value.(*ssa.Const); ok && b.isIndirectAggregate(typ) {
+		b.zeroIndirectStorage(dst, typ)
+	} else if src, ok := b.indirectValues[value]; ok {
 		b.copyIndirectAggregate(dst, src, typ)
 	} else {
 		b.CreateStore(b.getValue(value, getPos(value)), dst)
@@ -4095,7 +4160,7 @@ func (b *builder) createUnOp(unop *ssa.UnOp) (llvm.Value, error) {
 			return b.loadFromStorage(x, unop.Type(), ""), nil
 		}
 	case token.XOR: // ^x, toggle all bits in integer
-		return b.CreateXor(x, llvm.ConstInt(x.Type(), ^uint64(0), false), ""), nil
+		return b.CreateXor(x, llvm.ConstAllOnes(x.Type()), ""), nil
 	case token.ARROW: // <-x, receive from channel
 		return b.createChanRecv(unop), nil
 	default:

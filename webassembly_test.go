@@ -548,18 +548,28 @@ func TestWASIPanicTraceback(t *testing.T) {
 		t.Skip("skipping test in short mode")
 	}
 
-	options := optionsFromTarget("wasip1", sema)
-	config, err := builder.NewConfig(&options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	// In panic-traceback-blocking.go a deferred call blocks while the panic
 	// runs its defers.
-	for _, name := range []string{"panic-traceback.go", "panic-traceback-blocking.go"} {
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		file  string
+		mode  string
+		frame string
+	}{
+		{file: "panic-traceback.go", mode: "indirect", frame: "main.panicHere"},
+		{file: "panic-traceback.go", mode: "direct", frame: "main.inlinePanic"},
+		{file: "panic-traceback-blocking.go", mode: "blocking", frame: "main.panicHere"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
 			t.Parallel()
-			result, err := builder.Build("testdata/"+name, ".wasm", t.TempDir(), config)
+			options := optionsFromTarget("wasip1", sema)
+			options.GlobalValues = map[string]map[string]string{
+				"main": {"mode": test.mode},
+			}
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := builder.Build("testdata/"+test.file, ".wasm", t.TempDir(), config)
 			if err != nil {
 				t.Fatal("failed to build binary:", err)
 			}
@@ -577,8 +587,8 @@ func TestWASIPanicTraceback(t *testing.T) {
 			if err == nil {
 				t.Fatal("program unexpectedly exited successfully")
 			}
-			if !strings.Contains(err.Error(), "main.panicHere") {
-				t.Fatalf("panic traceback does not contain main.panicHere:\n%s", err)
+			if !strings.Contains(err.Error(), test.frame) {
+				t.Fatalf("panic traceback does not contain %s:\n%s", test.frame, err)
 			}
 		})
 	}

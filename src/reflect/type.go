@@ -494,18 +494,25 @@ func (t *rawType) Key() Type {
 	return toType(t.RawType.Key())
 }
 
-// TINYGO: method names, types and funcs are not kept at run time. Method returns
-// only the Index, and MethodByName finds nothing, so callers fall back as they
-// would for a type without the method.
 func (t *rawType) Method(i int) Method {
-	if i < 0 || i >= t.NumMethod() {
-		panic("reflect: Method index out of range")
-	}
-	return Method{Index: i}
+	return toMethod(t.RawType.Method(i))
 }
 
 func (t *rawType) MethodByName(name string) (Method, bool) {
-	return Method{}, false
+	method, ok := t.RawType.MethodByName(name)
+	if !ok {
+		return Method{}, false
+	}
+	return toMethod(method), true
+}
+
+func toMethod(method reflectlite.MethodInfo) Method {
+	return Method{
+		Name:    method.Name,
+		PkgPath: method.PkgPath,
+		Type:    toType(method.Type),
+		Index:   method.Index,
+	}
 }
 
 func (t *rawType) Methods() iter.Seq[Method] {

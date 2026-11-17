@@ -1,7 +1,7 @@
 ; ModuleID = 'goroutine.go'
 source_filename = "goroutine.go"
 target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20"
-target triple = "wasm32-unknown-wasi"
+target triple = "wasm32-unknown-wasip1"
 
 @"main$string" = internal unnamed_addr constant [4 x i8] c"test", align 1
 
@@ -155,13 +155,13 @@ declare i32 @llvm.umin.i32(i32, i32) #7
 declare void @llvm.memmove.p0.p0.i32(ptr writeonly captures(none), ptr readonly captures(none), i32, i1 immarg) #8
 
 ; Function Attrs: nounwind
-define hidden void @main.closeBuiltinGoroutine(ptr dereferenceable_or_null(40) %ch, ptr %context) unnamed_addr #1 {
+define hidden void @main.closeBuiltinGoroutine(ptr dereferenceable_or_null(44) %ch, ptr %context) unnamed_addr #1 {
 entry:
   call void @runtime.chanClose(ptr %ch, ptr undef) #11
   ret void
 }
 
-declare void @runtime.chanClose(ptr dereferenceable_or_null(40), ptr) #0
+declare void @runtime.chanClose(ptr dereferenceable_or_null(44), ptr) #0
 
 ; Function Attrs: nounwind
 define hidden void @main.startInterfaceMethod(ptr %itf.typecode, ptr %itf.value, ptr %context) unnamed_addr #1 {

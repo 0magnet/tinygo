@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tinygo-org/tinygo/builder"
 	"github.com/tinygo-org/tinygo/compileopts"
@@ -16,15 +19,58 @@ import (
 	"github.com/tinygo-org/tinygo/goenv"
 )
 
+func TestReflectMethodReferences(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		declaration string
+		call        string
+	}{
+		{"expression", "var lookup = reflect.Type.MethodByName", `lookup(reflect.TypeOf(target{}), "Kept")`},
+		{"bound", "var lookup = reflect.TypeOf(target{}).MethodByName", `lookup("Kept")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := `package main
+import "reflect"
+type target struct{}
+func (target) Kept() {}
+` + tc.declaration + `
+func main() {
+	method, ok := ` + tc.call + `
+	if !ok || method.Name != "Kept" {
+		panic("indirect method lookup lost metadata")
+	}
+}`
+			path := filepath.Join(t.TempDir(), "main.go")
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			options := optionsFromTarget("", sema)
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			_, err = buildAndRun(path, config, &output, nil, nil, 2*time.Minute, func(cmd *exec.Cmd, result *builder.BuildResult) error {
+				return cmd.Run()
+			})
+			if err != nil {
+				t.Fatalf("indirect method lookup failed: %v\n%s", err, output.String())
+			}
+		})
+	}
+}
+
 func TestBuild(t *testing.T) {
 	t.Parallel()
 
 	tests := []string{
 		"aggregate.go",
+		"aggregatestorage.go",
 		"alias.go",
 		"atomic.go",
 		"binop.go",
-		"buildinfo.go",
 		"calls.go",
 		"cgo/",
 		"channel.go",
@@ -37,6 +83,7 @@ func TestBuild(t *testing.T) {
 		"finalizerinvariants.go",
 		"finalizerlarge.go",
 		"float.go",
+		"gc-register-root.go",
 		"gc.go",
 		"gcstacks.go",
 		"generics.go",
@@ -340,7 +387,23 @@ func TestBuild(t *testing.T) {
 			opts.Opt = "0"
 			emuCheck(t, opts)
 			runTestWithConfig("gc.go", t, opts, nil, nil)
+			runTestWithConfig("gc-register-root.go", t, opts, nil, nil)
 		})
+
+		// At -opt=0 the compiler keeps roots in callee-saved registers
+		// across a call. The host only runs the block GC when asked for it.
+		if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+			for _, gc := range []string{"conservative", "precise"} {
+				t.Run("opt=0-scheduler=tasks-gc="+gc, func(t *testing.T) {
+					t.Parallel()
+					opts := optionsFromTarget("", sema)
+					opts.Opt = "0"
+					opts.GC = gc
+					opts.Scheduler = "tasks"
+					runTestWithConfig("gc-register-root.go", t, opts, nil, nil)
+				})
+			}
+		}
 
 		t.Run("gc=none-runtime-panic", func(t *testing.T) {
 			t.Parallel()
@@ -702,7 +765,7 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				// limited amount of memory.
 				continue
 
-			case "stringfrombytes_stress.go":
+			case "aggregatestorage.go", "stringfrombytes_stress.go":
 				// Needs more RAM than AVR has.
 				continue
 
@@ -711,8 +774,9 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				// map keys, overflowing the goroutine stack (384 bytes).
 				continue
 
-			case "gc.go":
-				// Does not pass due to high mark false positive rate.
+			case "gc.go", "gc-register-root.go":
+				// High mark false positive rate, and runtime.GC does not
+				// return. See the finalizerinvariants.go exclusion below.
 				continue
 
 			case "chanrecover.go":
@@ -723,7 +787,7 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				// Too many goroutines for the available RAM.
 				continue
 
-			case "buildinfo.go", "json.go", "stdlib.go", "testing.go":
+			case "buildinfo.go", "json.go", "localtypes.go", "stdlib.go", "testing.go":
 				// Too big for AVR. Doesn't fit in flash/RAM.
 				continue
 

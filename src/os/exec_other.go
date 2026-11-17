@@ -15,6 +15,9 @@ type ProcessState struct {
 }
 
 func (p *ProcessState) String() string {
+	if p == nil {
+		return "<nil>"
+	}
 	return "" // TODO
 }
 func (p *ProcessState) Success() bool {

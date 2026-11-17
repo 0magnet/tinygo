@@ -13,12 +13,12 @@ import (
 type methodTable struct {
 	typecode *RawType
 	len      uintptr
-	first    [0]methodEntry
+	first    [0]methodTableEntry
 }
 
-// methodEntry is one method. fn is called as a func value of type typ with
+// methodTableEntry is one method. fn is called as a func value of type typ with
 // the receiver's interface data word as its context.
-type methodEntry struct {
+type methodTableEntry struct {
 	name string
 	typ  *RawType
 	fn   unsafe.Pointer
@@ -37,8 +37,8 @@ type methodTableList struct {
 //go:linkname methodTables reflect/types.methodtables
 func methodTables() *methodTableList
 
-func (t *methodTable) entries() []methodEntry {
-	return unsafe.Slice((*methodEntry)(unsafe.Pointer(&t.first)), t.len)
+func (t *methodTable) entries() []methodTableEntry {
+	return unsafe.Slice((*methodTableEntry)(unsafe.Pointer(&t.first)), t.len)
 }
 
 // find returns the index of the named method, or -1. A binary search would add a
@@ -74,7 +74,7 @@ func valueMethod(v Value, i int, missing any) Value {
 		}
 		return v.Elem().MethodByName(table.entries()[i].name)
 	}
-	var entries []methodEntry
+	var entries []methodTableEntry
 	if table := typeMethods(v.typecode); table != nil {
 		entries = table.entries()
 	}
@@ -112,7 +112,7 @@ func interfaceMethods(v Value) *methodTable {
 
 // bindMethod returns a func value that calls m with v as the receiver. It
 // panics with missing if m cannot be called through reflection.
-func bindMethod(v Value, m *methodEntry, missing any) Value {
+func bindMethod(v Value, m *methodTableEntry, missing any) Value {
 	if m.fn == nil {
 		panic(missing)
 	}

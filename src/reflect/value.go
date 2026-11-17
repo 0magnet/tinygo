@@ -207,27 +207,15 @@ func MakeChan(typ Type, buffer int) Value {
 }
 
 func (v Value) Call(in []Value) []Value {
-	return fromLite(v.Value.Call(toLite(in)))
+	rawIn := *(*[]reflectlite.Value)(unsafe.Pointer(&in))
+	out := v.Value.Call(rawIn)
+	return *(*[]Value)(unsafe.Pointer(&out))
 }
 
 func (v Value) CallSlice(in []Value) []Value {
-	return fromLite(v.Value.CallSlice(toLite(in)))
-}
-
-func toLite(in []Value) []reflectlite.Value {
-	out := make([]reflectlite.Value, len(in))
-	for i, v := range in {
-		out[i] = v.Value
-	}
-	return out
-}
-
-func fromLite(in []reflectlite.Value) []Value {
-	out := make([]Value, len(in))
-	for i, v := range in {
-		out[i] = Value{v}
-	}
-	return out
+	rawIn := *(*[]reflectlite.Value)(unsafe.Pointer(&in))
+	out := v.Value.CallSlice(rawIn)
+	return *(*[]Value)(unsafe.Pointer(&out))
 }
 
 func (v Value) Equal(u Value) bool {

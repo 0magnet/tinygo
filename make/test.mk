@@ -128,11 +128,14 @@ TEST_PACKAGES_LINUX := \
 	strings \
 	testing/cryptotest \
 	testing/fstest \
+	testing/quick \
+	time \
 	$(nil)
 
 TEST_PACKAGES_DARWIN := $(TEST_PACKAGES_LINUX)
 
 # os/user requires t.Skip() support
+# time takes more than 25 minutes on Windows.
 TEST_PACKAGES_WINDOWS := \
 	compress/flate \
 	io/ioutil \
@@ -221,27 +224,31 @@ TEST_PACKAGES_HOST := $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_WINDOWS)
 TEST_PACKAGES_HOST_FULL_ONLY += io/fs
 endif
 
-TEST_SKIP_FLAG := -skip='TestExtraMethods|TestAsValidation|TestUnmarshalNestingLimitSlice|TestUnmarshalNestingLimitStruct'
+TEST_SKIP_FLAG := -skip='TestAsValidation|TestUnmarshalNestingLimitSlice|TestUnmarshalNestingLimitStruct'
 TEST_ADDITIONAL_FLAGS ?=
 
 TEST_OPTIONS_crypto/dsa := -short
 TEST_OPTIONS_crypto/sha256 := -skip='^(TestExtraMethods|TestAllocations|TestAllocatonsWithTypeAsserts)$$'
-TEST_OPTIONS_crypto/sha512 := -skip='^(TestExtraMethods|TestAllocations|TestAllocatonsWithTypeAsserts)$$'
+TEST_OPTIONS_crypto/sha512 := -skip='^(TestExtraMethods|TestAllocations)$$'
 TEST_OPTIONS_strconv := -skip='^(TestCountMallocs|TestAllocationsFromBytes)$$'
 TEST_OPTIONS_unicode/utf16 := -skip='^(TestAllocationsDecode)$$'
-TEST_OPTIONS_unicode/utf8 := -skip='^(TestAllocationsDecode)$$'
-TEST_OPTIONS_context := -skip='^TestAllocs$$'
 TEST_OPTIONS_mime := -skip='^TestLookupMallocs$$'
-TEST_OPTIONS_net/textproto := -skip='^TestCommonHeaders$$'
 TEST_OPTIONS_reflect := -skip='^TestMapIterSet$$'
-TEST_OPTIONS_bytes := -skip='^(TestNewBufferShallow|TestReplace)$$'
+TEST_OPTIONS_bytes := -skip='^TestNewBufferShallow$$'
 TEST_OPTIONS_slices := -skip='^(TestGrow|TestInsert|TestConcat)$$'
 TEST_OPTIONS_strings := -skip='^(TestBuilderAllocs|TestBuilderGrow|TestBuilderGrowSizeclasses|TestIndexRune|TestReplace)$$'
 TEST_OPTIONS_crypto/mldsa := -short -stack-size=1MB -skip='^TestAllocations$$'
-TEST_OPTIONS_encoding/gob := -skip='^(TestIgnoreDepthLimit|TestCountEncodeMallocs|TestCountDecodeMallocs)$$'
+TEST_OPTIONS_encoding/gob := -skip='^(TestIgnoreDepthLimit|TestCountDecodeMallocs)$$'
 
+tinygo-test tinygo-test-fast: TEST_OPTIONS_time := -skip='^TestTimerGC$$'
+ifeq ($(uname),Darwin)
+# These tests start 1,000 to 5,000 goroutines and can exceed macOS's thread limit.
+# https://go.dev/src/time/sleep_test.go and https://go.dev/src/time/tick_test.go
+tinygo-test tinygo-test-fast: TEST_OPTIONS_time := -skip='^(TestTimerGC|TestStopResult|TestResetResult|TestLongAdjustTimers)$$|^TestZeroTimer$$/^impl=(func|cache)$$'
+endif
 tinygo-test tinygo-test-fast: TEST_OPTIONS_go/printer := -stack-size=1MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_encoding/gob := -stack-size=1MB -skip='^(TestCountDecodeMallocs|TestCountEncodeMallocs)$$'
+tinygo-test tinygo-test-fast: TEST_OPTIONS_encoding/gob := -stack-size=1MB -skip='^TestCountDecodeMallocs$$'
+tinygo-test tinygo-test-fast: TEST_OPTIONS_testing/quick := -stack-size=1MB
 tinygo-test tinygo-test-fast: TEST_OPTIONS_go/build/constraint = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=1MB
 tinygo-test tinygo-test-fast: TEST_OPTIONS_regexp = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=1MB
 tinygo-test tinygo-test-fast: TEST_OPTIONS_path/filepath = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=4MB
@@ -261,7 +268,6 @@ tinygo-test-fast: HOST_TEST_STACK_SKIP_FLAG = $(TEST_SKIP_FLAG)
 
 tinygo-test-baremetal: TEST_OPTIONS_strconv := -skip='TestCountMallocs|TestAllocationsFromBytes'
 tinygo-test-baremetal: TEST_OPTIONS_unicode/utf16 := -skip='TestAllocationsDecode'
-tinygo-test-baremetal: TEST_OPTIONS_unicode/utf8 := -skip='TestAllocationsDecode'
 tinygo-test-baremetal: TEST_OPTIONS_reflect := -skip='TestMapIterSet'
 
 # Explicit options replace default flags, even when empty.
@@ -288,7 +294,6 @@ endif
 # TODO: parallelize, and only show failing tests (no implied -v flag).
 .PHONY: tinygo-test
 tinygo-test:
-	@# TestExtraMethods: used by many crypto packages and uses reflect.Type.Method which is not implemented.
 	@# TestUnmarshalNestingLimit{Slice,Struct}: encoding/asn1 nesting limit added in
 	@# https://github.com/golang/go/commit/6a6d115f9a7422b2fa081ba6f567eefb4a099462
 	$(call run-tinygo-tests,$(TEST_PACKAGES_HOST) $(TEST_PACKAGES_SLOW) $(TEST_PACKAGES_HOST_FULL_ONLY),$(TEST_ADDITIONAL_FLAGS),$(TEST_SKIP_FLAG))
