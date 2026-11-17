@@ -9,6 +9,7 @@ package llvmutil
 
 import (
 	"encoding/binary"
+	"iter"
 	"math"
 	"slices"
 	"strings"
@@ -62,6 +63,82 @@ func (attrs FunctionUsageAttributes) Merge(other FunctionUsageAttributes) Functi
 func (attrs FunctionUsageAttributes) Apply(fn llvm.Value) {
 	for kind, value := range attrs {
 		fn.AddFunctionAttr(fn.GlobalParent().Context().CreateStringAttribute(kind, value))
+	}
+}
+
+// Functions returns an iterator over the functions of mod.
+func Functions(mod llvm.Module) iter.Seq[llvm.Value] {
+	return func(yield func(llvm.Value) bool) {
+		for fn := mod.FirstFunction(); !fn.IsNil(); fn = llvm.NextFunction(fn) {
+			if !yield(fn) {
+				return
+			}
+		}
+	}
+}
+
+// Globals returns an iterator over the global variables of mod.
+func Globals(mod llvm.Module) iter.Seq[llvm.Value] {
+	return func(yield func(llvm.Value) bool) {
+		for global := mod.FirstGlobal(); !global.IsNil(); global = llvm.NextGlobal(global) {
+			if !yield(global) {
+				return
+			}
+		}
+	}
+}
+
+// BasicBlocks returns an iterator over the basic blocks of fn.
+func BasicBlocks(fn llvm.Value) iter.Seq[llvm.BasicBlock] {
+	return func(yield func(llvm.BasicBlock) bool) {
+		for bb := fn.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
+			if !yield(bb) {
+				return
+			}
+		}
+	}
+}
+
+// Instructions returns an iterator over the instructions of bb.
+func Instructions(bb llvm.BasicBlock) iter.Seq[llvm.Value] {
+	return func(yield func(llvm.Value) bool) {
+		for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+			if !yield(inst) {
+				return
+			}
+		}
+	}
+}
+
+// InterfaceStub describes a function that the compiler declares for an
+// interface method call or type assert, which interface lowering defines.
+type InterfaceStub struct {
+	Methods        string
+	Invoke         string
+	IndirectResult bool
+}
+
+// ReadInterfaceStub returns nil if fn is not an interface stub.
+func ReadInterfaceStub(fn llvm.Value) *InterfaceStub {
+	methods := fn.GetStringAttributeAtIndex(-1, "tinygo-methods")
+	if methods.IsNil() {
+		return nil
+	}
+	return &InterfaceStub{
+		Methods:        methods.GetStringValue(),
+		Invoke:         fn.GetStringAttributeAtIndex(-1, "tinygo-invoke").GetStringValue(),
+		IndirectResult: fn.GetStringAttributeAtIndex(-1, "tinygo-indirect-result").GetStringValue() == "true",
+	}
+}
+
+func (stub *InterfaceStub) Apply(fn llvm.Value) {
+	ctx := fn.GlobalParent().Context()
+	fn.AddFunctionAttr(ctx.CreateStringAttribute("tinygo-methods", stub.Methods))
+	if stub.Invoke != "" {
+		fn.AddFunctionAttr(ctx.CreateStringAttribute("tinygo-invoke", stub.Invoke))
+	}
+	if stub.IndirectResult {
+		fn.AddFunctionAttr(ctx.CreateStringAttribute("tinygo-indirect-result", "true"))
 	}
 }
 

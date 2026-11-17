@@ -1297,7 +1297,6 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 			pos := b.program.Fset.Position(b.fn.Pos())
 			b.difunc = b.attachDebugInfoRaw(b.fn, b.llvmFn, "", pos.Filename, pos.Line)
 		}
-		b.setDebugLocation(b.fn.Pos())
 	}
 
 	// Pre-create all basic blocks in the function.
@@ -1332,6 +1331,9 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		entryBlock = blockInfo[0].entry
 	}
 	b.SetInsertPointAtEnd(entryBlock)
+	if b.Debug {
+		b.setDebugLocation(b.fn.Pos())
+	}
 
 	if b.fn.Synthetic == "package initializer" {
 		b.initPseudoFuncs = make(map[string]llvm.Metadata)
@@ -4033,7 +4035,7 @@ func (b *builder) createUnOp(unop *ssa.UnOp) (llvm.Value, error) {
 			return b.loadFromStorage(x, unop.Type(), ""), nil
 		}
 	case token.XOR: // ^x, toggle all bits in integer
-		return b.CreateXor(x, llvm.ConstInt(x.Type(), ^uint64(0), false), ""), nil
+		return b.CreateXor(x, llvm.ConstAllOnes(x.Type()), ""), nil
 	case token.ARROW: // <-x, receive from channel
 		return b.createChanRecv(unop), nil
 	default:

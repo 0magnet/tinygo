@@ -287,8 +287,8 @@ func writesOnlyLocalMemory(fn llvm.Value, depth int) bool {
 		}
 		return isLocalAlloca(ptr) || (depth > 0 && isArgumentPointer(ptr))
 	}
-	for bb := fn.FirstBasicBlock(); !bb.IsNil(); bb = llvm.NextBasicBlock(bb) {
-		for inst := bb.FirstInstruction(); !inst.IsNil(); inst = llvm.NextInstruction(inst) {
+	for bb := range llvmutil.BasicBlocks(fn) {
+		for inst := range llvmutil.Instructions(bb) {
 			if !inst.IsABranchInst().IsNil() {
 				// Br was split in two opcodes in LLVM 23.
 				continue
@@ -338,25 +338,12 @@ func writesOnlyLocalMemory(fn llvm.Value, depth int) bool {
 
 // isLocalAlloca returns whether ptr is derived from an alloca.
 func isLocalAlloca(ptr llvm.Value) bool {
-	return derivedFrom(ptr, func(v llvm.Value) bool { return !v.IsAAllocaInst().IsNil() })
+	return !ptr.UnderlyingObject().IsAAllocaInst().IsNil()
 }
 
 // isArgumentPointer returns whether ptr is derived from a function parameter.
 func isArgumentPointer(ptr llvm.Value) bool {
-	return derivedFrom(ptr, func(v llvm.Value) bool { return !v.IsAArgument().IsNil() })
-}
-
-func derivedFrom(ptr llvm.Value, match func(llvm.Value) bool) bool {
-	for {
-		switch {
-		case match(ptr):
-			return true
-		case !ptr.IsAGetElementPtrInst().IsNil(), !ptr.IsABitCastInst().IsNil():
-			ptr = ptr.Operand(0)
-		default:
-			return false
-		}
-	}
+	return !ptr.UnderlyingObject().IsAArgument().IsNil()
 }
 
 // isNoCaptureArg returns whether param is fully nocapture in call. This rejects
