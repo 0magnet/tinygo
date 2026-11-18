@@ -1173,10 +1173,9 @@ func flashBinUsingEsp32(port, resetMode, tmppath string, options *compileopts.Op
 	}
 	defer flasher.Close()
 
-	chipName := flasher.ChipName()
-	offset := uint32(0x0)
-	if chipName == "ESP32" {
-		offset = 0x1000
+	offset, ok := flasher.BootloaderFlashOffset()
+	if !ok {
+		return fmt.Errorf("could not determine bootloader flash offset")
 	}
 
 	// Read the firmware binary
@@ -1758,7 +1757,7 @@ func getListOfPackages(pkgs []string, options *compileopts.Options) ([]loader.Pa
 	if err != nil {
 		return nil, err
 	}
-	cmd, err := loader.List(config, []string{"-json"}, pkgs)
+	cmd, err := loader.List(config, []string{loader.PackageJSONFlag()}, pkgs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to run `go list`: %w", err)
 	}
