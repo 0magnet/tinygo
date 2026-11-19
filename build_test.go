@@ -83,6 +83,7 @@ func TestBuild(t *testing.T) {
 		"finalizerlarge.go",
 		"float.go",
 		"gc-register-root.go",
+		"gc-saved-register.go",
 		"gc.go",
 		"gcstacks.go",
 		"generics.go",
@@ -107,6 +108,7 @@ func TestBuild(t *testing.T) {
 		"signal.go",
 		"signalnotify.go",
 		"slice.go",
+		"slicebounds.go",
 		"slicegrow.go",
 		"sort.go",
 		"stdlib.go",
@@ -162,6 +164,13 @@ func TestBuild(t *testing.T) {
 		// scheduler.none does not link on Windows.
 		switch runtime.GOOS {
 		case "darwin", "linux":
+			t.Run("gcstacks-blocked.go-gc=boehm-scheduler=tasks", func(t *testing.T) {
+				t.Parallel()
+				options := compileopts.Options(hostOptions)
+				options.GC = "boehm"
+				options.Scheduler = "tasks"
+				runTest("gcstacks-blocked.go", options, t, nil, nil)
+			})
 			for _, scheduler := range []string{"threads", "none"} {
 				t.Run("finalizerinvariants.go-gc-conservative-scheduler-"+scheduler, func(t *testing.T) {
 					t.Parallel()
@@ -640,6 +649,10 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 
 			case "aggregatestorage.go", "stringfrombytes_stress.go":
 				// Needs more RAM than AVR has.
+				continue
+
+			case "slicebounds.go":
+				// Reslicing returns wrong lengths on AVR, also without the len <= cap assume.
 				continue
 
 			case "map_bigkey.go":

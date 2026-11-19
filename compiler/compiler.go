@@ -995,6 +995,9 @@ func (c *context) createPackage(irbuilder llvm.Builder, pkg *ssa.Package) {
 				global.SetInitializer(llvm.ConstNull(global.GlobalValueType()))
 				global.SetVisibility(llvm.HiddenVisibility)
 				if info.section != "" {
+					if (info.section == ".psram" || strings.HasPrefix(info.section, ".psram.")) && typeHasPointers(global.GlobalValueType()) {
+						c.addError(member.Pos(), "//go:section .psram cannot be used on variables containing pointers")
+					}
 					global.SetSection(info.section)
 				}
 			}
@@ -1435,6 +1438,11 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 // diagnostic.
 func (b *builder) createFunction() {
 	b.createFunctionStart(false)
+	if len(b.blockInfo) == 0 && len(b.fn.Blocks) != 0 {
+		// createFunctionStart reported an error (a redeclared function) and
+		// built nothing, so there is no body to fill.
+		return
+	}
 
 	// Fill blocks with instructions.
 	b.loweringBody = true
@@ -3076,6 +3084,9 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 			oldPtr := b.CreateExtractValue(value, 0, "")
 			oldLen := b.CreateExtractValue(value, 1, "")
 			oldCap := b.CreateExtractValue(value, 2, "")
+			if (expr.High != nil || expr.Max != nil) && lenIsUsed(expr.X) {
+				b.createLenCapAssume(oldLen, oldCap)
+			}
 			if high.IsNil() {
 				high = oldLen
 			}
