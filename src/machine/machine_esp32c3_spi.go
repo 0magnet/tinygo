@@ -15,6 +15,8 @@ import (
 	"unsafe"
 )
 
+const spiClockFreq = 80_000_000 // APB_CLK, MST_CLK_SEL 1. See ESP-IDF hal/esp32c3/include/hal/spi_ll.h spi_ll_master_cal_clock.
+
 const (
 	FSPICLK_IN_IDX  = uint32(63)
 	FSPICLK_OUT_IDX = uint32(63)
@@ -108,22 +110,12 @@ func (spi *SPI) Configure(config SPIConfig) error {
 	spi.Bus.SetUSER_DOUTDIN(1)
 
 	// set spi2 data mode
-	switch config.Mode {
-	case Mode0:
-		spi.Bus.SetMISC_CK_IDLE_EDGE(0)
-		spi.Bus.SetUSER_CK_OUT_EDGE(0)
-	case Mode1:
-		spi.Bus.SetMISC_CK_IDLE_EDGE(0)
-		spi.Bus.SetUSER_CK_OUT_EDGE(1)
-	case Mode2:
-		spi.Bus.SetMISC_CK_IDLE_EDGE(1)
-		spi.Bus.SetUSER_CK_OUT_EDGE(1)
-	case Mode3:
-		spi.Bus.SetMISC_CK_IDLE_EDGE(1)
-		spi.Bus.SetUSER_CK_OUT_EDGE(0)
-	default:
+	mode := spiModeFor(config.Mode)
+	if mode&spiModeValid == 0 {
 		return ErrInvalidSPIMode
 	}
+	spi.Bus.SetMISC_CK_IDLE_EDGE(mode.idleEdge())
+	spi.Bus.SetUSER_CK_OUT_EDGE(mode.outEdge())
 
 	// set spi2 bit order
 	if config.LSBFirst {

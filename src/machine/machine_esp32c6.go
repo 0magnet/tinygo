@@ -297,27 +297,7 @@ var (
 	errWrongStopBitSize = errors.New("UART: invalid bit size")
 )
 
-type UART struct {
-	Bus                  *esp.UART_Type
-	Buffer               *RingBuffer
-	ParityErrorDetected  bool // set when parity error detected
-	DataErrorDetected    bool // set when data corruption detected
-	DataOverflowDetected bool // set when data overflow detected in UART FIFO buffer or RingBuffer
-}
-
-const (
-	defaultDataBits = 8
-	defaultStopBit  = 1
-	defaultParity   = ParityNone
-
-	uartInterrupts = esp.UART_INT_ENA_RXFIFO_FULL_INT_ENA |
-		esp.UART_INT_ENA_PARITY_ERR_INT_ENA |
-		esp.UART_INT_ENA_FRM_ERR_INT_ENA |
-		esp.UART_INT_ENA_RXFIFO_OVF_INT_ENA |
-		esp.UART_INT_ENA_GLITCH_DET_INT_ENA
-
-	pplClockFreq = 80e6
-)
+const pplClockFreq = 80e6
 
 type registerSet struct {
 	interruptMapReg  *volatile.Register32
@@ -455,59 +435,6 @@ func (uart *UART) SetBaudRate(baudRate uint32) {
 
 func uartEnableTX(pin Pin) {}
 
-func (uart *UART) configureInterrupt(intrMapReg *volatile.Register32) {
-	// Disable all UART interrupts
-	uart.Bus.INT_ENA.ClearBits(0x0ffff)
-
-	intrMapReg.Set(cpuInterruptFromUART)
-	onceUart.Do(func() {
-		_ = interrupt.New(cpuInterruptFromUART, func(i interrupt.Interrupt) {
-			UART0.serveInterrupt(0)
-			UART1.serveInterrupt(1)
-		}).Enable()
-	})
-}
-
-func (uart *UART) serveInterrupt(num int) {
-	// get interrupt status
-	interrutFlag := uart.Bus.INT_ST.Get()
-	if (interrutFlag & uartInterrupts) == 0 {
-		return
-	}
-
-	// block UART interrupts while processing
-	uart.Bus.INT_ENA.ClearBits(uartInterrupts)
-
-	if interrutFlag&esp.UART_INT_ENA_RXFIFO_FULL_INT_ENA > 0 {
-		for uart.Bus.GetSTATUS_RXFIFO_CNT() > 0 {
-			b := uart.Bus.GetFIFO_RXFIFO_RD_BYTE()
-			if !uart.Buffer.Put(byte(b & 0xff)) {
-				uart.DataOverflowDetected = true
-			}
-		}
-	}
-	if interrutFlag&esp.UART_INT_ENA_PARITY_ERR_INT_ENA > 0 {
-		uart.ParityErrorDetected = true
-	}
-	if 0 != interrutFlag&esp.UART_INT_ENA_FRM_ERR_INT_ENA {
-		uart.DataErrorDetected = true
-	}
-	if 0 != interrutFlag&esp.UART_INT_ENA_RXFIFO_OVF_INT_ENA {
-		uart.DataOverflowDetected = true
-	}
-	if 0 != interrutFlag&esp.UART_INT_ENA_GLITCH_DET_INT_ENA {
-		uart.DataErrorDetected = true
-	}
-
-	// Clear the UART interrupt status
-	uart.Bus.INT_CLR.SetBits(interrutFlag)
-	uart.Bus.INT_CLR.ClearBits(interrutFlag)
-	// Enable interrupts
-	uart.Bus.INT_ENA.Set(uartInterrupts)
-}
-
-const uart_empty_thresh_default = 10
-
 func (uart *UART) enableTransmitter() {
 	uart.Bus.SetCONF0_TXFIFO_RST(1)
 	uart.Bus.SetCONF0_TXFIFO_RST(0)
@@ -533,4 +460,18 @@ func (uart *UART) writeByte(b byte) error {
 	return nil
 }
 
-func (uart *UART) flush() {}
+// GetRNG returns 32-bit random numbers from the ESP32-C6 true random number generator.
+// The noise sources are RC_FAST_CLK and the SAR ADC, ESP32-C6 TRM v1.1 chapter 22.
+func GetRNG() (ret uint32, err error) {
+	if esp.LP_PERI.GetCLK_EN_RNG_CK_EN() == 0 {
+		esp.LP_PERI.SetCLK_EN_RNG_CK_EN(1)
+	}
+	if esp.LP_CLKRST.GetCLK_TO_HP_ICG_HP_FOSC() == 0 {
+		esp.LP_CLKRST.SetCLK_TO_HP_ICG_HP_FOSC(1)
+	}
+	if esp.PCR.GetSARADC_CLKM_CONF_SARADC_CLKM_EN() == 0 {
+		esp.PCR.SetSARADC_CONF_SARADC_REG_CLK_EN(1)
+		esp.PCR.SetSARADC_CLKM_CONF_SARADC_CLKM_EN(1)
+	}
+	return esp.LP_PERI.GetRNG_DATA(), nil
+}

@@ -3,22 +3,14 @@ package transform
 import (
 	"slices"
 
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"tinygo.org/x/go-llvm"
 )
 
 // Return a list of values (actually, instructions) where this value is used as
 // an operand.
 func getUses(value llvm.Value) []llvm.Value {
-	if value.IsNil() {
-		return nil
-	}
-	var uses []llvm.Value
-	use := value.FirstUse()
-	for !use.IsNil() {
-		uses = append(uses, use.User())
-		use = use.NextUse()
-	}
-	return uses
+	return slices.Collect(llvmutil.Uses(value))
 }
 
 // hasUses returns whether the given value has any uses. It is equivalent to
@@ -50,16 +42,6 @@ func typeHasPointers(typ llvm.Type) bool {
 		return typ.ArrayLength() != 0 && typeHasPointers(typ.ElementType())
 	}
 	return false
-}
-
-// constElement returns element i of the constant struct or array v.
-func constElement(v llvm.Value, i int) llvm.Value {
-	if v.IsAConstantAggregateZero().IsNil() {
-		return v.Operand(i)
-	}
-	// LLVM stores an aggregate with only zero elements as a
-	// zeroinitializer, which has no operands. Each element is zero too.
-	return llvm.ConstNull(elementType(v.Type(), i))
 }
 
 // elementType returns the type of element i of the struct or array type typ.

@@ -3,7 +3,7 @@ package transform
 import (
 	"fmt"
 
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -78,8 +78,7 @@ func isNoRuntime(fn llvm.Value) bool {
 // that uses value, directly or through constants and globals.
 func runtimeUse(value llvm.Value, visited map[llvm.Value]bool) llvm.Value {
 	visited[value] = true
-	for use := value.FirstUse(); !use.IsNil(); use = use.NextUse() {
-		user := use.User()
+	for user := range llvmutil.Uses(value) {
 		if visited[user] {
 			continue
 		}

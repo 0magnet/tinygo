@@ -62,6 +62,73 @@ func main() {
 	}
 }
 
+func TestReflectMakeFuncReachability(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, source string
+	}{
+		{"function value", `
+var makeCallback = reflect.MakeFunc
+
+func main() {
+	f := makeCallback(reflect.TypeFor[func(int) int](), func(args []reflect.Value) []reflect.Value {
+		return args
+	}).Interface().(func(int) int)
+	if f(42) != 42 {
+		panic("wrong callback result")
+	}
+}`},
+		{"Seq", `
+func values(yield func(int) bool) {
+	yield(42)
+}
+
+func main() {
+	var got int64
+	for value := range reflect.ValueOf(values).Seq() {
+		got += value.Int()
+	}
+	if got != 42 {
+		panic("wrong sequence result")
+	}
+}`},
+		{"Seq2", `
+func pairs(yield func(int, int) bool) {
+	yield(1, 42)
+}
+
+func main() {
+	var key, value int64
+	for k, v := range reflect.ValueOf(pairs).Seq2() {
+		key, value = k.Int(), v.Int()
+	}
+	if key != 1 || value != 42 {
+		panic("wrong sequence pair")
+	}
+}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "main.go")
+			if err := os.WriteFile(path, []byte("package main\nimport \"reflect\"\n"+tc.source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			options := optionsFromTarget("", sema)
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			_, err = buildAndRun(path, config, &output, nil, nil, 2*time.Minute, func(cmd *exec.Cmd, result *builder.BuildResult) error {
+				return cmd.Run()
+			})
+			if err != nil {
+				t.Fatalf("reflected program failed: %v\n%s", err, output.String())
+			}
+		})
+	}
+}
+
 func TestBuild(t *testing.T) {
 	t.Parallel()
 
@@ -95,6 +162,7 @@ func TestBuild(t *testing.T) {
 		"init_multi.go",
 		"interface-blank.go",
 		"interface.go",
+		"makeslice.go",
 		"json.go",
 		"localtypes/",
 		"localtypes.go",

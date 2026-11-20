@@ -1,4 +1,4 @@
-//go:build esp32s3 || esp32c3
+//go:build esp32s3 || esp32c3 || esp32p4
 
 package machine
 
@@ -18,14 +18,46 @@ type SPIConfig struct {
 	Mode      uint8 // Mode0 is default
 }
 
+// spiMode holds the clock idle edge and the clock output edge of an SPI mode.
+// spiModeValid is clear for an unknown mode.
+type spiMode uint8
+
+const (
+	spiModeIdleEdge spiMode = 1 << iota
+	spiModeOutEdge
+	spiModeValid
+)
+
+func spiModeFor(mode uint8) spiMode {
+	switch mode {
+	case Mode0:
+		return spiModeValid
+	case Mode1:
+		return spiModeValid | spiModeOutEdge
+	case Mode2:
+		return spiModeValid | spiModeIdleEdge | spiModeOutEdge
+	case Mode3:
+		return spiModeValid | spiModeIdleEdge
+	default:
+		return 0
+	}
+}
+
+func (m spiMode) idleEdge() uint32 {
+	return uint32(m & spiModeIdleEdge)
+}
+
+func (m spiMode) outEdge() uint32 {
+	return uint32(m&spiModeOutEdge) >> 1
+}
+
 // freqToClockDiv computes the SPI bus clock divider register value.
-// SPI peripherals on ESP32-C3 and ESP32-S3 are clocked from the APB bus
-// (pplClockFreq, 80 MHz on both chips).
+// spiClockFreq is the SPI source clock of each chip.
 func freqToClockDiv(hz uint32) uint32 {
-	if hz >= pplClockFreq { // maximum frequency
+	if hz >= spiClockFreq { // maximum frequency
 		return 1 << 31
 	}
-	if hz < (pplClockFreq / (16 * 64)) { // minimum frequency
+	if hz < (spiClockFreq / (16 * 64)) { // minimum frequency
 		return 15<<18 | 63<<12 | 31<<6 | 63 // pre=15, n=63
 	}
 
@@ -34,7 +66,7 @@ func freqToClockDiv(hz uint32) uint32 {
 	var bestPre, bestN, bestErr uint32
 	bestN = 1
 	bestErr = 0xffffffff
-	q := uint32(float32(pplClockFreq)/float32(hz) + float32(0.5))
+	q := uint32(float32(spiClockFreq)/float32(hz) + float32(0.5))
 	for p := uint32(0); p < 16; p++ {
 		n := q/(p+1) - 1
 		if n < 1 { // prescaler became too large, stop enum
@@ -44,7 +76,7 @@ func freqToClockDiv(hz uint32) uint32 {
 			continue
 		}
 
-		freq := pplClockFreq / ((p + 1) * (n + 1))
+		freq := spiClockFreq / ((p + 1) * (n + 1))
 		if freq == hz { // exact match
 			return p<<18 | n<<12 | (n/2)<<6 | n
 		}
