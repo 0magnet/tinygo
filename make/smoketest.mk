@@ -345,6 +345,8 @@ smoketest-rp2xxx: | build/smoke
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pico-plus2          examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pico-plus2          examples/psram
+	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=tufty2350          examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=waveshare-rp2350-pizero examples/blinky1
@@ -592,7 +594,7 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-box-3       examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-psram-octal examples/psram
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-n16r8-devkit examples/psram
 	@$(MD5SUM) $(SMOKE_OUT).bin
 endif
 

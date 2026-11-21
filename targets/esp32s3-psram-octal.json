@@ -1,6 +1,0 @@
-{
-	"inherits": ["esp32s3-generic"],
-	"build-tags": ["machine.psram"],
-	"flash-method": "esp32flash",
-	"serial": "uart"
-}

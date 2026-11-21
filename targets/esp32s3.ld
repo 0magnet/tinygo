@@ -42,8 +42,9 @@ MEMORY
 
     /* External PSRAM: upper half of the DBUS cache window, MMU entries
      * 256-511 (linear pages of 0x3D000000..0x3DFFFFFF), mapped at runtime
-     * by machine_esp32*_psram*.go. Disjoint from all flash entries. */
-    PSRAM (rw): ORIGIN = 0x3D000000, LENGTH = 16M
+     * by machine_esp32*_psram*.go. Disjoint from all flash entries.
+     * A board with PSRAM sets its size with --defsym=__psram_size. */
+    PSRAM (rw): ORIGIN = 0x3D000000, LENGTH = DEFINED(__psram_size) ? __psram_size : 0
 }
 
 /* The entry point. It is set in the image flashed to the chip, so must be
@@ -210,6 +211,7 @@ SECTIONS
 
 _psram_start = ORIGIN(PSRAM);
 _psram_end = ORIGIN(PSRAM) + LENGTH(PSRAM);
+ASSERT(LENGTH(PSRAM) <= 16M, "__psram_size is larger than the 16MB PSRAM window")
 
 /* For the garbage collector.
  * _heap_start must be after the DRAM shadow of the IRAM section.

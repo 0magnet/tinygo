@@ -103,6 +103,23 @@ func (uart *UART) configureInterrupt(intrMapReg *volatile.Register32) {
 	})
 }
 
+func (uart *UART) enableTransmitter() {
+	uartSetTXFIFORST(uart.Bus, 1)
+	uartSetTXFIFORST(uart.Bus, 0)
+	uart.Bus.SetCONF1_TXFIFO_EMPTY_THRHD(uart_empty_thresh_default)
+}
+
+func (uart *UART) enableReceiver() {
+	uartSetRXFIFORST(uart.Bus, 1)
+	uartSetRXFIFORST(uart.Bus, 0)
+	uart.Bus.SetCONF1_RXFIFO_FULL_THRHD(1)
+	uart.Bus.SetINT_ENA_RXFIFO_FULL_INT_ENA(1)
+	uart.Bus.SetINT_ENA_FRM_ERR_INT_ENA(1)
+	uart.Bus.SetINT_ENA_PARITY_ERR_INT_ENA(1)
+	uart.Bus.SetINT_ENA_GLITCH_DET_INT_ENA(1)
+	uart.Bus.SetINT_ENA_RXFIFO_OVF_INT_ENA(1)
+}
+
 func (uart *UART) serveInterrupt(num int) {
 	// get interrupt status
 	interruptFlag := uart.Bus.INT_ST.Get()
@@ -141,4 +158,25 @@ func (uart *UART) serveInterrupt(num int) {
 	uart.Bus.INT_ENA.Set(uartInterrupts)
 }
 
+func (uart *UART) writeByte(b byte) error {
+	for (uart.Bus.STATUS.Get()&esp.UART_STATUS_TXFIFO_CNT_Msk)>>esp.UART_STATUS_TXFIFO_CNT_Pos >= 128 {
+		// Wait until there is space in the transmit buffer.
+	}
+	uart.Bus.FIFO.Set(uint32(b))
+	return nil
+}
+
 func (uart *UART) flush() {}
+
+// uartDividers gives the baud rate divider, in 1/16 steps, and the source clock
+// divider for baudRate. See ESP-IDF hal/esp32c3/include/hal/uart_ll.h uart_ll_set_baudrate.
+func uartDividers(baudRate uint32) (clkDiv, sclkDiv uint32) {
+	const maxDiv = 1<<12 - 1
+	if baudRate == 0 {
+		baudRate = 115200
+	}
+	baud := uint64(baudRate)
+	sclk := (uartClockFreq + maxDiv*baud - 1) / (maxDiv * baud)
+	clk := (uartClockFreq << 4) / (baud * sclk)
+	return uint32(clk), uint32(sclk)
+}

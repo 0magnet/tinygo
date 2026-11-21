@@ -133,8 +133,6 @@ func (p Pin) configure(config PinConfig, signal uint32) {
 	}
 }
 
-func initI2CExt1Clock() {}
-
 // outFunc returns the FUNCx_OUT_SEL_CFG register used for configuring the
 // output function selection.
 func (p Pin) outFunc() *volatile.Register32 {
@@ -286,7 +284,7 @@ var (
 	errWrongStopBitSize = errors.New("UART: invalid bit size")
 )
 
-const pplClockFreq = 80e6
+const uartClockFreq = 80_000_000 // APB_CLK, SCLK_SEL 1. See ESP-IDF hal/esp32c3/include/hal/uart_ll.h uart_ll_set_sclk.
 
 type registerSet struct {
 	interruptMapReg  *volatile.Register32
@@ -404,10 +402,7 @@ func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 }
 
 func (uart *UART) SetBaudRate(baudRate uint32) {
-	// based on esp-idf
-	max_div := uint32((1 << 12) - 1)
-	sclk_div := (pplClockFreq + (max_div * baudRate) - 1) / (max_div * baudRate)
-	clk_div := (pplClockFreq << 4) / (baudRate * sclk_div)
+	clk_div, sclk_div := uartDividers(baudRate)
 	uart.Bus.SetCLKDIV(clk_div >> 4)
 	uart.Bus.SetCLKDIV_FRAG(clk_div & 0xf)
 	uart.Bus.SetCLK_CONF_SCLK_DIV_NUM(sclk_div - 1)
@@ -415,36 +410,12 @@ func (uart *UART) SetBaudRate(baudRate uint32) {
 
 func uartEnableTX(pin Pin) {}
 
-func (uart *UART) enableTransmitter() {
-	uart.Bus.SetCONF0_TXFIFO_RST(1)
-	uart.Bus.SetCONF0_TXFIFO_RST(0)
-	// TXINFO empty threshold is when txfifo_empty_int interrupt produced after the amount of data in Tx-FIFO is less than this register value.
-	uart.Bus.SetCONF1_TXFIFO_EMPTY_THRHD(uart_empty_thresh_default)
-	// we are not using interrupt on TX since write we are waiting for FIFO to have space.
-	// uart.Bus.INT_ENA.SetBits(esp.UART_INT_ENA_TXFIFO_EMPTY_INT_ENA)
+func uartSetTXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_TXFIFO_RST(value)
 }
 
-func (uart *UART) enableReceiver() {
-	uart.Bus.SetCONF0_RXFIFO_RST(1)
-	uart.Bus.SetCONF0_RXFIFO_RST(0)
-	// using value 1 so that we can start populate ring buffer with data as we get it
-	uart.Bus.SetCONF1_RXFIFO_FULL_THRHD(1)
-	// enable interrupts for:
-	uart.Bus.SetINT_ENA_RXFIFO_FULL_INT_ENA(1)
-	uart.Bus.SetINT_ENA_FRM_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_PARITY_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_GLITCH_DET_INT_ENA(1)
-	uart.Bus.SetINT_ENA_RXFIFO_OVF_INT_ENA(1)
-}
-
-func (uart *UART) writeByte(b byte) error {
-	for (uart.Bus.STATUS.Get()&esp.UART_STATUS_TXFIFO_CNT_Msk)>>esp.UART_STATUS_TXFIFO_CNT_Pos >= 128 {
-		// Read UART_TXFIFO_CNT from the status register, which indicates how
-		// many bytes there are in the transmit buffer. Wait until there are
-		// less than 128 bytes in this buffer (the default buffer size).
-	}
-	uart.Bus.FIFO.Set(uint32(b))
-	return nil
+func uartSetRXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_RXFIFO_RST(value)
 }
 
 // GetRNG returns 32-bit random numbers using the ESP32-C3 true random number generator,

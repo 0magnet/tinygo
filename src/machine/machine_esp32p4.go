@@ -334,7 +334,7 @@ const (
 	uartSignalU1 = uint32(13) // UART1_TXD_PAD_OUT_IDX / UART1_RXD_PAD_IN_IDX
 )
 
-const pplClockFreq = 40_000_000 // XTAL clock source (40MHz, always available after ROM boot)
+const uartClockFreq = 40_000_000 // XTAL_CLK, CLK_SRC_SEL 0. See ESP-IDF hal/esp32p4/include/hal/uart_ll.h uart_ll_set_sclk.
 
 type registerSet struct {
 	interruptMapReg  *volatile.Register32
@@ -465,9 +465,7 @@ func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 }
 
 func (uart *UART) SetBaudRate(baudRate uint32) {
-	max_div := uint32((1 << 12) - 1)
-	sclk_div := (pplClockFreq + (max_div * baudRate) - 1) / (max_div * baudRate)
-	clk_div := (pplClockFreq << 4) / (baudRate * sclk_div)
+	clk_div, sclk_div := uartDividers(baudRate)
 	uart.Bus.SetCLKDIV_SYNC_CLKDIV(clk_div >> 4)
 	uart.Bus.SetCLKDIV_SYNC_CLKDIV_FRAG(clk_div & 0xf)
 	// Set the SCLK divisor in HP_SYS_CLKRST.
@@ -487,40 +485,10 @@ func uartEnableTX(pin Pin) {
 	}
 }
 
-func (uart *UART) enableTransmitter() {
-	uart.Bus.SetCONF0_SYNC_TXFIFO_RST(1)
-	uart.Bus.SetCONF0_SYNC_TXFIFO_RST(0)
-	uart.Bus.SetCONF1_TXFIFO_EMPTY_THRHD(uart_empty_thresh_default)
+func uartSetTXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_SYNC_TXFIFO_RST(value)
 }
 
-func (uart *UART) enableReceiver() {
-	uart.Bus.SetCONF0_SYNC_RXFIFO_RST(1)
-	uart.Bus.SetCONF0_SYNC_RXFIFO_RST(0)
-	uart.Bus.SetCONF1_RXFIFO_FULL_THRHD(1)
-	uart.Bus.SetINT_ENA_RXFIFO_FULL_INT_ENA(1)
-	uart.Bus.SetINT_ENA_FRM_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_PARITY_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_GLITCH_DET_INT_ENA(1)
-	uart.Bus.SetINT_ENA_RXFIFO_OVF_INT_ENA(1)
-}
-
-// uartBus returns the UART register block without trusting the Bus field.
-// A corrupted board global must not take the console down with it.
-func (uart *UART) uartBus() *esp.UART_Type {
-	switch uart {
-	case UART0:
-		return esp.UART0
-	case UART1:
-		return esp.UART1
-	}
-	return uart.Bus
-}
-
-func (uart *UART) writeByte(b byte) error {
-	bus := uart.uartBus()
-	for (bus.STATUS.Get()&esp.UART_STATUS_TXFIFO_CNT_Msk)>>esp.UART_STATUS_TXFIFO_CNT_Pos >= 128 {
-		// Wait until there is space in the transmit buffer.
-	}
-	bus.FIFO.Set(uint32(b))
-	return nil
+func uartSetRXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_SYNC_RXFIFO_RST(value)
 }

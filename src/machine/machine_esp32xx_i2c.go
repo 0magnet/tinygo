@@ -9,10 +9,14 @@ import (
 )
 
 type I2C struct {
-	Bus              *esp.I2C_Type
-	funcSCL, funcSDA uint32
-	useExt1          bool
-	txCmdBuf         [8]i2cCommand
+	Bus      *esp.I2C_Type
+	txCmdBuf [8]i2cCommand
+}
+
+// i2cBus holds the GPIO matrix signals of one I2C bus. i2cBusFor gives the
+// zero value for a bus that the chip does not support.
+type i2cBus struct {
+	sclOut, sdaOut uint32
 }
 
 // I2CConfig is used to store config info for I2C.
@@ -23,15 +27,22 @@ type I2CConfig struct {
 }
 
 const (
-	clkXTAL               = 0
-	clkFOSC               = 1
-	clkXTALFrequency      = uint32(40e6)
-	clkFOSCFrequency      = uint32(17.5e6)
-	i2cClkSourceFrequency = clkXTALFrequency
-	i2cClkSource          = clkXTAL
+	// 0 is XTAL_CLK in the I2C, C6 PCR and P4 HP_SYS_CLKRST clock selects. See ESP-IDF
+	// hal/{esp32c3,esp32c6,esp32s3,esp32p4}/include/hal/i2c_ll.h i2c_ll_set_source_clk.
+	i2cClockSource = 0
+	i2cClockFreq   = 40_000_000 // XTAL_CLK on the C3, C6, S3 and P4.
 )
 
+// Configure configures the I2C bus for use.
 func (i2c *I2C) Configure(config I2CConfig) error {
+	bus := i2cBusFor(i2c.Bus)
+	if bus.sclOut == 0 {
+		return errI2CInvalidBus
+	}
+	return i2c.configure(config, bus)
+}
+
+func (i2c *I2C) configure(config I2CConfig, bus i2cBus) error {
 	if config.Frequency == 0 {
 		config.Frequency = 400 * KHz
 	}
@@ -45,30 +56,23 @@ func (i2c *I2C) Configure(config I2CConfig) error {
 	i2c.initClock(config)
 	i2c.initNoiseFilter()
 	i2c.clearBus(config)
-	i2c.initPins(config)
-	i2c.initFrequency(config)
+	i2c.initPins(config, bus)
+	i2c.initFrequency(config.Frequency)
 	i2c.startMaster()
 	return nil
 }
 
-//go:inline
 func (i2c *I2C) initClock(config I2CConfig) {
-	if !i2c.useExt1 {
-		enableI2C0PeriphClock()
-	} else {
-		initI2CExt1Clock()
-	}
+	enableI2CClock(i2c.Bus)
 	// disable interrupts
 	i2c.Bus.INT_CLR.Set(0x3fff)
 	i2c.Bus.INT_ENA.ClearBits(0x3fff)
 
-	i2c.Bus.SetCLK_CONF_SCLK_SEL(i2cClkSource)
+	i2c.Bus.SetCLK_CONF_SCLK_SEL(i2cClockSource)
 	i2c.Bus.SetCLK_CONF_SCLK_ACTIVE(1)
-	i2c.Bus.SetCLK_CONF_SCLK_DIV_NUM(i2cClkSourceFrequency / (config.Frequency * 1024))
 	i2c.Bus.SetCTR_CLK_EN(1)
 }
 
-//go:inline
 func (i2c *I2C) initNoiseFilter() {
 	i2c.Bus.FILTER_CFG.Set(0x377)
 }
@@ -103,10 +107,9 @@ func (i2c *I2C) clearBus(config I2CConfig) {
 	wait()
 }
 
-//go:inline
-func (i2c *I2C) initPins(config I2CConfig) {
-	config.SDA.configure(PinConfig{Mode: PinOutput}, i2c.funcSDA)
-	inFunc(i2c.funcSDA).Set(esp.GPIO_FUNC_IN_SEL_CFG_SEL | uint32(config.SDA)<<esp.GPIO_FUNC_IN_SEL_CFG_IN_SEL_Pos)
+func (i2c *I2C) initPins(config I2CConfig, bus i2cBus) {
+	config.SDA.configure(PinConfig{Mode: PinOutput}, bus.sdaOut)
+	inFunc(bus.sdaOut).Set(esp.GPIO_FUNC_IN_SEL_CFG_SEL | uint32(config.SDA)<<esp.GPIO_FUNC_IN_SEL_CFG_IN_SEL_Pos)
 	config.SDA.Set(true)
 	config.SDA.pinReg().SetBits(esp.GPIO_PIN_PAD_DRIVER)
 	// Enable internal pull-up so SCL/SDA can rise in open-drain mode even
@@ -116,45 +119,36 @@ func (i2c *I2C) initPins(config I2CConfig) {
 	config.SDA.mux().SetBits(esp.IO_MUX_GPIO_FUN_WPU)
 	i2c.Bus.SetCTR_SDA_FORCE_OUT(1)
 
-	config.SCL.configure(PinConfig{Mode: PinOutput}, i2c.funcSCL)
-	inFunc(i2c.funcSCL).Set(esp.GPIO_FUNC_IN_SEL_CFG_SEL | uint32(config.SCL)<<esp.GPIO_FUNC_IN_SEL_CFG_IN_SEL_Pos)
+	config.SCL.configure(PinConfig{Mode: PinOutput}, bus.sclOut)
+	inFunc(bus.sclOut).Set(esp.GPIO_FUNC_IN_SEL_CFG_SEL | uint32(config.SCL)<<esp.GPIO_FUNC_IN_SEL_CFG_IN_SEL_Pos)
 	config.SCL.Set(true)
 	config.SCL.pinReg().SetBits(esp.GPIO_PIN_PAD_DRIVER)
 	config.SCL.mux().SetBits(esp.IO_MUX_GPIO_FUN_WPU)
 	i2c.Bus.SetCTR_SCL_FORCE_OUT(1)
 }
 
-//go:inline
-func (i2c *I2C) initFrequency(config I2CConfig) {
-
-	clkmDiv := i2cClkSourceFrequency/(config.Frequency*1024) + 1
-	sclkFreq := i2cClkSourceFrequency / clkmDiv
-	halfCycle := sclkFreq / config.Frequency / 2
-	// SCL
-	sclLow := halfCycle
-	sclWaitHigh := uint32(0)
-	if config.Frequency > 50000 {
-		sclWaitHigh = halfCycle / 8 // compensate the time when freq > 50K
+func (i2c *I2C) initFrequency(freq uint32) {
+	// See ESP-IDF hal/esp32c3/include/hal/i2c_ll.h i2c_ll_master_cal_bus_clk and
+	// i2c_ll_master_set_bus_timing, which are the same on the C3, C6, S3 and P4.
+	clkmDiv := i2cClockFreq/(freq*1024) + 1
+	halfCycle := i2cClockFreq / clkmDiv / freq / 2
+	waitHigh := halfCycle / 4
+	if freq >= 80*KHz {
+		waitHigh = halfCycle/2 - 2
 	}
-	sclHigh := halfCycle - sclWaitHigh
-	// SDA
-	sdaHold := halfCycle / 4
-	sda_sample := halfCycle / 2
-	setup := halfCycle
-	hold := halfCycle
 
-	i2c.Bus.SetSCL_LOW_PERIOD(sclLow - 1)
-	i2c.Bus.SetSCL_HIGH_PERIOD(sclHigh)
-	i2c.Bus.SetSCL_HIGH_PERIOD_SCL_WAIT_HIGH_PERIOD(25)
-	i2c.Bus.SetSCL_RSTART_SETUP_TIME(setup)
-	i2c.Bus.SetSCL_STOP_SETUP_TIME(setup)
-	i2c.Bus.SetSCL_START_HOLD_TIME(hold - 1)
-	i2c.Bus.SetSCL_STOP_HOLD_TIME(hold - 1)
-	i2c.Bus.SetSDA_SAMPLE_TIME(sda_sample)
-	i2c.Bus.SetSDA_HOLD_TIME(sdaHold)
+	setI2CClockDiv(i2c.Bus, clkmDiv-1)
+	i2c.Bus.SetSCL_LOW_PERIOD(halfCycle - 1)
+	i2c.Bus.SetSCL_HIGH_PERIOD(halfCycle - waitHigh)
+	i2c.Bus.SetSCL_HIGH_PERIOD_SCL_WAIT_HIGH_PERIOD(waitHigh)
+	i2c.Bus.SetSDA_HOLD_TIME(halfCycle/4 - 1)
+	i2c.Bus.SetSDA_SAMPLE_TIME(halfCycle/2 - 1)
+	i2c.Bus.SetSCL_RSTART_SETUP_TIME(halfCycle - 1)
+	i2c.Bus.SetSCL_STOP_SETUP_TIME(halfCycle - 1)
+	i2c.Bus.SetSCL_START_HOLD_TIME(halfCycle - 1)
+	i2c.Bus.SetSCL_STOP_HOLD_TIME(halfCycle - 1)
 }
 
-//go:inline
 func (i2c *I2C) startMaster() {
 	// FIFO mode for data
 	i2c.Bus.SetFIFO_CONF_NONFIFO_EN(0)
@@ -180,7 +174,6 @@ func (i2c *I2C) startMaster() {
 	i2c.resetMaster()
 }
 
-//go:inline
 func (i2c *I2C) resetMaster() {
 	// Reset the I2C FSM.
 	// On chips where FSM_RST does not self-clear (e.g. ESP32-P4), the FSM
@@ -452,6 +445,11 @@ func (i2c *I2C) Tx(addr uint16, w, r []byte) (err error) {
 }
 
 func (i2c *I2C) SetBaudRate(br uint32) error {
+	if br == 0 {
+		return errInvalidI2CBaudrate
+	}
+	i2c.initFrequency(br)
+	i2c.Bus.SetCTR_CONF_UPGATE(1)
 	return nil
 }
 

@@ -15,36 +15,50 @@ const (
 )
 
 var (
-	I2C0 = &I2C{
-		Bus:     esp.I2C0,
-		funcSCL: I2C0_SCL_PAD_OUT_IDX,
-		funcSDA: I2C0_SDA_PAD_OUT_IDX,
-		useExt1: false,
-	}
-	I2C1 = &I2C{
-		Bus:     esp.I2C1,
-		funcSCL: I2C1_SCL_PAD_OUT_IDX,
-		funcSDA: I2C1_SDA_PAD_OUT_IDX,
-		useExt1: true,
-	}
+	I2C0 = &I2C{Bus: esp.I2C0}
+	I2C1 = &I2C{Bus: esp.I2C1}
 )
 
-// enableI2C0PeriphClock enables the I2C0 peripheral APB clock and resets the
-// peripheral, then enables the functional (source) clock via HP_SYS_CLKRST.
-func enableI2C0PeriphClock() {
-	esp.HP_SYS_CLKRST.SetSOC_CLK_CTRL2_REG_I2C0_APB_CLK_EN(1)
-	esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C0(1)
-	esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C0(0)
-	esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_SRC_SEL(0) // 0 = XTAL
-	esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_EN(1)
+func i2cBusFor(bus *esp.I2C_Type) i2cBus {
+	switch bus {
+	case esp.I2C0:
+		return i2cBus{sclOut: I2C0_SCL_PAD_OUT_IDX, sdaOut: I2C0_SDA_PAD_OUT_IDX}
+	case esp.I2C1:
+		return i2cBus{sclOut: I2C1_SCL_PAD_OUT_IDX, sdaOut: I2C1_SDA_PAD_OUT_IDX}
+	default:
+		return i2cBus{}
+	}
 }
 
-// initI2CExt1Clock enables the I2C1 peripheral APB clock and resets the
-// peripheral, then enables the functional (source) clock via HP_SYS_CLKRST.
-func initI2CExt1Clock() {
-	esp.HP_SYS_CLKRST.SetSOC_CLK_CTRL2_REG_I2C1_APB_CLK_EN(1)
-	esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C1(1)
-	esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C1(0)
-	esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C1_CLK_SRC_SEL(0) // 0 = XTAL
-	esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C1_CLK_EN(1)
+// enableI2CClock enables the clock of the I2C bus and resets it.
+func enableI2CClock(bus *esp.I2C_Type) {
+	switch bus {
+	case esp.I2C0:
+		esp.HP_SYS_CLKRST.SetSOC_CLK_CTRL2_REG_I2C0_APB_CLK_EN(1)
+		esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C0(1)
+		esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C0(0)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_SRC_SEL(i2cClockSource)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_EN(1)
+	case esp.I2C1:
+		esp.HP_SYS_CLKRST.SetSOC_CLK_CTRL2_REG_I2C1_APB_CLK_EN(1)
+		esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C1(1)
+		esp.HP_SYS_CLKRST.SetHP_RST_EN1_REG_RST_EN_I2C1(0)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C1_CLK_SRC_SEL(i2cClockSource)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C1_CLK_EN(1)
+	}
+}
+
+// setI2CClockDiv sets the I2C source clock divider, which is in HP_SYS_CLKRST on the P4.
+// See ESP-IDF hal/esp32p4/include/hal/i2c_ll.h i2c_ll_master_set_bus_timing.
+func setI2CClockDiv(bus *esp.I2C_Type, div uint32) {
+	switch bus {
+	case esp.I2C0:
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_DIV_NUM(div)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_DIV_NUMERATOR(0)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL10_REG_I2C0_CLK_DIV_DENOMINATOR(0)
+	case esp.I2C1:
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL11_REG_I2C1_CLK_DIV_NUM(div)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL11_REG_I2C1_CLK_DIV_NUMERATOR(0)
+		esp.HP_SYS_CLKRST.SetPERI_CLK_CTRL11_REG_I2C1_CLK_DIV_DENOMINATOR(0)
+	}
 }

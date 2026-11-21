@@ -144,8 +144,6 @@ func (p Pin) configure(config PinConfig, signal uint32) {
 	}
 }
 
-func initI2CExt1Clock() {}
-
 // outFunc returns the FUNCx_OUT_SEL_CFG register used for configuring the
 // output function selection.
 func (p Pin) outFunc() *volatile.Register32 {
@@ -297,7 +295,7 @@ var (
 	errWrongStopBitSize = errors.New("UART: invalid bit size")
 )
 
-const pplClockFreq = 80e6
+const uartClockFreq = 80_000_000 // PLL_F80M_CLK, PCR SCLK_SEL 1. See ESP-IDF hal/esp32c6/include/hal/uart_ll.h uart_ll_set_sclk.
 
 type registerSet struct {
 	interruptMapReg  *volatile.Register32
@@ -326,10 +324,6 @@ func (uart *UART) configure(config UARTConfig, regs registerSet) error {
 	uart.Bus.SetCLK_CONF_TX_SCLK_EN(0)
 	uart.Bus.SetCLK_CONF_RX_SCLK_EN(0)
 
-	// - default clock source: 1=XTAL_CLK, 2=RC_FAST_CLK, 3=FOSC_CLK
-	//   On C6, SCLK_SEL=1 selects XTAL (40 MHz). Use FOSC (80 MHz) for
-	//   better baud-rate accuracy.
-	uart.Bus.SetCLK_CONF_SCLK_SEL(3) // FOSC_CLK (80 MHz)
 	// reset divisor of the divider via UART_SCLK_DIV_NUM, UART_SCLK_DIV_A, and UART_SCLK_DIV_B
 	uart.Bus.SetCLK_CONF_SCLK_DIV_NUM(0)
 	uart.Bus.SetCLK_CONF_SCLK_DIV_A(0)
@@ -396,7 +390,7 @@ func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 		esp.PCR.SetUART0_CONF_UART0_RST_EN(1)
 		esp.PCR.SetUART0_CONF_UART0_RST_EN(0)
 		bus.SetCLK_CONF_RST_CORE(0)
-		// Configure SCLK divisor in PCR
+		esp.PCR.SetUART0_SCLK_CONF_UART0_SCLK_SEL(1)
 		esp.PCR.SetUART0_SCLK_CONF_UART0_SCLK_DIV_NUM(0)
 		esp.PCR.SetUART0_SCLK_CONF_UART0_SCLK_DIV_A(0)
 		esp.PCR.SetUART0_SCLK_CONF_UART0_SCLK_DIV_B(0)
@@ -407,6 +401,7 @@ func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 		esp.PCR.SetUART1_CONF_UART1_RST_EN(1)
 		esp.PCR.SetUART1_CONF_UART1_RST_EN(0)
 		bus.SetCLK_CONF_RST_CORE(0)
+		esp.PCR.SetUART1_SCLK_CONF_UART1_SCLK_SEL(1)
 		esp.PCR.SetUART1_SCLK_CONF_UART1_SCLK_DIV_NUM(0)
 		esp.PCR.SetUART1_SCLK_CONF_UART1_SCLK_DIV_A(0)
 		esp.PCR.SetUART1_SCLK_CONF_UART1_SCLK_DIV_B(0)
@@ -418,10 +413,7 @@ func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 }
 
 func (uart *UART) SetBaudRate(baudRate uint32) {
-	// based on esp-idf
-	max_div := uint32((1 << 12) - 1)
-	sclk_div := (pplClockFreq + (max_div * baudRate) - 1) / (max_div * baudRate)
-	clk_div := (pplClockFreq << 4) / (baudRate * sclk_div)
+	clk_div, sclk_div := uartDividers(baudRate)
 	uart.Bus.SetCLKDIV(clk_div >> 4)
 	uart.Bus.SetCLKDIV_FRAG(clk_div & 0xf)
 	// On C6, the SCLK divisor is in the PCR register.
@@ -435,29 +427,12 @@ func (uart *UART) SetBaudRate(baudRate uint32) {
 
 func uartEnableTX(pin Pin) {}
 
-func (uart *UART) enableTransmitter() {
-	uart.Bus.SetCONF0_TXFIFO_RST(1)
-	uart.Bus.SetCONF0_TXFIFO_RST(0)
-	uart.Bus.SetCONF1_TXFIFO_EMPTY_THRHD(uart_empty_thresh_default)
+func uartSetTXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_TXFIFO_RST(value)
 }
 
-func (uart *UART) enableReceiver() {
-	uart.Bus.SetCONF0_RXFIFO_RST(1)
-	uart.Bus.SetCONF0_RXFIFO_RST(0)
-	uart.Bus.SetCONF1_RXFIFO_FULL_THRHD(1)
-	uart.Bus.SetINT_ENA_RXFIFO_FULL_INT_ENA(1)
-	uart.Bus.SetINT_ENA_FRM_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_PARITY_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_GLITCH_DET_INT_ENA(1)
-	uart.Bus.SetINT_ENA_RXFIFO_OVF_INT_ENA(1)
-}
-
-func (uart *UART) writeByte(b byte) error {
-	for (uart.Bus.STATUS.Get()&esp.UART_STATUS_TXFIFO_CNT_Msk)>>esp.UART_STATUS_TXFIFO_CNT_Pos >= 128 {
-		// Wait until there is space in the transmit buffer.
-	}
-	uart.Bus.FIFO.Set(uint32(b))
-	return nil
+func uartSetRXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_RXFIFO_RST(value)
 }
 
 // GetRNG returns 32-bit random numbers from the ESP32-C6 true random number generator.

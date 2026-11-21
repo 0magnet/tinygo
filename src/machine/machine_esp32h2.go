@@ -282,7 +282,7 @@ var (
 	errWrongStopBitSize = errors.New("UART: invalid bit size")
 )
 
-const uartClockFreq = 32e6
+const uartClockFreq = 32_000_000 // XTAL_CLK, PCR SCLK_SEL 3. See ESP-IDF hal/esp32h2/include/hal/uart_ll.h uart_ll_set_sclk.
 
 type registerSet struct {
 	interruptMapReg  *volatile.Register32
@@ -398,45 +398,24 @@ func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 }
 
 func (uart *UART) SetBaudRate(baudRate uint32) {
-	// based on esp-idf
-	max_div := uint64((1 << 12) - 1)
-	baud := uint64(baudRate)
-	sclk_div := (uartClockFreq + (max_div * baud) - 1) / (max_div * baud)
-	clk_div := (uartClockFreq << 4) / (baud * sclk_div)
-	uart.Bus.SetCLKDIV(uint32(clk_div >> 4))
-	uart.Bus.SetCLKDIV_FRAG(uint32(clk_div & 0xf))
+	clk_div, sclk_div := uartDividers(baudRate)
+	uart.Bus.SetCLKDIV(clk_div >> 4)
+	uart.Bus.SetCLKDIV_FRAG(clk_div & 0xf)
 	// The SCLK divisor is in the PCR register.
 	switch uart.Bus {
 	case esp.UART0:
-		esp.PCR.SetUART0_SCLK_CONF_UART0_SCLK_DIV_NUM(uint32(sclk_div - 1))
+		esp.PCR.SetUART0_SCLK_CONF_UART0_SCLK_DIV_NUM(sclk_div - 1)
 	case esp.UART1:
-		esp.PCR.SetUART1_SCLK_CONF_UART1_SCLK_DIV_NUM(uint32(sclk_div - 1))
+		esp.PCR.SetUART1_SCLK_CONF_UART1_SCLK_DIV_NUM(sclk_div - 1)
 	}
 }
 
 func uartEnableTX(pin Pin) {}
 
-func (uart *UART) enableTransmitter() {
-	uart.Bus.SetCONF0_TXFIFO_RST(1)
-	uart.Bus.SetCONF0_TXFIFO_RST(0)
-	uart.Bus.SetCONF1_TXFIFO_EMPTY_THRHD(uart_empty_thresh_default)
+func uartSetTXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_TXFIFO_RST(value)
 }
 
-func (uart *UART) enableReceiver() {
-	uart.Bus.SetCONF0_RXFIFO_RST(1)
-	uart.Bus.SetCONF0_RXFIFO_RST(0)
-	uart.Bus.SetCONF1_RXFIFO_FULL_THRHD(1)
-	uart.Bus.SetINT_ENA_RXFIFO_FULL_INT_ENA(1)
-	uart.Bus.SetINT_ENA_FRM_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_PARITY_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_GLITCH_DET_INT_ENA(1)
-	uart.Bus.SetINT_ENA_RXFIFO_OVF_INT_ENA(1)
-}
-
-func (uart *UART) writeByte(b byte) error {
-	for (uart.Bus.STATUS.Get()&esp.UART_STATUS_TXFIFO_CNT_Msk)>>esp.UART_STATUS_TXFIFO_CNT_Pos >= 128 {
-		// Wait until there is space in the transmit buffer.
-	}
-	uart.Bus.FIFO.Set(uint32(b))
-	return nil
+func uartSetRXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_RXFIFO_RST(value)
 }
