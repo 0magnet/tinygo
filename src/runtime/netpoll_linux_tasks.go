@@ -249,7 +249,7 @@ func epollWake(f *epollFile, w *epollWaiter, ready bool) {
 	w.ready = ready
 	epollUnlink(w)
 	if w.timer != nil && ready {
-		removeTimer(w.timer)
+		removeTimer(w.timer, true)
 	}
 	epollWaiting.Add(-1)
 	scheduleTask(w.t)
@@ -263,7 +263,7 @@ func epollTimeout(tn *timerNode, delta int64) {
 
 	// Finish firing, so the threads and cores schedulers drop tn from their
 	// list of firing timers.
-	reAddTimer(tn)
+	reAddTimer(tn, delta)
 }
 
 // epollPoll wakes the goroutines whose fds are ready, waiting up to timeout
