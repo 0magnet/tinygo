@@ -110,6 +110,21 @@ func Instructions(bb llvm.BasicBlock) iter.Seq[llvm.Value] {
 	}
 }
 
+// Uses returns an iterator over the users of value. The loop body must not
+// change the use list of value. Use slices.Collect first if it does.
+func Uses(value llvm.Value) iter.Seq[llvm.Value] {
+	return func(yield func(llvm.Value) bool) {
+		if value.IsNil() {
+			return
+		}
+		for use := value.FirstUse(); !use.IsNil(); use = use.NextUse() {
+			if !yield(use.User()) {
+				return
+			}
+		}
+	}
+}
+
 // InterfaceStub describes a function that the compiler declares for an
 // interface method call or type assert, which interface lowering defines.
 type InterfaceStub struct {
@@ -286,12 +301,11 @@ func RemoveFromGlobal(mod llvm.Module, globalName string, remove func(llvm.Value
 	}
 }
 
-// RemoveGlobalReferences removes one occurrence from targetGlobal for each
-// value listed in referenceGlobal, then removes referenceGlobal itself.
-func RemoveGlobalReferences(mod llvm.Module, targetGlobal, referenceGlobal string) {
-	references := mod.NamedGlobal(referenceGlobal)
+// GlobalReferenceCounts counts pointers in an appending global after unwrapping constant casts.
+func GlobalReferenceCounts(mod llvm.Module, globalName string) map[llvm.Value]int {
+	references := mod.NamedGlobal(globalName)
 	if references.IsNil() {
-		return
+		return nil
 	}
 
 	initializer := references.Initializer()
@@ -303,6 +317,17 @@ func RemoveGlobalReferences(mod llvm.Module, targetGlobal, referenceGlobal strin
 		}
 		values[value]++
 	}
+	return values
+}
+
+// RemoveGlobalReferences removes one occurrence from targetGlobal for each
+// value listed in referenceGlobal, then removes referenceGlobal itself.
+func RemoveGlobalReferences(mod llvm.Module, targetGlobal, referenceGlobal string) {
+	references := mod.NamedGlobal(referenceGlobal)
+	if references.IsNil() {
+		return
+	}
+	values := GlobalReferenceCounts(mod, referenceGlobal)
 	references.EraseFromParentAsGlobal()
 	RemoveFromGlobal(mod, targetGlobal, func(value llvm.Value) bool {
 		if values[value] == 0 {
@@ -341,6 +366,17 @@ func IsNoCapture(attr llvm.Attribute) bool {
 		return attr.GetEnumValue() == 0
 	}
 	return true
+}
+
+// CapturesAtMostNullness reports whether attr is captures(none) or
+// captures(address_is_null). See https://llvm.org/docs/LangRef.html#pointer-capture.
+func CapturesAtMostNullness(attr llvm.Attribute) bool {
+	if attr.IsNil() || llvm.VersionMajor < 21 {
+		return IsNoCapture(attr)
+	}
+	// Bits 4-7 and 0-3 hold the components captured by other uses and by returns,
+	// and AddressIsNull is bit 0 of each (CaptureInfo::toIntValue, llvm/Support/ModRef.h).
+	return attr.GetEnumValue()&^0x11 == 0
 }
 
 // UnsignedRangeAttribute returns a range attribute that limits an integer of

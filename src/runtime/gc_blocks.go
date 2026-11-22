@@ -715,6 +715,9 @@ func scanConservative(addr, len uintptr) {
 	for len >= unsafe.Sizeof(addr) {
 		root := *(*uintptr)(unsafe.Pointer(addr))
 		markRoot(addr, root)
+		if gcScanSwapped {
+			markRoot(addr, root<<8|root>>8)
+		}
 
 		addr += unsafe.Alignof(addr)
 		len -= unsafe.Alignof(addr)

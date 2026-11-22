@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strconv"
 	"unsafe"
+
+	"github.com/tinygo-org/tinygo/testdata/reflectmakefunc"
 )
 
 type typeNamePair[A, B any] struct{}
@@ -479,6 +481,16 @@ func main() {
 		t := reflect.TypeOf(f)
 		println(t.String(), "NumIn=", t.NumIn(), "In(0)=", t.In(0).String(), "NumOut=", t.NumOut(), "Out(0)=", t.Out(0).String())
 	}
+	fn := reflectmakefunc.Make(reflect.TypeOf((func(int) int)(nil))).(func(int) int)
+	println("cross-package MakeFunc:", fn(41))
+
+	writer := reflect.ValueOf(&myWriter{})
+	method, ok := writer.Type().MethodByName("Write")
+	if !ok || !method.Func.IsValid() {
+		panic("reflected method function is unavailable")
+	}
+	results := writer.MethodByName("Write").Call([]reflect.Value{reflect.ValueOf([]byte("hello"))})
+	println("reflected pointer method:", results[0].Int(), results[1].IsNil())
 }
 
 type elemStringer int

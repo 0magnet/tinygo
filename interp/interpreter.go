@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -329,7 +329,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, frames
 				if err != nil {
 					return nil, mem, err
 				}
-			case callFn.name == "internal/task.Pause":
+			case callFn.name == "internal/task.Pause" || callFn.name == "internal/task.PauseLocked":
 				// Task scheduling isn't possible at compile time.
 				return nil, mem, r.rollbackAt(inst, "goroutine would block")
 			case callFn.name == "runtime.fastrand" || callFn.name == "runtime.fastrand64":
@@ -604,14 +604,13 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, frames
 
 				// Iterate through all methods, looking for the one method that
 				// should be returned.
-				numMethods := int(r.builder.CreateExtractValue(methodSet, 0, "").ZExtValue())
 				var method llvm.Value
-				for i := range numMethods {
-					methodSignatureAgg := r.builder.CreateExtractValue(methodSet, 1, "")
-					methodSignature := r.builder.CreateExtractValue(methodSignatureAgg, i, "")
-					if methodSignature == signature {
-						methodAgg := r.builder.CreateExtractValue(methodSet, 2, "")
-						method = r.builder.CreateExtractValue(methodAgg, i, "")
+				signatures := methodSet.AggregateElement(1)
+				methods := methodSet.AggregateElement(2)
+				for i := range int(methodSet.AggregateElement(0).ZExtValue()) {
+					if signatures.AggregateElement(i) == signature {
+						method = methods.AggregateElement(i)
+						break
 					}
 				}
 				if method.IsNil() {

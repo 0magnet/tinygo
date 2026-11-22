@@ -2,10 +2,24 @@ package reflect_test
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 	"runtime"
 	"testing"
 )
+
+//go:noinline
+func captureFunctionPointer(value int) func() int {
+	return func() int { return value }
+}
+
+func TestClosureCodePointer(t *testing.T) {
+	first := reflect.ValueOf(captureFunctionPointer(1))
+	second := reflect.ValueOf(captureFunctionPointer(2))
+	if first.Pointer() == 0 || first.Pointer() != second.Pointer() {
+		t.Fatal("closures from the same expression did not share a code pointer")
+	}
+}
 
 func callAllocationCases() []struct {
 	name string
@@ -150,6 +164,31 @@ func TestValueCallAggregate(t *testing.T) {
 	out := reflect.ValueOf(fn).Call([]reflect.Value{reflect.ValueOf(pair{41, "go"})})
 	if got := out[0].Interface().(pair); got != (pair{42, "go!"}) {
 		t.Fatalf("result = %#v, want %#v", got, pair{42, "go!"})
+	}
+}
+
+func TestCallInlineValues(t *testing.T) {
+	const number = uint16(0x1234)
+	pair := [2]byte{0x56, 0x78}
+	fn := reflect.ValueOf(func(n uint16, p [2]byte) (uint16, [2]byte) {
+		return n + 1, [2]byte{p[1], p[0]}
+	})
+	out := fn.Call([]reflect.Value{reflect.ValueOf(number), reflect.ValueOf(pair)})
+	if got := out[0].Interface().(uint16); got != number+1 {
+		t.Errorf("Call returned %#x, want %#x", got, number+1)
+	}
+	if got := out[1].Interface().([2]byte); got != ([2]byte{pair[1], pair[0]}) {
+		t.Errorf("Call returned %#v, want reversed input", got)
+	}
+
+	generated := reflect.MakeFunc(fn.Type(), func(in []reflect.Value) []reflect.Value {
+		if n, p := in[0].Interface().(uint16), in[1].Interface().([2]byte); n != number || p != pair {
+			t.Errorf("MakeFunc callback received %#x, %#v", n, p)
+		}
+		return in
+	}).Interface().(func(uint16, [2]byte) (uint16, [2]byte))
+	if n, p := generated(number, pair); n != number || p != pair {
+		t.Errorf("MakeFunc returned %#x, %#v", n, p)
 	}
 }
 
@@ -318,4 +357,374 @@ func TestValueCallPanics(t *testing.T) {
 	mustPanic("called function", func() {
 		reflect.ValueOf(func() { panic("called") }).Call(nil)
 	})
+}
+
+func TestMakeFuncAllocations(t *testing.T) {
+	for _, test := range callAllocationCases() {
+		t.Run(test.name, func(t *testing.T) {
+			value := reflect.MakeFunc(test.fn.Type(), func(in []reflect.Value) []reflect.Value { return in })
+			max := test.max + 1
+			if test.name == "empty" {
+				max = 0
+			}
+			if got := testing.AllocsPerRun(100, func() {
+				callAllocationResults = value.Call(test.args)
+			}); got > max {
+				t.Fatalf("MakeFunc Call allocated %v times, want at most %v", got, max)
+			}
+		})
+	}
+	value := reflect.MakeFunc(reflect.TypeOf((func())(nil)), func(in []reflect.Value) []reflect.Value { return in })
+	if got := testing.AllocsPerRun(100, value.Interface().(func())); got != 0 {
+		t.Fatalf("MakeFunc empty function allocated %v times, want 0", got)
+	}
+	value = reflect.MakeFunc(reflect.TypeOf((func(int) int)(nil)), func(in []reflect.Value) []reflect.Value { return in })
+	fn := value.Interface().(func(int) int)
+	if got := testing.AllocsPerRun(100, func() {
+		if fn(42) != 42 {
+			t.Fatal("MakeFunc returned the wrong value")
+		}
+	}); got > 1 {
+		t.Fatalf("MakeFunc scalar function allocated %v times, want at most 1", got)
+	}
+}
+
+func BenchmarkMakeFuncCall(b *testing.B) {
+	for _, test := range callAllocationCases() {
+		b.Run(test.name, func(b *testing.B) {
+			value := reflect.MakeFunc(test.fn.Type(), func(in []reflect.Value) []reflect.Value { return in })
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				callAllocationResults = value.Call(test.args)
+			}
+		})
+	}
+}
+
+func TestMakeFuncRetainedArguments(t *testing.T) {
+	t.Run("direct aggregate", func(t *testing.T) {
+		type pair [2]uintptr
+		var saved reflect.Value
+		fn := reflect.MakeFunc(reflect.TypeFor[func(pair) pair](), func(in []reflect.Value) []reflect.Value {
+			if !saved.IsValid() {
+				saved = in[0]
+			}
+			return in
+		}).Interface().(func(pair) pair)
+		fn(pair{1, 2})
+		fn(pair{3, 4})
+		if got := saved.Interface().(pair); got != (pair{1, 2}) {
+			t.Fatalf("retained argument = %v, want [1 2]", got)
+		}
+	})
+
+	type payload struct {
+		Pointer *int
+		Padding [1100]byte
+	}
+	var saved []reflect.Value
+	value := reflect.MakeFunc(reflect.TypeOf((func(payload) payload)(nil)), func(in []reflect.Value) []reflect.Value {
+		saved = append(saved, in[0])
+		runtime.GC()
+		return in
+	})
+	fn := value.Interface().(func(payload) payload)
+	input := payload{Pointer: new(int)}
+	*input.Pointer = 17
+	input.Padding[0] = 1
+	first := fn(input)
+	input.Padding[0] = 2
+	input.Pointer = new(int)
+	*input.Pointer = 23
+	second := fn(input)
+	input.Padding[0] = 3
+	third := value.Call([]reflect.Value{reflect.ValueOf(&input).Elem()})[0]
+	input.Padding[0] = 4
+	input.Pointer = nil
+	runtime.GC()
+	for i, want := range []payload{first, second, third.Interface().(payload)} {
+		got := saved[i].Interface().(payload)
+		if got != want || got.Padding[0] != byte(i+1) || *got.Pointer != []int{17, 23, 23}[i] {
+			t.Fatalf("retained argument %d was changed", i)
+		}
+		if saved[i].CanAddr() || saved[i].CanSet() {
+			t.Fatalf("retained argument %d is addressable", i)
+		}
+	}
+}
+
+func TestMakeFuncABI(t *testing.T) {
+	type pair [2]uintptr
+	typ := reflect.TypeOf(func(byte, int, byte, pair, byte, float32, byte) (byte, int, byte, pair, byte, float32, byte) {
+		return 0, 0, 0, pair{}, 0, 0, 0
+	})
+	value := reflect.MakeFunc(typ, func(in []reflect.Value) []reflect.Value {
+		return in
+	})
+	fn := value.Interface().(func(byte, int, byte, pair, byte, float32, byte) (byte, int, byte, pair, byte, float32, byte))
+	b, c, d, e, f, g, h := fn(10, 20, 30, pair{40, 50}, 60, 70, 80)
+	if b != 10 || c != 20 || d != 30 || e != (pair{40, 50}) || f != 60 || g != 70 || h != 80 {
+		t.Fatalf("MakeFunc returned %d, %d, %d, %v, %d, %g, %d", b, c, d, e, f, g, h)
+	}
+}
+
+func TestMakeFuncCall(t *testing.T) {
+	typ := reflect.TypeOf(func(int) int { return 0 })
+	value := reflect.MakeFunc(typ, func(in []reflect.Value) []reflect.Value {
+		if in[0].CanAddr() {
+			t.Error("MakeFunc argument is addressable")
+		}
+		return []reflect.Value{reflect.ValueOf(int(in[0].Int()) + 1)}
+	})
+	out := value.Call([]reflect.Value{reflect.ValueOf(41)})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("Call returned %d, want 42", got)
+	}
+}
+
+func TestMakeFuncAssignableResult(t *testing.T) {
+	typ := reflect.TypeOf(func() error { return nil })
+	value := reflect.MakeFunc(typ, func([]reflect.Value) []reflect.Value {
+		return []reflect.Value{reflect.ValueOf(io.EOF)}
+	})
+	if got := value.Interface().(func() error)(); got != io.EOF {
+		t.Fatalf("MakeFunc returned %v, want %v", got, io.EOF)
+	}
+}
+
+func TestMakeFuncZeroSized(t *testing.T) {
+	type empty struct{}
+	typ := reflect.TypeOf(func(empty) empty { return empty{} })
+	value := reflect.MakeFunc(typ, func(in []reflect.Value) []reflect.Value {
+		return in
+	})
+	if got := value.Interface().(func(empty) empty)(empty{}); got != (empty{}) {
+		t.Fatalf("MakeFunc returned %#v", got)
+	}
+}
+
+func TestMakeFuncIndirectAggregate(t *testing.T) {
+	type large [1100]byte
+	typ := reflect.TypeOf(func(large) large { return large{} })
+	value := reflect.MakeFunc(typ, func(in []reflect.Value) []reflect.Value {
+		result := in[0].Interface().(large)
+		result[0]++
+		result[len(result)-1]++
+		return []reflect.Value{reflect.ValueOf(result)}
+	})
+	var input large
+	input[0] = 1
+	input[len(input)-1] = 2
+	got := value.Interface().(func(large) large)(input)
+	if got[0] != 2 || got[len(got)-1] != 3 {
+		t.Fatalf("result endpoints = %d, %d; want 2, 3", got[0], got[len(got)-1])
+	}
+}
+
+func TestMakeFuncDynamicType(t *testing.T) {
+	type input string
+	type output float64
+	typ := reflect.FuncOf(
+		[]reflect.Type{reflect.TypeOf(input(""))},
+		[]reflect.Type{reflect.TypeOf(output(0))},
+		false,
+	)
+	value := reflect.MakeFunc(typ, func(in []reflect.Value) []reflect.Value {
+		if got := in[0].Interface().(input); got != "gopher" {
+			t.Fatalf("argument = %q, want %q", got, "gopher")
+		}
+		return []reflect.Value{reflect.ValueOf(output(3.14))}
+	})
+	out := value.Call([]reflect.Value{reflect.ValueOf(input("gopher"))})
+	if got := out[0].Interface().(output); got != 3.14 {
+		t.Fatalf("Call returned %v, want 3.14", got)
+	}
+}
+
+func TestMakeFuncPanics(t *testing.T) {
+	mustPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s did not panic", name)
+			}
+		}()
+		fn()
+	}
+
+	mustPanic("non-function type", func() {
+		reflect.MakeFunc(reflect.TypeOf(0), func([]reflect.Value) []reflect.Value { return nil })
+	})
+	mustPanic("wrong result count", func() {
+		value := reflect.MakeFunc(reflect.TypeOf(func() int { return 0 }), func([]reflect.Value) []reflect.Value {
+			return nil
+		})
+		value.Call(nil)
+	})
+	mustPanic("zero result", func() {
+		value := reflect.MakeFunc(reflect.TypeOf(func() int { return 0 }), func([]reflect.Value) []reflect.Value {
+			return []reflect.Value{{}}
+		})
+		value.Call(nil)
+	})
+	mustPanic("wrong result type", func() {
+		value := reflect.MakeFunc(reflect.TypeOf(func() int { return 0 }), func([]reflect.Value) []reflect.Value {
+			return []reflect.Value{reflect.ValueOf("bad")}
+		})
+		value.Call(nil)
+	})
+}
+
+type methodValueTarget struct {
+	Base int
+}
+
+func (v methodValueTarget) Add(value int) int {
+	return v.Base + value
+}
+
+func (v *methodValueTarget) Set(value int) {
+	v.Base = value
+}
+
+func (v methodValueTarget) Sum(values ...int) int {
+	total := v.Base
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+type embeddedMethodTarget struct {
+	methodValueTarget
+}
+
+func TestTypeMethodFunc(t *testing.T) {
+	typ := reflect.TypeOf(methodValueTarget{})
+	method, ok := typ.MethodByName("Add")
+	if !ok {
+		t.Fatal("Add method was not found")
+	}
+
+	out := method.Func.Call([]reflect.Value{
+		reflect.ValueOf(methodValueTarget{Base: 40}),
+		reflect.ValueOf(2),
+	})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("Method.Func returned %d, want 42", got)
+	}
+}
+
+func TestInterfaceTypeMethodFunc(t *testing.T) {
+	typ := reflect.TypeOf((*interface{ Add(int) int })(nil)).Elem()
+	method, ok := typ.MethodByName("Add")
+	if !ok {
+		t.Fatal("Add method was not found")
+	}
+	if method.Func.IsValid() {
+		t.Fatalf("interface Method.Func is %v, want zero Value", method.Func)
+	}
+}
+
+func TestValueMethod(t *testing.T) {
+	value := reflect.ValueOf(methodValueTarget{Base: 40}).MethodByName("Add")
+	if !value.IsValid() {
+		t.Fatal("Add method value was not found")
+	}
+	out := value.Call([]reflect.Value{reflect.ValueOf(2)})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("method value returned %d, want 42", got)
+	}
+	fn := value.Interface().(func(int) int)
+	if got := fn(3); got != 43 {
+		t.Fatalf("method function returned %d, want 43", got)
+	}
+}
+
+func TestValuePointerMethod(t *testing.T) {
+	target := &methodValueTarget{}
+	method := reflect.ValueOf(target).MethodByName("Set")
+	method.Call([]reflect.Value{reflect.ValueOf(42)})
+	if target.Base != 42 {
+		t.Fatalf("Set stored %d, want 42", target.Base)
+	}
+}
+
+func TestValueVariadicMethod(t *testing.T) {
+	method := reflect.ValueOf(methodValueTarget{Base: 40}).MethodByName("Sum")
+	out := method.Call([]reflect.Value{
+		reflect.ValueOf(1),
+		reflect.ValueOf(2),
+	})
+	if got := int(out[0].Int()); got != 43 {
+		t.Fatalf("variadic method returned %d, want 43", got)
+	}
+	out = method.CallSlice([]reflect.Value{
+		reflect.ValueOf([]int{1, 2}),
+	})
+	if got := int(out[0].Int()); got != 43 {
+		t.Fatalf("variadic CallSlice returned %d, want 43", got)
+	}
+}
+
+func TestValuePromotedMethod(t *testing.T) {
+	target := embeddedMethodTarget{methodValueTarget{Base: 40}}
+	out := reflect.ValueOf(target).MethodByName("Add").Call([]reflect.Value{reflect.ValueOf(2)})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("promoted method returned %d, want 42", got)
+	}
+}
+
+func TestValueInterfaceMethod(t *testing.T) {
+	var target interface{ Add(int) int } = methodValueTarget{Base: 40}
+	value := reflect.ValueOf(&target).Elem()
+	method := value.MethodByName("Add")
+	target = embeddedMethodTarget{methodValueTarget{Base: 50}}
+	out := method.Call([]reflect.Value{reflect.ValueOf(2)})
+	if got := int(out[0].Int()); got != 52 {
+		t.Fatalf("interface method returned %d, want 52", got)
+	}
+
+	target = nil
+	t.Run("nil at lookup", func(t *testing.T) {
+		shouldPanic("nil interface value", func() { value.Method(0) })
+	})
+	t.Run("nil at call", func(t *testing.T) {
+		shouldPanic("nil interface value", func() { method.Call([]reflect.Value{reflect.ValueOf(2)}) })
+	})
+}
+
+func TestValueMethodByNameMissing(t *testing.T) {
+	if value := reflect.ValueOf(methodValueTarget{}).MethodByName("Missing"); value.IsValid() {
+		t.Fatalf("MethodByName returned %v for a missing method", value)
+	}
+}
+
+type wideMethodTarget struct{}
+
+func (wideMethodTarget) Wide(
+	first, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, last int,
+) int {
+	return first + last
+}
+
+func TestValueWideMethod(t *testing.T) {
+	value := reflect.ValueOf(wideMethodTarget{})
+	args := make([]reflect.Value, 128)
+	for i := range args {
+		args[i] = reflect.ValueOf(i + 1)
+	}
+	for _, method := range []reflect.Value{value.Method(0), value.MethodByName("Wide")} {
+		if got := method.Call(args)[0].Int(); got != 129 {
+			t.Fatalf("wide method returned %d, want 129", got)
+		}
+	}
 }

@@ -59,7 +59,7 @@ smoketest-examples: | build/smoke
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/adc
 	@$(MD5SUM) $(SMOKE_OUT).hex
-	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pca10040            examples/blinky2
 	@$(MD5SUM) $(SMOKE_OUT).hex
@@ -345,6 +345,8 @@ smoketest-rp2xxx: | build/smoke
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pico-plus2          examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=pico-plus2          examples/psram
+	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=tufty2350          examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=waveshare-rp2350-pizero examples/blinky1
@@ -434,7 +436,7 @@ ifneq ($(STM32), 0)
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=arduino-uno-q       examples/serial
 	@$(MD5SUM) $(SMOKE_OUT).hex
-	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=arduino-uno-q       examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=arduino-uno-q       examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).hex
 endif
 
@@ -471,7 +473,7 @@ endif
 
 smoketest-avr: SMOKE_OUT = build/smoke/avr
 smoketest-avr: | build/smoke
-	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=atmega328pb         examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=atmega328pb         examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).hex
 	$(TINYGO) build -size short -o $(SMOKE_OUT).hex -target=atmega1284p         examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).hex
@@ -527,7 +529,7 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini   examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini   examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini   examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=nodemcu             examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -548,7 +550,7 @@ ifneq ($(XTENSA), 0)
 	# xiao-esp32c6
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6      	examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/i2s-tone
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -557,13 +559,13 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32h2-devkitm-1 	examples/serial
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	# esp32p4-generic
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32p4-generic 	examples/serial
+	# esp32p4-module-devkit
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32p4-module-devkit 	examples/serial
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	# xiao-esp32s3
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/mcp3008
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -584,13 +586,15 @@ ifneq ($(XTENSA), 0)
 	# esp32s3-supermini
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-supermini	    examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-supermini	    examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-supermini	    examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-supermini	    examples/mcp3008
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-supermini   	examples/adc
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-box-3       examples/blinky1
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-n16r8-devkit examples/psram
 	@$(MD5SUM) $(SMOKE_OUT).bin
 endif
 
@@ -599,7 +603,7 @@ smoketest-riscv: | build/smoke
 	# esp32c3-supermini
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini	    examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
-	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini	    examples/blinkm
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini	    examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini	    examples/mcp3008
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -613,6 +617,8 @@ smoketest-riscv: | build/smoke
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=qtpy-esp32c3        examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=m5stamp-c3          examples/machinetest
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=m5stamp-c3          examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c3        examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).bin

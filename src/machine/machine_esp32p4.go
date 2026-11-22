@@ -327,14 +327,6 @@ var (
 	errWrongStopBitSize = errors.New("UART: invalid bit size")
 )
 
-type UART struct {
-	Bus                  *esp.UART_Type
-	Buffer               *RingBuffer
-	ParityErrorDetected  bool // set when parity error detected
-	DataErrorDetected    bool // set when data corruption detected
-	DataOverflowDetected bool // set when data overflow detected in UART FIFO buffer or RingBuffer
-}
-
 // GPIO matrix signal indices for UART peripherals on the ESP32-P4.
 // Source: ESP-IDF components/soc/esp32p4/include/soc/gpio_sig_map.h
 const (
@@ -342,60 +334,39 @@ const (
 	uartSignalU1 = uint32(13) // UART1_TXD_PAD_OUT_IDX / UART1_RXD_PAD_IN_IDX
 )
 
-const (
-	defaultDataBits = 8
-	defaultStopBit  = 1
-	defaultParity   = ParityNone
-
-	uartInterrupts = esp.UART_INT_ENA_RXFIFO_FULL_INT_ENA |
-		esp.UART_INT_ENA_PARITY_ERR_INT_ENA |
-		esp.UART_INT_ENA_FRM_ERR_INT_ENA |
-		esp.UART_INT_ENA_RXFIFO_OVF_INT_ENA |
-		esp.UART_INT_ENA_GLITCH_DET_INT_ENA
-
-	pplClockFreq = 40_000_000 // XTAL clock source (40MHz, always available after ROM boot)
-)
+const uartClockFreq = 40_000_000 // XTAL_CLK, CLK_SRC_SEL 0. See ESP-IDF hal/esp32p4/include/hal/uart_ll.h uart_ll_set_sclk.
 
 type registerSet struct {
 	interruptMapReg  *volatile.Register32
 	gpioMatrixSignal uint32
 }
 
-func (uart *UART) Configure(config UARTConfig) error {
-	if config.BaudRate == 0 {
-		config.BaudRate = 115200
-	}
-	if config.TX == 0 && config.RX == 0 {
-		config.TX = UART_TX_PIN
-		config.RX = UART_RX_PIN
-	}
-	if config.TX == config.RX {
-		return errSamePins
-	}
-	switch {
-	case uart.Bus == esp.UART0:
-		return uart.configure(config, registerSet{
+const cpuInterruptFromUART = 7
+
+func busFor(bus *esp.UART_Type) registerSet {
+	switch bus {
+	case esp.UART0:
+		return registerSet{
 			interruptMapReg:  &esp.INTERRUPT_CORE0.UART0_INT_MAP,
 			gpioMatrixSignal: uartSignalU0,
-		})
-	case uart.Bus == esp.UART1:
-		return uart.configure(config, registerSet{
+		}
+	case esp.UART1:
+		return registerSet{
 			interruptMapReg:  &esp.INTERRUPT_CORE0.UART1_INT_MAP,
 			gpioMatrixSignal: uartSignalU1,
-		})
+		}
+	default:
+		return registerSet{}
 	}
-	return errWrongUART
 }
 
 func (uart *UART) configure(config UARTConfig, regs registerSet) error {
-	initUARTClock(uart.Bus)
-
 	// Disable TX/RX clock during configuration.
 	uart.Bus.SetCLK_CONF_TX_SCLK_EN(0)
 	uart.Bus.SetCLK_CONF_RX_SCLK_EN(0)
 
 	uart.SetBaudRate(config.BaudRate)
-	uart.SetFormat(defaultDataBits, defaultStopBit, defaultParity)
+	uart.setFormat(defaultDataBits, defaultStopBit, defaultParity)
 
 	// Set UART mode (disable RS485 and IrDA).
 	uart.Bus.SetRS485_CONF_SYNC_RS485_EN(0)
@@ -422,13 +393,15 @@ func (uart *UART) configure(config UARTConfig, regs registerSet) error {
 	return nil
 }
 
-func (uart *UART) SetFormat(dataBits, stopBits int, parity UARTParity) error {
-	if dataBits < 5 {
-		return errWrongBitSize
+// uartSync copies the configuration registers into the UART core clock domain.
+// See ESP-IDF hal/esp32p4/include/hal/uart_ll.h uart_ll_update.
+func uartSync(bus *esp.UART_Type) {
+	bus.SetREG_UPDATE(1)
+	for bus.GetREG_UPDATE() != 0 {
 	}
-	if stopBits > 1 {
-		return errWrongStopBitSize
-	}
+}
+
+func (uart *UART) setFormat(dataBits, stopBits int, parity UARTParity) {
 	uart.Bus.SetCONF0_SYNC_BIT_NUM(uint32(dataBits - 5))
 	uart.Bus.SetCONF0_SYNC_STOP_BIT_NUM(uint32(stopBits))
 	switch parity {
@@ -441,12 +414,11 @@ func (uart *UART) SetFormat(dataBits, stopBits int, parity UARTParity) error {
 		uart.Bus.SetCONF0_SYNC_PARITY_EN(1)
 		uart.Bus.SetCONF0_SYNC_PARITY(1)
 	}
-	return nil
 }
 
 // initUARTClock enables and configures the UART clock via HP_SYS_CLKRST.
 // On ESP32-P4, UART clock control is in HP_SYS_CLKRST (not PCR like ESP32-C6).
-func initUARTClock(bus *esp.UART_Type) {
+func initUARTClock(bus *esp.UART_Type, regs registerSet) {
 	switch bus {
 	case esp.UART0:
 		// Enable bus clocks for UART0 (matches uart_ll_enable_bus_clock):
@@ -493,9 +465,7 @@ func initUARTClock(bus *esp.UART_Type) {
 }
 
 func (uart *UART) SetBaudRate(baudRate uint32) {
-	max_div := uint32((1 << 12) - 1)
-	sclk_div := (pplClockFreq + (max_div * baudRate) - 1) / (max_div * baudRate)
-	clk_div := (pplClockFreq << 4) / (baudRate * sclk_div)
+	clk_div, sclk_div := uartDividers(baudRate)
 	uart.Bus.SetCLKDIV_SYNC_CLKDIV(clk_div >> 4)
 	uart.Bus.SetCLKDIV_SYNC_CLKDIV_FRAG(clk_div & 0xf)
 	// Set the SCLK divisor in HP_SYS_CLKRST.
@@ -507,121 +477,18 @@ func (uart *UART) SetBaudRate(baudRate uint32) {
 	}
 }
 
-func (uart *UART) setupPins(config UARTConfig, regs registerSet) {
-	config.RX.Configure(PinConfig{Mode: PinInputPullup})
-	config.TX.Configure(PinConfig{Mode: PinInputPullup})
-
-	// GPIO_FUNC_OUT_SEL_CFG uses OEN_SEL=0 by default, meaning the GPIO ENABLE
-	// register gates the pad driver. Configure(PinInputPullup) clears ENABLE, so
-	// we must re-enable output for TX before the peripheral can drive the line.
-	// This mirrors the IDF's gpio_set_level() call prior to connecting the signal.
-	if config.TX < 32 {
-		esp.GPIO.ENABLE_W1TS.Set(1 << config.TX)
+func uartEnableTX(pin Pin) {
+	if pin < 32 {
+		esp.GPIO.ENABLE_W1TS.Set(1 << pin)
 	} else {
-		esp.GPIO.ENABLE1_W1TS.Set(1 << (config.TX - 32))
-	}
-
-	// Link TX with GPIO matrix signal.
-	if config.InvertTX {
-		config.TX.outFunc().Set(regs.gpioMatrixSignal | esp.GPIO_FUNC_OUT_SEL_CFG_INV_SEL)
-	} else {
-		config.TX.outFunc().Set(regs.gpioMatrixSignal)
-	}
-	// Link RX with GPIO matrix signal and route via GPIO matrix.
-	if config.InvertRX {
-		inFunc(regs.gpioMatrixSignal).Set(esp.GPIO_FUNC_IN_SEL_CFG_SEL | uint32(config.RX) | esp.GPIO_FUNC_IN_SEL_CFG_IN_INV_SEL)
-	} else {
-		inFunc(regs.gpioMatrixSignal).Set(esp.GPIO_FUNC_IN_SEL_CFG_SEL | uint32(config.RX))
+		esp.GPIO.ENABLE1_W1TS.Set(1 << (pin - 32))
 	}
 }
 
-func (uart *UART) configureInterrupt(intrMapReg *volatile.Register32) {
-	// Disable all UART interrupts.
-	uart.Bus.INT_ENA.ClearBits(0x0ffff)
-
-	intrMapReg.Set(7)
-	onceUart.Do(func() {
-		_ = interrupt.New(7, func(i interrupt.Interrupt) {
-			UART0.serveInterrupt(0)
-			UART1.serveInterrupt(1)
-		}).Enable()
-	})
+func uartSetTXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_SYNC_TXFIFO_RST(value)
 }
 
-func (uart *UART) serveInterrupt(num int) {
-	interrutFlag := uart.Bus.INT_ST.Get()
-	if (interrutFlag & uartInterrupts) == 0 {
-		return
-	}
-
-	uart.Bus.INT_ENA.ClearBits(uartInterrupts)
-
-	if interrutFlag&esp.UART_INT_ENA_RXFIFO_FULL_INT_ENA > 0 {
-		for uart.Bus.GetSTATUS_RXFIFO_CNT() > 0 {
-			b := uart.Bus.GetFIFO_RXFIFO_RD_BYTE()
-			if !uart.Buffer.Put(byte(b & 0xff)) {
-				uart.DataOverflowDetected = true
-			}
-		}
-	}
-	if interrutFlag&esp.UART_INT_ENA_PARITY_ERR_INT_ENA > 0 {
-		uart.ParityErrorDetected = true
-	}
-	if 0 != interrutFlag&esp.UART_INT_ENA_FRM_ERR_INT_ENA {
-		uart.DataErrorDetected = true
-	}
-	if 0 != interrutFlag&esp.UART_INT_ENA_RXFIFO_OVF_INT_ENA {
-		uart.DataOverflowDetected = true
-	}
-	if 0 != interrutFlag&esp.UART_INT_ENA_GLITCH_DET_INT_ENA {
-		uart.DataErrorDetected = true
-	}
-
-	// Clear the UART interrupt status.
-	uart.Bus.INT_CLR.SetBits(interrutFlag)
-	uart.Bus.INT_CLR.ClearBits(interrutFlag)
-	// Re-enable interrupts.
-	uart.Bus.INT_ENA.Set(uartInterrupts)
+func uartSetRXFIFORST(bus *esp.UART_Type, value uint32) {
+	bus.SetCONF0_SYNC_RXFIFO_RST(value)
 }
-
-const uart_empty_thresh_default = 10
-
-func (uart *UART) enableTransmitter() {
-	uart.Bus.SetCONF0_SYNC_TXFIFO_RST(1)
-	uart.Bus.SetCONF0_SYNC_TXFIFO_RST(0)
-	uart.Bus.SetCONF1_TXFIFO_EMPTY_THRHD(uart_empty_thresh_default)
-}
-
-func (uart *UART) enableReceiver() {
-	uart.Bus.SetCONF0_SYNC_RXFIFO_RST(1)
-	uart.Bus.SetCONF0_SYNC_RXFIFO_RST(0)
-	uart.Bus.SetCONF1_RXFIFO_FULL_THRHD(1)
-	uart.Bus.SetINT_ENA_RXFIFO_FULL_INT_ENA(1)
-	uart.Bus.SetINT_ENA_FRM_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_PARITY_ERR_INT_ENA(1)
-	uart.Bus.SetINT_ENA_GLITCH_DET_INT_ENA(1)
-	uart.Bus.SetINT_ENA_RXFIFO_OVF_INT_ENA(1)
-}
-
-// uartBus returns the UART register block without trusting the Bus field.
-// A corrupted board global must not take the console down with it.
-func (uart *UART) uartBus() *esp.UART_Type {
-	switch uart {
-	case UART0:
-		return esp.UART0
-	case UART1:
-		return esp.UART1
-	}
-	return uart.Bus
-}
-
-func (uart *UART) writeByte(b byte) error {
-	bus := uart.uartBus()
-	for (bus.STATUS.Get()&esp.UART_STATUS_TXFIFO_CNT_Msk)>>esp.UART_STATUS_TXFIFO_CNT_Pos >= 128 {
-		// Wait until there is space in the transmit buffer.
-	}
-	bus.FIFO.Set(uint32(b))
-	return nil
-}
-
-func (uart *UART) flush() {}

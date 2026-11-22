@@ -44,13 +44,10 @@ func main() {
 }
 
 func init() {
+	// The PSRAM driver allocates, so it runs after the heap is ready.
+	startPSRAM()
 	machine.InitSerial()
-}
-
-func abort() {
-	for {
-		riscv.Asm("wfi")
-	}
+	checkPSRAM()
 }
 
 // interruptInit initializes the interrupt controller.

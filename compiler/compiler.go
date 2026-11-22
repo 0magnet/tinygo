@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"github.com/tinygo-org/tinygo/compileopts"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/src/tinygo"
 	"golang.org/x/tools/go/ssa"
@@ -64,10 +64,6 @@ type Config struct {
 	Nobounds           bool // Whether to skip bounds checks
 	PanicStrategy      string
 	PanicUnwind        string
-
-	// ReflectMethods emits the method tables reflect.Value.Method needs. It is
-	// set only when the program refers to Method or MethodByName.
-	ReflectMethods bool `json:",omitempty"`
 }
 
 // context contains function-independent data that should still be
@@ -96,6 +92,7 @@ type context struct {
 	uintptrType                 llvm.Type
 	uintptrZero                 llvm.Value
 	nocapture                   llvm.Attribute // captures(none)
+	standardDeclaredAttrs       []llvm.Attribute
 	ptrBits                     int
 	ptrAlign                    int
 	program                     *ssa.Program
@@ -117,7 +114,6 @@ type context struct {
 	packageDir                  string          // directory for this package
 	runtimePkg                  *types.Package
 	localTypeNames              typeutil.Map // *types.Named (synthetic local from generic instantiation) -> string
-	reflectTypes                []types.Type // types that get a $reflectmethods table
 }
 
 // newContext returns a new compiler context ready for use, most
@@ -163,6 +159,7 @@ func newContext(moduleName string, machine llvm.TargetMachine, config *Config, d
 	c.dataPtrNull = llvm.ConstNull(c.dataPtrType)
 	c.dataPtrUndef = llvm.Undef(c.dataPtrType)
 	c.nocapture = c.ctx.CreateEnumAttribute(llvm.AttributeKindID(llvmutil.NoCaptureAttrName()), 0)
+	c.standardDeclaredAttrs = c.createStandardDeclaredAttributes()
 
 	c.ptrBits = c.targetData.PointerSize() * 8
 	c.ptrAlign = c.targetData.ABITypeAlignment(c.dataPtrType)
@@ -382,9 +379,6 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 	irbuilder := c.ctx.NewBuilder()
 	defer irbuilder.Dispose()
 	c.createPackage(irbuilder, ssaPkg)
-	if c.ReflectMethods {
-		c.createReflectMethodTables()
-	}
 
 	// see: https://reviews.llvm.org/D18355
 	if c.Debug {
@@ -1009,6 +1003,9 @@ func (c *context) createPackage(irbuilder llvm.Builder, pkg *ssa.Package) {
 					global.SetLinkage(llvm.WeakAnyLinkage)
 				}
 				if info.section != "" {
+					if (info.section == ".psram" || strings.HasPrefix(info.section, ".psram.")) && typeHasPointers(global.GlobalValueType()) {
+						c.addError(member.Pos(), "//go:section .psram cannot be used on variables containing pointers")
+					}
 					global.SetSection(info.section)
 				}
 			}
@@ -1709,7 +1706,7 @@ func (b *builder) createInstruction(instr ssa.Instruction) {
 	}
 }
 
-func (b *builder) markReflectMethodUse(call *ssa.CallCommon) {
+func (b *builder) inReflectPackage() bool {
 	pkg := b.fn.Pkg
 	if pkg == nil && b.fn.Origin() != nil {
 		pkg = b.fn.Origin().Pkg
@@ -1726,11 +1723,16 @@ func (b *builder) markReflectMethodUse(call *ssa.CallCommon) {
 			callerPkg = named.Obj().Pkg()
 		}
 	}
-	if callerPkg != nil {
-		switch callerPkg.Path() {
-		case "reflect", "internal/reflectlite":
-			return
-		}
+	return callerPkg != nil && (callerPkg.Path() == "reflect" || callerPkg.Path() == "internal/reflectlite")
+}
+
+func (b *builder) markReflectMethodUse(call *ssa.CallCommon) {
+	b.markReflectMethodUseFor(call, b.llvmFn)
+}
+
+func (b *builder) markReflectMethodUseFor(call *ssa.CallCommon, target llvm.Value) {
+	if b.inReflectPackage() {
+		return
 	}
 
 	var method *types.Func
@@ -1741,14 +1743,70 @@ func (b *builder) markReflectMethodUse(call *ssa.CallCommon) {
 			method, _ = object.(*types.Func)
 		}
 	}
-	if method == nil || method.Pkg() == nil || method.Pkg().Path() != "reflect" {
+	if method == nil || method.Pkg() == nil {
 		return
 	}
 	switch method.Name() {
 	case "Method", "MethodByName", "Methods":
-		attr := b.ctx.CreateStringAttribute("tinygo-reflect-method", "")
-		b.llvmFn.AddFunctionAttr(attr)
+	default:
+		return
 	}
+	if method.Pkg().Path() != "reflect" {
+		recv := method.Type().(*types.Signature).Recv()
+		if recv == nil || !types.IsInterface(recv.Type()) || !b.canInvokeReflectMethod(method) {
+			return
+		}
+	}
+	// Method sets reference synthetic promotion wrappers even when they are
+	// never called. Mark the call sites instead of the wrappers.
+	if b.fn.Pkg == nil && b.fn.Signature.Recv() != nil && b.fn.Object() == method {
+		return
+	}
+	target.AddFunctionAttr(b.ctx.CreateStringAttribute("tinygo-reflect-makefunc", ""))
+	switch method.Name() {
+	case "MethodByName":
+		if len(call.Args) == 0 {
+			break
+		}
+		if name, ok := call.Args[len(call.Args)-1].(*ssa.Const); ok && name.Value.Kind() == constant.String {
+			var names []string
+			if attr := target.GetStringAttributeAtIndex(-1, "tinygo-reflect-method-names"); !attr.IsNil() {
+				names = strings.Fields(attr.GetStringValue())
+			}
+			methodName := constant.StringVal(name.Value)
+			if methodName == "Method" || methodName == "MethodByName" || methodName == "Methods" {
+				break
+			}
+			if token.IsIdentifier(methodName) && token.IsExported(methodName) {
+				names = append(names, methodName)
+			}
+			sort.Strings(names)
+			names = slices.Compact(names)
+			target.AddFunctionAttr(b.ctx.CreateStringAttribute("tinygo-reflect-method-names", strings.Join(names, " ")))
+			return
+		}
+	}
+	target.AddFunctionAttr(b.ctx.CreateStringAttribute("tinygo-reflect-method", ""))
+}
+
+func (b *builder) canInvokeReflectMethod(method *types.Func) bool {
+	pkg := b.program.ImportedPackage("reflect")
+	if pkg == nil {
+		return false
+	}
+	for _, name := range []string{"Type", "Value"} {
+		obj, _, _ := types.LookupFieldOrMethod(pkg.Pkg.Scope().Lookup(name).Type(), false, pkg.Pkg, method.Name())
+		if obj != nil && types.Identical(obj.Type(), method.Type()) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *builder) markReflectFunctionValue(fn *ssa.Function, value llvm.Value) {
+	call := &ssa.CallCommon{Value: fn}
+	b.markReflectMethodUse(call)
+	b.markReflectMethodUseFor(call, value)
 }
 
 func (b *builder) setValue(value ssa.Value, llvmValue llvm.Value) {
@@ -2700,6 +2758,7 @@ func (b *builder) getValue(expr ssa.Value, pos token.Pos) llvm.Value {
 			return llvm.Undef(b.getLLVMType(expr.Type()))
 		}
 		_, fn := b.getFunction(expr)
+		b.markReflectFunctionValue(expr, fn)
 		return b.createFuncValue(fn, b.dataPtrUndef, expr.Signature)
 	case *ssa.Global:
 		value := b.getGlobal(expr)
@@ -2761,6 +2820,90 @@ func (c *context) maxSliceAllocationSize(elementType llvm.Type) uint64 {
 		return maxSize
 	}
 	return min(maxSize, (uint64(1)<<goHeapAddressBits)/elementSize)
+}
+
+// makeSliceCheckIsRedundant returns whether the bounds check for a make
+// can never fail, because len <= cap and cap fits in an allocation.
+func (b *builder) makeSliceCheckIsRedundant(expr *ssa.MakeSlice, elemType llvm.Type, maxAllocationSize uint64) bool {
+	if lc, ok := expr.Len.(*ssa.Const); ok && lc.Value != nil {
+		if cc, ok := expr.Cap.(*ssa.Const); ok && cc.Value != nil {
+			l, lok := constant.Uint64Val(constant.ToInt(lc.Value))
+			c, cok := constant.Uint64Val(constant.ToInt(cc.Value))
+			return lok && cok && l <= c && c <= maxAllocationSize
+		}
+		l, lok := constant.Uint64Val(constant.ToInt(lc.Value))
+		if !lok || l != 0 {
+			return false
+		}
+	} else if !sameLenOrCap(expr.Len, expr.Cap) {
+		return false
+	}
+	return b.capFitsAllocation(expr.Cap, elemType, maxAllocationSize)
+}
+
+// sameLenOrCap returns whether a and b are the same value or equal
+// len/cap calls on the same operand.
+func sameLenOrCap(a, b ssa.Value) bool {
+	if a == b {
+		return true
+	}
+	ca, ok1 := a.(*ssa.Call)
+	cb, ok2 := b.(*ssa.Call)
+	if !ok1 || !ok2 {
+		return false
+	}
+	ba, ok1 := ca.Call.Value.(*ssa.Builtin)
+	bb, ok2 := cb.Call.Value.(*ssa.Builtin)
+	if !ok1 || !ok2 || ba.Name() != bb.Name() || (ba.Name() != "len" && ba.Name() != "cap") {
+		return false
+	}
+	return ca.Call.Args[0] == cb.Call.Args[0]
+}
+
+// capFitsAllocation returns whether v is known to be between 0 and
+// maxAllocationSize.
+func (b *builder) capFitsAllocation(v ssa.Value, elemType llvm.Type, maxAllocationSize uint64) bool {
+	if basic, ok := v.Type().Underlying().(*types.Basic); ok && basic.Info()&types.IsUnsigned != 0 {
+		bits := b.getLLVMType(v.Type()).IntTypeWidth()
+		if bits < 64 && (uint64(1)<<bits)-1 <= maxAllocationSize {
+			return true
+		}
+	}
+
+	if maxAllocationSize != b.maxSliceSize(elemType) {
+		return false
+	}
+	call, ok := v.(*ssa.Call)
+	if !ok {
+		return false
+	}
+	builtin, ok := call.Call.Value.(*ssa.Builtin)
+	if !ok || (builtin.Name() != "len" && builtin.Name() != "cap") {
+		return false
+	}
+	var srcElem types.Type
+	switch arg := call.Call.Args[0].Type().Underlying().(type) {
+	case *types.Basic: // string
+		if arg.Info()&types.IsString == 0 || builtin.Name() != "len" {
+			return false
+		}
+		srcElem = types.Typ[types.Byte]
+	case *types.Slice:
+		srcElem = arg.Elem()
+	case *types.Array:
+		srcElem = arg.Elem()
+	case *types.Pointer:
+		array, ok := arg.Elem().Underlying().(*types.Array)
+		if !ok {
+			return false
+		}
+		srcElem = array.Elem()
+	default:
+		return false
+	}
+	srcSize := b.targetData.TypeAllocSize(b.getLLVMType(srcElem))
+	dstSize := b.targetData.TypeAllocSize(elemType)
+	return srcSize >= dstSize && srcSize > 0
 }
 
 // createExpr translates a Go SSA expression to LLVM IR. This can be zero, one,
@@ -3044,7 +3187,9 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 		capType := expr.Cap.Type().Underlying().(*types.Basic)
 		maxAllocationSize := b.maxSliceAllocationSize(llvmElemType)
 		maxSizeValue := llvm.ConstInt(b.uintptrType, maxAllocationSize, false)
-		b.createSliceBoundsCheck(maxSizeValue, sliceLen, sliceCap, sliceCap, lenType, capType, capType, false)
+		if !b.makeSliceCheckIsRedundant(expr, llvmElemType, maxAllocationSize) {
+			b.createSliceBoundsCheck(maxSizeValue, sliceLen, sliceCap, sliceCap, lenType, capType, capType, false)
+		}
 
 		// Allocate the backing array.
 		sliceCapCast, err := b.createConvert(expr.Cap.Type(), types.Typ[types.Uintptr], sliceCap, expr.Pos())
@@ -3180,6 +3325,9 @@ func (b *builder) createExpr(expr ssa.Value) (llvm.Value, error) {
 			oldPtr := b.CreateExtractValue(value, 0, "")
 			oldLen := b.CreateExtractValue(value, 1, "")
 			oldCap := b.CreateExtractValue(value, 2, "")
+			if (expr.High != nil || expr.Max != nil) && lenIsUsed(expr.X) {
+				b.createLenCapAssume(oldLen, oldCap)
+			}
 			if high.IsNil() {
 				high = oldLen
 			}
@@ -3332,6 +3480,29 @@ func isByteSliceToStringConvert(value ssa.Value) bool {
 	}
 	element, ok := source.Elem().Underlying().(*types.Basic)
 	return ok && element.Kind() == types.Byte
+}
+
+// nonEmptyOperand returns the other operand when x or y is a constant empty
+// string, because comparing with "" only needs the length of the other one.
+func nonEmptyOperand(x, y llvm.Value) (llvm.Value, bool) {
+	if isEmptyStringConst(y) {
+		return x, true
+	}
+	if isEmptyStringConst(x) {
+		return y, true
+	}
+	return llvm.Value{}, false
+}
+
+func isEmptyStringConst(v llvm.Value) bool {
+	if !v.IsAConstantAggregateZero().IsNil() {
+		return true
+	}
+	if v.IsAConstantStruct().IsNil() {
+		return false
+	}
+	length := v.Operand(1)
+	return !length.IsAConstantInt().IsNil() && length.ZExtValue() == 0
 }
 
 // createBinOp creates a LLVM binary operation (add, sub, mul, etc) for a Go
@@ -3607,11 +3778,20 @@ func (b *builder) createBinOp(op token.Token, typ, ytyp types.Type, x, y llvm.Va
 			switch op {
 			case token.ADD: // +
 				return b.createRuntimeCall("stringConcat", []llvm.Value{x, y}, ""), nil
-			case token.EQL: // ==
-				return b.createRuntimeCall("stringEqual", []llvm.Value{x, y}, ""), nil
-			case token.NEQ: // !=
+			case token.EQL, token.NEQ: // ==, !=
+				if s, ok := nonEmptyOperand(x, y); ok {
+					pred := llvm.IntEQ
+					if op == token.NEQ {
+						pred = llvm.IntNE
+					}
+					length := b.CreateExtractValue(s, 1, "")
+					return b.CreateICmp(pred, length, llvm.ConstNull(length.Type()), ""), nil
+				}
 				result := b.createRuntimeCall("stringEqual", []llvm.Value{x, y}, "")
-				return b.CreateNot(result, ""), nil
+				if op == token.NEQ {
+					result = b.CreateNot(result, "")
+				}
+				return result, nil
 			case token.LSS: // x < y
 				return b.createRuntimeCall("stringLess", []llvm.Value{x, y}, ""), nil
 			case token.LEQ: // x <= y becomes NOT (y < x)

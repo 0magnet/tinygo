@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"github.com/tinygo-org/tinygo/loader"
 	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
@@ -276,6 +276,8 @@ func (c *context) getFunction(fn *ssa.Function) (llvm.Type, llvm.Value) {
 		llvmFn.AddAttributeAtIndex(3, c.nocapture)
 	case "runtime.hashmapBinaryDelete", "runtime.hashmapGenericDelete":
 		llvmFn.AddAttributeAtIndex(2, c.nocapture)
+	case "runtime.chanTrySend", "runtime.chanTryRecv":
+		llvmFn.AddAttributeAtIndex(2, c.nocapture)
 	case "runtime.trackPointer":
 		// This function is necessary for tracking pointers on the stack in a
 		// portable way (see gc_stack_portable.go). Indicate to the optimizer
@@ -413,6 +415,15 @@ func (c *context) canonicalFunctionName(f *ssa.Function) string {
 			parts[i], _ = c.getTypeCodeName(ta)
 		}
 		name = f.Origin().RelString(nil) + "[" + strings.Join(parts, ",") + "]"
+	} else if recv := f.Signature.Recv(); recv != nil && f.Synthetic != "" {
+		t := types.Unalias(recv.Type())
+		if ptr, ok := t.(*types.Pointer); ok {
+			t = types.Unalias(ptr.Elem())
+		}
+		if named, ok := t.(*types.Named); ok && named.TypeArgs().Len() != 0 {
+			receiver, _ := c.getTypeCodeName(recv.Type())
+			name = "(" + receiver + ")." + f.Name()
+		}
 	}
 	return name + methodPackageQualifier(f)
 }
@@ -819,26 +830,34 @@ func getParams(sig *types.Signature) iter.Seq2[int, *types.Var] {
 // addStandardDeclaredAttributes adds attributes that are set for any function,
 // whether declared or defined.
 func (c *context) addStandardDeclaredAttributes(llvmFn llvm.Value) {
+	for _, attr := range c.standardDeclaredAttrs {
+		llvmFn.AddFunctionAttr(attr)
+	}
+}
+
+// createStandardDeclaredAttributes returns the attributes that
+// addStandardDeclaredAttributes adds.
+func (c *context) createStandardDeclaredAttributes() []llvm.Attribute {
+	var attrs []llvm.Attribute
 	if c.SizeLevel >= 1 {
 		// Set the "optsize" attribute to make slightly smaller binaries at the
 		// cost of minimal performance loss (-Os in Clang).
 		kind := llvm.AttributeKindID("optsize")
-		attr := c.ctx.CreateEnumAttribute(kind, 0)
-		llvmFn.AddFunctionAttr(attr)
+		attrs = append(attrs, c.ctx.CreateEnumAttribute(kind, 0))
 	}
 	if c.SizeLevel >= 2 {
 		// Set the "minsize" attribute to reduce code size even further,
 		// regardless of performance loss (-Oz in Clang).
 		kind := llvm.AttributeKindID("minsize")
-		attr := c.ctx.CreateEnumAttribute(kind, 0)
-		llvmFn.AddFunctionAttr(attr)
+		attrs = append(attrs, c.ctx.CreateEnumAttribute(kind, 0))
 	}
 	if c.CPU != "" {
-		llvmFn.AddFunctionAttr(c.ctx.CreateStringAttribute("target-cpu", c.CPU))
+		attrs = append(attrs, c.ctx.CreateStringAttribute("target-cpu", c.CPU))
 	}
 	if c.Features != "" {
-		llvmFn.AddFunctionAttr(c.ctx.CreateStringAttribute("target-features", c.Features))
+		attrs = append(attrs, c.ctx.CreateStringAttribute("target-features", c.Features))
 	}
+	return attrs
 }
 
 // addStandardDefinedAttributes adds the set of attributes that are added to

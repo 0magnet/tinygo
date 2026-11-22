@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -170,7 +170,7 @@ func (mv *memoryView) markExternal(llvmValue llvm.Value, mark uint8) error {
 							calledValue := inst.CalledValue()
 							if !calledValue.IsAFunction().IsNil() {
 								functionName := calledValue.Name()
-								if functionName == "llvm.dbg.value" || strings.HasPrefix(functionName, "llvm.lifetime.") {
+								if functionName == "llvm.dbg.value" || functionName == "llvm.assume" || strings.HasPrefix(functionName, "llvm.lifetime.") {
 									continue
 								}
 							}
@@ -225,7 +225,7 @@ func (mv *memoryView) markExternal(llvmValue llvm.Value, mark uint8) error {
 		case llvm.StructTypeKind:
 			numElements := llvmType.StructElementTypesCount()
 			for i := range numElements {
-				element := mv.r.builder.CreateExtractValue(llvmValue, i, "")
+				element := llvmValue.AggregateElement(i)
 				err := mv.markExternal(element, mark)
 				if err != nil {
 					return err
@@ -234,7 +234,7 @@ func (mv *memoryView) markExternal(llvmValue llvm.Value, mark uint8) error {
 		case llvm.ArrayTypeKind:
 			numElements := llvmType.ArrayLength()
 			for i := range numElements {
-				element := mv.r.builder.CreateExtractValue(llvmValue, i, "")
+				element := llvmValue.AggregateElement(i)
 				err := mv.markExternal(element, mark)
 				if err != nil {
 					return err
@@ -1252,7 +1252,7 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) bool {
 				field := rawValue{
 					buf: v.buf[offset:],
 				}
-				if !field.set(r.builder.CreateExtractValue(llvmValue, i, ""), r) {
+				if !field.set(llvmValue.AggregateElement(i), r) {
 					return false
 				}
 			}
@@ -1265,7 +1265,7 @@ func (v *rawValue) set(llvmValue llvm.Value, r *runner) bool {
 				field := rawValue{
 					buf: v.buf[offset:],
 				}
-				if !field.set(r.builder.CreateExtractValue(llvmValue, i, ""), r) {
+				if !field.set(llvmValue.AggregateElement(i), r) {
 					return false
 				}
 			}
@@ -1357,7 +1357,7 @@ func (r *runner) getValue(llvmValue llvm.Value) value {
 			r.objects = append(r.objects, obj)
 			if !llvmValue.IsAGlobalVariable().IsNil() {
 				obj.size = uint32(r.targetData.TypeAllocSize(llvmValue.GlobalValueType()))
-				if initializer := llvmValue.Initializer(); !initializer.IsNil() {
+				if initializer := llvmValue.Initializer(); !initializer.IsNil() && !isPSRAMGlobal(llvmValue) {
 					// Treat the global as external if its initializer is only known at runtime.
 					buf := r.getValue(initializer)
 					if _, ok := buf.(localValue); !ok {
@@ -1526,4 +1526,11 @@ func reverseBytes(buf []byte) {
 		opp := len(buf) - 1 - i
 		buf[i], buf[opp] = buf[opp], buf[i]
 	}
+}
+
+// isPSRAMGlobal reports whether a global is in the .psram section. PSRAM is off
+// when the program is loaded, so these globals get their values at runtime.
+func isPSRAMGlobal(global llvm.Value) bool {
+	section := global.Section()
+	return section == ".psram" || strings.HasPrefix(section, ".psram.")
 }

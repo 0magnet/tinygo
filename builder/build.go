@@ -33,8 +33,8 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"github.com/tinygo-org/tinygo/interp"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/stacksize"
@@ -249,7 +249,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 		DefaultStackSize:   config.StackSize(),
 		MaxStackAlloc:      config.MaxStackAlloc(),
 		NeedsStackObjects:  config.NeedsStackObjects(),
-		Debug:              !config.Options.SkipDWARF, // emit DWARF except when -internal-nodwarf is passed
+		Debug:              config.Debug() && !config.Options.SkipDWARF, // emit DWARF unless -no-debug or -internal-nodwarf is passed
 		Nobounds:           config.Options.Nobounds,
 		PanicStrategy:      config.PanicStrategy(),
 		PanicUnwind:        config.PanicUnwind(),
@@ -291,7 +291,6 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (*BuildR
 		// Validate the package even when there is no test binary to build.
 		return result, &loader.NoTestFilesError{ImportPath: result.ImportPath}
 	}
-	compilerConfig.ReflectMethods = lprogram.UsesReflectMethod()
 
 	// Embed module build information so runtime/debug.ReadBuildInfo() works,
 	// mirroring what the standard `go build` toolchain does. We fill
@@ -1416,7 +1415,25 @@ func linkPackageModule(linker llvm.Linker, mod, pkgMod llvm.Module) error {
 		}
 		fn.SetLinkage(llvm.LinkOnceODRLinkage)
 	}
-	return linker.LinkModule(pkgMod)
+	attributes := make(map[string]llvmutil.FunctionUsageAttributes)
+	for fn := range llvmutil.Functions(pkgMod) {
+		attrs := llvmutil.ReadFunctionUsageAttributes(fn)
+		attrs = attrs.Merge(llvmutil.ReadFunctionUsageAttributes(mod.NamedFunction(fn.Name())))
+		if len(attrs) != 0 {
+			attributes[fn.Name()] = attrs
+		}
+	}
+	if err := linker.LinkModule(pkgMod); err != nil {
+		return err
+	}
+	for name, attrs := range attributes {
+		fn := mod.NamedFunction(name)
+		if fn.IsNil() {
+			continue
+		}
+		attrs.Apply(fn)
+	}
+	return nil
 }
 
 // optimizeProgram runs a series of optimizations and transformations that are

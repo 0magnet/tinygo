@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"github.com/tinygo-org/tinygo/compileopts"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
@@ -353,11 +353,9 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 		global = c.mod.NamedGlobal(globalName)
 	}
 	if global.IsNil() {
-		if c.ReflectMethods && (hasMethodSet || isInterface && ms.Len() != 0) {
-			c.reflectTypes = append(c.reflectTypes, typ)
-		}
 		var typeFields []llvm.Value
 		var callAdapter llvm.Value
+		var makeFuncAdapter llvm.Value
 		// Define the type fields. These must match the structs in
 		// src/reflect/type.go (ptrType, arrayType, etc). See the comment at the
 		// top of src/reflect/type.go for more information on the layout of these structs.
@@ -378,6 +376,7 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 			types.NewVar(token.NoPos, nil, "signatures", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
 			types.NewVar(token.NoPos, nil, "names", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
 			types.NewVar(token.NoPos, nil, "types", types.NewArray(types.Typ[types.UnsafePointer], int64(len(methods)))),
+			types.NewVar(token.NoPos, nil, "functions", types.NewArray(types.Typ[types.Uintptr], int64(len(methods)))),
 		}, nil)
 		var methodSetValue llvm.Value
 		switch typ := typ.(type) {
@@ -472,6 +471,7 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 				adapterType = types.NewSignatureType(nil, nil, nil, typ.Params(), typ.Results(), typ.Variadic())
 			}
 			callAdapter = llvm.ConstPtrToInt(c.getReflectCallWrapper(adapterType), c.uintptrType)
+			makeFuncAdapter = llvm.ConstPtrToInt(c.getReflectMakeFuncWrapper(adapterType), c.uintptrType)
 			typeFieldTypes = append(typeFieldTypes,
 				types.NewVar(token.NoPos, nil, "numIn", types.Typ[types.Uint8]),
 				types.NewVar(token.NoPos, nil, "numOut", types.Typ[types.Uint16]), // high bit = variadic
@@ -491,7 +491,7 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 			}, typeFieldTypes...)
 		} else if isSignature {
 			typeFieldTypes = append([]*types.Var{
-				types.NewVar(token.NoPos, nil, "callAdapter", types.Typ[types.Uintptr]),
+				types.NewVar(token.NoPos, nil, "funcAdapters", types.NewArray(types.Typ[types.Uintptr], 2)),
 			}, typeFieldTypes...)
 		}
 		globalType := types.NewStruct(typeFieldTypes, nil)
@@ -711,7 +711,8 @@ func (c *context) getTypeCode(typ types.Type) llvm.Value {
 				c.getTypeMethodSet(typ),
 			}, typeFields...)
 		} else if isSignature {
-			typeFields = append([]llvm.Value{callAdapter}, typeFields...)
+			adapters := llvm.ConstArray(c.uintptrType, []llvm.Value{callAdapter, makeFuncAdapter})
+			typeFields = append([]llvm.Value{adapters}, typeFields...)
 		}
 		alignment := max(c.ptrBits/8, 4)
 		globalValue := c.ctx.ConstStruct(typeFields, false)
@@ -826,6 +827,126 @@ func (c *context) getReflectCallWrapper(sig *types.Signature) llvm.Value {
 		b.CreateStore(value, resultPtr)
 	}
 	b.CreateRetVoid()
+
+	return wrapper
+}
+
+func (c *context) getReflectMakeFuncWrapper(sig *types.Signature) llvm.Value {
+	typeName, _ := c.getTypeCodeName(sig)
+	name := "reflect/makefunc:" + typeName
+	if wrapper := c.mod.NamedFunction(name); !wrapper.IsNil() {
+		return wrapper
+	}
+
+	abi := c.getFunctionABI(sig, false)
+	wrapper := llvm.AddFunction(c.mod, name, c.getLLVMFunctionType(sig))
+	wrapper.SetLinkage(llvm.WeakODRLinkage)
+
+	irbuilder := c.ctx.NewBuilder()
+	defer irbuilder.Dispose()
+	b := &builder{context: c, Builder: irbuilder}
+	entry := c.ctx.AddBasicBlock(wrapper, "entry")
+	b.SetInsertPointAtEnd(entry)
+
+	params := wrapper.Params()
+	paramIndex := 0
+	var indirectResult llvm.Value
+	if abi.indirectResult {
+		indirectResult = params[paramIndex]
+		paramIndex++
+	}
+
+	argPointers := make([]llvm.Value, len(abi.params))
+	for i, param := range abi.params {
+		if param.indirect {
+			argPointers[i] = params[paramIndex]
+			paramIndex++
+			continue
+		}
+
+		fields := b.expandDirectFormalParamType(param.llvmType, "", nil)
+		value := b.collapseFormalParam(param.llvmType, params[paramIndex:paramIndex+len(fields)])
+		paramIndex += len(fields)
+		storage := b.CreateAlloca(param.llvmType, "arg")
+		if c.targetData.TypeAllocSize(param.llvmType) != 0 {
+			b.CreateStore(value, storage)
+		}
+		argPointers[i] = storage
+	}
+	context := params[paramIndex]
+
+	resultPointers := make([]llvm.Value, sig.Results().Len())
+	for i := range resultPointers {
+		resultType := c.getLLVMType(sig.Results().At(i).Type())
+		resultPointers[i] = b.CreateAlloca(resultType, "result")
+	}
+
+	makePointerArray := func(values []llvm.Value, name string) llvm.Value {
+		if len(values) == 0 {
+			return llvm.ConstPointerNull(c.dataPtrType)
+		}
+		arrayType := llvm.ArrayType(c.dataPtrType, len(values))
+		array := b.CreateAlloca(arrayType, name)
+		for i, value := range values {
+			slot := b.CreateInBoundsGEP(arrayType, array, []llvm.Value{
+				llvm.ConstInt(c.ctx.Int32Type(), 0, false),
+				llvm.ConstInt(c.ctx.Int32Type(), uint64(i), false),
+			}, "")
+			b.CreateStore(value, slot)
+		}
+		return b.CreateInBoundsGEP(arrayType, array, []llvm.Value{
+			llvm.ConstInt(c.ctx.Int32Type(), 0, false),
+			llvm.ConstInt(c.ctx.Int32Type(), 0, false),
+		}, "")
+	}
+
+	helperType := llvm.FunctionType(c.ctx.VoidType(), []llvm.Type{
+		c.dataPtrType,
+		c.dataPtrType,
+		c.dataPtrType,
+		c.dataPtrType,
+	}, false)
+	helper := c.mod.NamedFunction("internal/reflectlite.makeFuncCall")
+	if helper.IsNil() {
+		helper = llvm.AddFunction(c.mod, "internal/reflectlite.makeFuncCall", helperType)
+	}
+	b.CreateCall(helperType, helper, []llvm.Value{
+		context,
+		makePointerArray(argPointers, "args"),
+		makePointerArray(resultPointers, "results"),
+		llvm.Undef(c.dataPtrType),
+	}, "")
+
+	var result llvm.Value
+	switch sig.Results().Len() {
+	case 0:
+	case 1:
+		resultType := c.getLLVMType(sig.Results().At(0).Type())
+		if c.targetData.TypeAllocSize(resultType) == 0 {
+			result = llvm.ConstNull(resultType)
+		} else {
+			result = b.CreateLoad(resultType, resultPointers[0], "")
+		}
+	default:
+		result = llvm.ConstNull(abi.resultType)
+		for i, resultPtr := range resultPointers {
+			resultType := c.getLLVMType(sig.Results().At(i).Type())
+			if c.targetData.TypeAllocSize(resultType) == 0 {
+				continue
+			}
+			value := b.CreateLoad(resultType, resultPtr, "")
+			result = b.CreateInsertValue(result, value, i, "")
+		}
+	}
+
+	if abi.indirectResult {
+		b.CreateStore(result, indirectResult)
+		b.CreateRetVoid()
+	} else if sig.Results().Len() == 0 {
+		b.CreateRetVoid()
+	} else {
+		b.CreateRet(result)
+	}
 
 	return wrapper
 }
@@ -1497,6 +1618,8 @@ func (c *context) getMethodSetValue(owner types.Type, methods []*types.Func) llv
 		pkgName       string
 		signature     llvm.Value
 		methodType    llvm.Value
+		callType      *types.Signature
+		method        *types.Func
 	}
 	var refs []methodRef
 	_, ownerIsInterface := owner.Underlying().(*types.Interface)
@@ -1535,7 +1658,7 @@ func (c *context) getMethodSetValue(owner types.Type, methods []*types.Func) llv
 				value.AddMetadata(0, diglobal)
 			}
 		}
-		reflectedType := method.Type()
+		reflectedType := method.Type().(*types.Signature)
 		if !ownerIsInterface {
 			signature := method.Type().(*types.Signature)
 			params := make([]*types.Var, 0, signature.Params().Len()+1)
@@ -1560,19 +1683,32 @@ func (c *context) getMethodSetValue(owner types.Type, methods []*types.Func) llv
 			pkgName:       pkgName,
 			signature:     value,
 			methodType:    c.getTypeCode(reflectedType),
+			callType:      reflectedType,
+			method:        method,
 		})
 	}
 	sort.Slice(refs, func(i, j int) bool {
 		return refs[i].signatureName < refs[j].signatureName
 	})
 
-	var signatures []llvm.Value
-	var names []llvm.Value
-	var types []llvm.Value
+	var signatures, names, types, functions []llvm.Value
+	methodSelections := c.program.MethodSets.MethodSet(owner)
 	for _, ref := range refs {
 		signatures = append(signatures, ref.signature)
 		names = append(names, c.getMethodNameGlobal(ref.metadataName, ref.pkgPath, ref.pkgName, ref.name))
 		types = append(types, ref.methodType)
+		function := llvm.ConstInt(c.uintptrType, 0, false)
+		if !ownerIsInterface {
+			for selection := range methodSelections.Methods() {
+				if selection.Obj() != ref.method {
+					continue
+				}
+				llvmFn := c.getReflectMethodFunction(c.program.MethodValue(selection), ref.callType)
+				function = llvm.ConstPtrToInt(llvmFn, c.uintptrType)
+				break
+			}
+		}
+		functions = append(functions, function)
 	}
 
 	return c.ctx.ConstStruct([]llvm.Value{
@@ -1580,7 +1716,85 @@ func (c *context) getMethodSetValue(owner types.Type, methods []*types.Func) llv
 		llvm.ConstArray(c.dataPtrType, signatures),
 		llvm.ConstArray(c.dataPtrType, names),
 		llvm.ConstArray(c.dataPtrType, types),
+		llvm.ConstArray(c.uintptrType, functions),
 	}, false)
+}
+
+func (c *context) getReflectMethodFunction(method *ssa.Function, sig *types.Signature) llvm.Value {
+	methodType, methodFn := c.getFunction(method)
+	wrapperType := c.getLLVMFunctionType(sig)
+	exported := c.getFunctionInfo(method).isExported()
+	from := c.getFunctionABI(sig, false)
+	to := c.getFunctionABI(method.Signature, exported)
+	// Method calls budget the receiver separately from the other parameters.
+	sameABI := methodType == wrapperType && from.indirectResult == to.indirectResult
+	for i, param := range from.params {
+		sameABI = sameABI && param.indirect == to.params[i].indirect
+	}
+	if sameABI {
+		return methodFn
+	}
+
+	name := "reflect/method:" + methodFn.Name()
+	if wrapper := c.mod.NamedFunction(name); !wrapper.IsNil() {
+		return wrapper
+	}
+	wrapper := llvm.AddFunction(c.mod, name, wrapperType)
+	wrapper.SetLinkage(llvm.LinkOnceODRLinkage)
+	c.addStandardAttributes(wrapper)
+	b := builder{context: c, Builder: c.ctx.NewBuilder()}
+	defer b.Builder.Dispose()
+	b.SetInsertPointAtEnd(c.ctx.AddBasicBlock(wrapper, "entry"))
+
+	params := wrapper.Params()
+	var args []llvm.Value
+	var resultPtr llvm.Value
+	if from.indirectResult {
+		resultPtr, params = params[0], params[1:]
+		if to.indirectResult {
+			args = append(args, resultPtr)
+		}
+	}
+	for i, param := range from.params {
+		target := to.params[i]
+		if param.indirect {
+			ptr := params[0]
+			params = params[1:]
+			if target.indirect {
+				args = append(args, ptr)
+			} else {
+				args = append(args, b.expandFormalParam(b.CreateLoad(param.llvmType, ptr, ""))...)
+			}
+			continue
+		}
+		count := len(c.expandDirectFormalParamType(param.llvmType, "", nil))
+		fields := params[:count]
+		params = params[count:]
+		if target.indirect {
+			ptr := b.CreateAlloca(param.llvmType, "arg")
+			b.CreateStore(b.collapseFormalParam(param.llvmType, fields), ptr)
+			args = append(args, ptr)
+		} else {
+			args = append(args, fields...)
+		}
+	}
+	if !exported {
+		args = append(args, params[0])
+	}
+	result := b.CreateCall(methodType, methodFn, args, "")
+	result.SetInstructionCallConv(methodFn.FunctionCallConv())
+	switch {
+	case from.indirectResult:
+		if !to.indirectResult {
+			b.CreateStore(result, resultPtr)
+		}
+		b.CreateRetVoid()
+	case methodType.ReturnType() == c.void:
+		b.CreateRetVoid()
+	default:
+		b.CreateRet(result)
+	}
+	return wrapper
 }
 
 func (c *context) getMethodNameGlobal(identity, pkgPath, pkgName, name string) llvm.Value {

@@ -8,7 +8,7 @@ import (
 	"go/types"
 	"sort"
 
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
@@ -354,5 +354,6 @@ func (b *builder) parseMakeClosure(expr *ssa.MakeClosure) (llvm.Value, error) {
 
 	// Create the closure.
 	_, fn := b.getFunction(f)
+	b.markReflectFunctionValue(f, fn)
 	return b.createFuncValue(fn, context, f.Signature), nil
 }

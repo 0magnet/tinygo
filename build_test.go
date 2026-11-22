@@ -29,6 +29,9 @@ func TestReflectMethodReferences(t *testing.T) {
 	}{
 		{"expression", "var lookup = reflect.Type.MethodByName", `lookup(reflect.TypeOf(target{}), "Kept")`},
 		{"bound", "var lookup = reflect.TypeOf(target{}).MethodByName", `lookup("Kept")`},
+		{"interface", `func lookup(t interface{ MethodByName(string) (reflect.Method, bool) }) (reflect.Method, bool) {
+			return t.MethodByName("Kept")
+		}`, `lookup(reflect.TypeOf(target{}))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source := `package main
@@ -62,6 +65,111 @@ func main() {
 	}
 }
 
+func TestReflectMakeFuncReachability(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, source string
+	}{
+		{"function value", `
+var makeCallback = reflect.MakeFunc
+
+func main() {
+	f := makeCallback(reflect.TypeFor[func(int) int](), func(args []reflect.Value) []reflect.Value {
+		return args
+	}).Interface().(func(int) int)
+	if f(42) != 42 {
+		panic("wrong callback result")
+	}
+}`},
+		{"Seq", `
+func values(yield func(int) bool) {
+	yield(42)
+}
+
+func main() {
+	var got int64
+	for value := range reflect.ValueOf(values).Seq() {
+		got += value.Int()
+	}
+	if got != 42 {
+		panic("wrong sequence result")
+	}
+}`},
+		{"Seq2", `
+func pairs(yield func(int, int) bool) {
+	yield(1, 42)
+}
+
+func main() {
+	var key, value int64
+	for k, v := range reflect.ValueOf(pairs).Seq2() {
+		key, value = k.Int(), v.Int()
+	}
+	if key != 1 || value != 42 {
+		panic("wrong sequence pair")
+	}
+}`},
+		{"dead indirect ABI boxing", `
+import "os"
+
+type method interface{ Value() int }
+type first int
+type second int
+type dead struct{}
+
+func (v first) Value() int  { return int(v) }
+func (v second) Value() int { return int(v) + 1 }
+func (dead) Value() int {
+	f := reflect.MakeFunc(reflect.TypeFor[func() int](), func([]reflect.Value) []reflect.Value {
+		return []reflect.Value{reflect.ValueOf(7)}
+	}).Interface().(func() int)
+	return f()
+}
+
+var sink method
+
+//go:noinline
+func deadBox() [16384]byte {
+	sink = dead{}
+	return [16384]byte{}
+}
+
+func main() {
+	n := len(os.Args)
+	want := n
+	if n > 1 {
+		sink = first(n)
+	} else {
+		sink = second(n)
+		want++
+	}
+	if sink.Value() != want {
+		panic("wrong interface dispatch result")
+	}
+}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "main.go")
+			if err := os.WriteFile(path, []byte("package main\nimport \"reflect\"\n"+tc.source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			options := optionsFromTarget("", sema)
+			config, err := builder.NewConfig(&options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			_, err = buildAndRun(path, config, &output, nil, nil, 2*time.Minute, func(cmd *exec.Cmd, result *builder.BuildResult) error {
+				return cmd.Run()
+			})
+			if err != nil {
+				t.Fatalf("reflected program failed: %v\n%s", err, output.String())
+			}
+		})
+	}
+}
+
 func TestBuild(t *testing.T) {
 	t.Parallel()
 
@@ -84,6 +192,7 @@ func TestBuild(t *testing.T) {
 		"finalizerlarge.go",
 		"float.go",
 		"gc-register-root.go",
+		"gc-saved-register.go",
 		"gc.go",
 		"gcstacks.go",
 		"generics.go",
@@ -95,6 +204,7 @@ func TestBuild(t *testing.T) {
 		"init_multi.go",
 		"interface-blank.go",
 		"interface.go",
+		"makeslice.go",
 		"json.go",
 		"localtypes/",
 		"localtypes.go",
@@ -105,11 +215,14 @@ func TestBuild(t *testing.T) {
 		"print.go",
 		"promoted.go",
 		"reflect.go",
+		"reflect-method-values.go",
+		"reflect-promoted-lookup.go",
 		"reflectmethod.go",
 		"reflectmethodcall.go",
 		"signal.go",
 		"signalnotify.go",
 		"slice.go",
+		"slicebounds.go",
 		"slicegrow.go",
 		"sort.go",
 		"stdlib.go",
@@ -166,6 +279,13 @@ func TestBuild(t *testing.T) {
 		// scheduler.none does not link on Windows.
 		switch runtime.GOOS {
 		case "darwin", "linux":
+			t.Run("gcstacks-blocked.go-gc=boehm-scheduler=tasks", func(t *testing.T) {
+				t.Parallel()
+				options := compileopts.Options(hostOptions)
+				options.GC = "boehm"
+				options.Scheduler = "tasks"
+				runTest("gcstacks-blocked.go", options, t, nil, nil)
+			})
 			for _, scheduler := range []string{"threads", "none"} {
 				t.Run("finalizerinvariants.go-gc-conservative-scheduler-"+scheduler, func(t *testing.T) {
 					t.Parallel()
@@ -760,13 +880,17 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// Not all tests are currently supported on AVR.
 			// Skip the ones that aren't.
 			switch name {
-			case "reflect.go", "reflectmethod.go", "reflectmethodcall.go":
+			case "reflect.go", "reflect-method-values.go", "reflect-promoted-lookup.go", "reflectmethod.go", "reflectmethodcall.go":
 				// Reflect tests do not run correctly, probably because of the
 				// limited amount of memory.
 				continue
 
 			case "aggregatestorage.go", "stringfrombytes_stress.go":
 				// Needs more RAM than AVR has.
+				continue
+
+			case "slicebounds.go":
+				// Reslicing returns wrong lengths on AVR, also without the len <= cap assume.
 				continue
 
 			case "aggregate.go", "map_bigkey.go":
@@ -813,8 +937,8 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 		}
 		if options.GOOS == "windows" {
 			switch name {
-			case "signal.go", "signalnotify.go":
-				// os/signal does not link on Windows.
+			case "signal.go":
+				// The Windows runtime does not deliver signals.
 				continue
 			}
 		}
@@ -851,6 +975,9 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			if testOptions.Target == "simavr" && (name == "math.go" || name == "string.go") {
 				// These tests exceed simavr's default 384-byte goroutine stack.
 				testOptions.StackSize = 512
+			}
+			if testOptions.Target == "cortex-m-qemu" && name == "reflect-method-values.go" {
+				testOptions.StackSize = 8192
 			}
 			runTest(name, testOptions, t, nil, nil)
 		})

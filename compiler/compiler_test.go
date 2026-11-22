@@ -15,9 +15,9 @@ import (
 	"testing"
 
 	"github.com/tinygo-org/tinygo/compileopts"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
 	"github.com/tinygo-org/tinygo/goenv"
 	"github.com/tinygo-org/tinygo/internal/ir"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/transform"
 	"tinygo.org/x/go-llvm"
@@ -30,6 +30,63 @@ type testCase struct {
 	file      string
 	target    string
 	scheduler string
+}
+
+func TestChannelLayouts(t *testing.T) {
+	options := &compileopts.Options{Target: "wasm"}
+	target, err := compileopts.LoadTarget(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := &compileopts.Config{Options: options, Target: target}
+	program, err := loader.Load(config, "./testdata/channel.go", types.Config{
+		Sizes: types.SizesFor("gc", "386"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Parse(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"channelOp", "chanSelectState"} {
+		runtimeType := program.Packages["runtime"].Pkg.Scope().Lookup(name).Type().Underlying().(*types.Struct)
+		reflectType := program.Packages["internal/reflectlite"].Pkg.Scope().Lookup(name).Type().Underlying().(*types.Struct)
+		if runtimeType.NumFields() != reflectType.NumFields() {
+			t.Fatalf("%s field counts differ: runtime=%d, reflectlite=%d", name, runtimeType.NumFields(), reflectType.NumFields())
+		}
+		runtimeFields := make([]*types.Var, runtimeType.NumFields())
+		reflectFields := make([]*types.Var, reflectType.NumFields())
+		for i := range runtimeFields {
+			runtimeFields[i] = runtimeType.Field(i)
+			reflectFields[i] = reflectType.Field(i)
+			if runtimeFields[i].Name() != reflectFields[i].Name() {
+				t.Errorf("%s field %d names differ: runtime=%s, reflectlite=%s", name, i, runtimeFields[i].Name(), reflectFields[i].Name())
+			}
+		}
+		for _, test := range []struct {
+			arch  string
+			sizes types.Sizes
+		}{
+			{"avr", &types.StdSizes{WordSize: 2, MaxAlign: 1}},
+			{"386", types.SizesFor("gc", "386")},
+			{"amd64", types.SizesFor("gc", "amd64")},
+		} {
+			t.Run(name+"/"+test.arch, func(t *testing.T) {
+				sizes := test.sizes
+				if sizes.Sizeof(runtimeType) != sizes.Sizeof(reflectType) || sizes.Alignof(runtimeType) != sizes.Alignof(reflectType) {
+					t.Error("runtime and reflectlite struct sizes or alignments differ")
+				}
+				if !slices.Equal(sizes.Offsetsof(runtimeFields), sizes.Offsetsof(reflectFields)) {
+					t.Error("runtime and reflectlite field offsets differ")
+				}
+				for i := range runtimeFields {
+					if sizes.Sizeof(runtimeFields[i].Type()) != sizes.Sizeof(reflectFields[i].Type()) {
+						t.Errorf("field %s sizes differ", runtimeFields[i].Name())
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestReflectGenericTypeName(t *testing.T) {
@@ -960,4 +1017,78 @@ func testCompilePackageWithDebug(t *testing.T, options *compileopts.Options, fil
 	ssaPkg := program.Package(pkg.Pkg)
 	ssaPkg.Build()
 	return CompilePackage(file, pkg, ssaPkg, machine, compilerConfig, false)
+}
+
+func TestReflectMethodRetentionMarkers(t *testing.T) {
+	mod, errs := testCompilePackage(t, &compileopts.Options{Target: "wasm"}, "reflect-method-dce.go")
+	if len(errs) != 0 {
+		for _, err := range errs {
+			t.Error(err)
+		}
+		return
+	}
+	defer mod.Dispose()
+
+	for _, tc := range []struct {
+		name  string
+		names string
+		all   bool
+	}{
+		{"constantValue", "Keep", false},
+		{"constantType", "Keep", false},
+		{"multipleNames", "Keep Other", false},
+		{"invalidName", "", false},
+		{"unexportedName", "", false},
+		{"dynamicValue", "", true},
+		{"dynamicType", "", true},
+		{"indexedValue", "", true},
+		{"indexedType", "", true},
+		{"invokedMethod", "", true},
+		{"promotedMethodByName", "Keep", false},
+		{"boundValue", "", true},
+		{"escapedValue", "", true},
+		{"escapedType", "", true},
+		{"methodExpression", "", true},
+		{"iterateValue", "", true},
+		{"iterateType", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fn := mod.NamedFunction("main." + tc.name)
+			if fn.IsNil() {
+				t.Fatal("missing lookup function")
+			}
+			all := fn.GetStringAttributeAtIndex(-1, "tinygo-reflect-method")
+			names := fn.GetStringAttributeAtIndex(-1, "tinygo-reflect-method-names")
+			if got := !all.IsNil(); got != tc.all {
+				t.Errorf("all-method marker = %v, want %v", got, tc.all)
+			}
+			if !tc.all && names.IsNil() {
+				t.Fatal("missing constant-name marker")
+			}
+			if fn.GetStringAttributeAtIndex(-1, "tinygo-reflect-makefunc").IsNil() {
+				t.Error("missing bound-method adapter marker")
+			}
+			if !names.IsNil() {
+				if got := names.GetStringValue(); got != tc.names {
+					t.Errorf("method names = %q, want %q", got, tc.names)
+				}
+			}
+		})
+	}
+
+	wrappers := 0
+	for fn := range llvmutil.Functions(mod) {
+		if !strings.HasPrefix(fn.Name(), "(struct{reflect.Value}).") || fn.BasicBlocksCount() == 0 {
+			continue
+		}
+		wrappers++
+		for _, kind := range []string{"tinygo-reflect-method", "tinygo-reflect-method-names", "tinygo-reflect-makefunc"} {
+			if !fn.GetStringAttributeAtIndex(-1, kind).IsNil() {
+				t.Errorf("reflection wrapper %s has %s", fn.Name(), kind)
+			}
+		}
+	}
+	if wrappers == 0 {
+		t.Fatal("no reflection wrappers were compiled")
+	}
 }
