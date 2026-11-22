@@ -838,6 +838,11 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// These targets grow slices to the next power of two.
 			continue
 		}
+		if name == "slicegrow.go" && spec.GC == "boehm" {
+			// bdwgc rounds a grown slice up to the object it gets, which
+			// gc-boehm-slicegrow.go checks; this one checks Go's own steps.
+			continue
+		}
 		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386") {
 			switch name {
 			case "timers.go":
