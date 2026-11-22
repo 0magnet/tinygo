@@ -12,6 +12,40 @@ import (
 	"tinygo.org/x/go-llvm"
 )
 
+const indirectABIRoots = "tinygo.indirect-abi"
+
+// suspendIndirectABIRoots lets reachability passes see dead code. Call the
+// returned function before running passes that can rewrite signatures.
+func suspendIndirectABIRoots(mod llvm.Module) func() {
+	global := mod.NamedGlobal(indirectABIRoots)
+	if global.IsNil() {
+		return func() {}
+	}
+	init := global.Initializer()
+	names := make([]string, init.Type().ArrayLength())
+	for i := range names {
+		fn := init.Operand(i)
+		for !fn.IsAConstantExpr().IsNil() && fn.OperandsCount() == 1 {
+			fn = fn.Operand(0)
+		}
+		names[i] = fn.Name()
+	}
+	llvmutil.RemoveGlobalReferences(mod, "llvm.used", indirectABIRoots)
+
+	return func() {
+		var roots []llvm.Value
+		for _, name := range names {
+			if fn := mod.NamedFunction(name); !fn.IsNil() {
+				roots = append(roots, fn)
+			}
+		}
+		if len(roots) != 0 {
+			llvmutil.AppendToGlobal(mod, "llvm.used", roots...)
+			llvmutil.AppendToGlobal(mod, indirectABIRoots, roots...)
+		}
+	}
+}
+
 // OptimizePackage runs optimization passes over the LLVM module for the given
 // Go package.
 func OptimizePackage(mod llvm.Module, config *compileopts.Config) {
@@ -76,11 +110,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		OptimizeStringFromBytes(mod)
 		maxStackSize := config.MaxStackAlloc()
 		OptimizeAllocs(mod, nil, maxStackSize, nil)
-		if err := pruneDeadCodeBeforeInterfaceLowering(mod); err != nil {
-			return []error{err}
-		}
-		err = LowerInterfaces(mod, config)
-		if err != nil {
+		if err := optimizeInterfaces(mod, config); err != nil {
 			return []error{err}
 		}
 
@@ -122,13 +152,8 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		OptimizeStringEqual(mod)
 
 	} else {
-		if err := pruneDeadCodeBeforeInterfaceLowering(mod); err != nil {
-			return []error{err}
-		}
-
 		// Must be run at any optimization level.
-		err := LowerInterfaces(mod, config)
-		if err != nil {
+		if err := optimizeInterfaces(mod, config); err != nil {
 			return []error{err}
 		}
 		errs := LowerInterrupts(mod)
@@ -139,7 +164,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		// Clean up some leftover symbols of the previous transformations.
 		po := llvm.NewPassBuilderOptions()
 		defer po.Dispose()
-		err = mod.RunPasses("globaldce", llvm.TargetMachine{}, po)
+		err := mod.RunPasses("globaldce", llvm.TargetMachine{}, po)
 		if err != nil {
 			return []error{fmt.Errorf("could not build pass pipeline: %w", err)}
 		}
@@ -188,8 +213,8 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 
 	// Keep these temporary roots through the ThinLTO pre-link pipeline, which
 	// can run argument promotion and reconstruct the oversized signatures.
-	if !mod.NamedGlobal("tinygo.indirect-abi").IsNil() {
-		llvmutil.RemoveGlobalReferences(mod, "llvm.used", "tinygo.indirect-abi")
+	if !mod.NamedGlobal(indirectABIRoots).IsNil() {
+		llvmutil.RemoveGlobalReferences(mod, "llvm.used", indirectABIRoots)
 		cleanupOptions := llvm.NewPassBuilderOptions()
 		defer cleanupOptions.Dispose()
 		if err := mod.RunPasses("globaldce", llvm.TargetMachine{}, cleanupOptions); err != nil {
@@ -226,6 +251,16 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	return nil
 }
 
+func optimizeInterfaces(mod llvm.Module, config *compileopts.Config) error {
+	restoreRoots := suspendIndirectABIRoots(mod)
+	defer restoreRoots()
+
+	if err := pruneDeadCodeBeforeInterfaceLowering(mod); err != nil {
+		return err
+	}
+	return LowerInterfaces(mod, config)
+}
+
 func pruneDeadCodeBeforeInterfaceLowering(mod llvm.Module) error {
 	pruneUnusedReflectMakeFunc(mod)
 	options := llvm.NewPassBuilderOptions()
@@ -233,6 +268,7 @@ func pruneDeadCodeBeforeInterfaceLowering(mod llvm.Module) error {
 	if err := mod.RunPasses("globaldce", llvm.TargetMachine{}, options); err != nil {
 		return fmt.Errorf("could not run pre-interface globaldce pass: %w", err)
 	}
+
 	return nil
 }
 

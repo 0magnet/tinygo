@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+//go:noinline
+func captureFunctionPointer(value int) func() int {
+	return func() int { return value }
+}
+
+func TestClosureCodePointer(t *testing.T) {
+	first := reflect.ValueOf(captureFunctionPointer(1))
+	second := reflect.ValueOf(captureFunctionPointer(2))
+	if first.Pointer() == 0 || first.Pointer() != second.Pointer() {
+		t.Fatal("closures from the same expression did not share a code pointer")
+	}
+}
+
 func callAllocationCases() []struct {
 	name string
 	fn   reflect.Value
@@ -151,6 +164,31 @@ func TestValueCallAggregate(t *testing.T) {
 	out := reflect.ValueOf(fn).Call([]reflect.Value{reflect.ValueOf(pair{41, "go"})})
 	if got := out[0].Interface().(pair); got != (pair{42, "go!"}) {
 		t.Fatalf("result = %#v, want %#v", got, pair{42, "go!"})
+	}
+}
+
+func TestCallInlineValues(t *testing.T) {
+	const number = uint16(0x1234)
+	pair := [2]byte{0x56, 0x78}
+	fn := reflect.ValueOf(func(n uint16, p [2]byte) (uint16, [2]byte) {
+		return n + 1, [2]byte{p[1], p[0]}
+	})
+	out := fn.Call([]reflect.Value{reflect.ValueOf(number), reflect.ValueOf(pair)})
+	if got := out[0].Interface().(uint16); got != number+1 {
+		t.Errorf("Call returned %#x, want %#x", got, number+1)
+	}
+	if got := out[1].Interface().([2]byte); got != ([2]byte{pair[1], pair[0]}) {
+		t.Errorf("Call returned %#v, want reversed input", got)
+	}
+
+	generated := reflect.MakeFunc(fn.Type(), func(in []reflect.Value) []reflect.Value {
+		if n, p := in[0].Interface().(uint16), in[1].Interface().([2]byte); n != number || p != pair {
+			t.Errorf("MakeFunc callback received %#x, %#v", n, p)
+		}
+		return in
+	}).Interface().(func(uint16, [2]byte) (uint16, [2]byte))
+	if n, p := generated(number, pair); n != number || p != pair {
+		t.Errorf("MakeFunc returned %#x, %#v", n, p)
 	}
 }
 
@@ -536,4 +574,157 @@ func TestMakeFuncPanics(t *testing.T) {
 		})
 		value.Call(nil)
 	})
+}
+
+type methodValueTarget struct {
+	Base int
+}
+
+func (v methodValueTarget) Add(value int) int {
+	return v.Base + value
+}
+
+func (v *methodValueTarget) Set(value int) {
+	v.Base = value
+}
+
+func (v methodValueTarget) Sum(values ...int) int {
+	total := v.Base
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+type embeddedMethodTarget struct {
+	methodValueTarget
+}
+
+func TestTypeMethodFunc(t *testing.T) {
+	typ := reflect.TypeOf(methodValueTarget{})
+	method, ok := typ.MethodByName("Add")
+	if !ok {
+		t.Fatal("Add method was not found")
+	}
+
+	out := method.Func.Call([]reflect.Value{
+		reflect.ValueOf(methodValueTarget{Base: 40}),
+		reflect.ValueOf(2),
+	})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("Method.Func returned %d, want 42", got)
+	}
+}
+
+func TestInterfaceTypeMethodFunc(t *testing.T) {
+	typ := reflect.TypeOf((*interface{ Add(int) int })(nil)).Elem()
+	method, ok := typ.MethodByName("Add")
+	if !ok {
+		t.Fatal("Add method was not found")
+	}
+	if method.Func.IsValid() {
+		t.Fatalf("interface Method.Func is %v, want zero Value", method.Func)
+	}
+}
+
+func TestValueMethod(t *testing.T) {
+	value := reflect.ValueOf(methodValueTarget{Base: 40}).MethodByName("Add")
+	if !value.IsValid() {
+		t.Fatal("Add method value was not found")
+	}
+	out := value.Call([]reflect.Value{reflect.ValueOf(2)})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("method value returned %d, want 42", got)
+	}
+	fn := value.Interface().(func(int) int)
+	if got := fn(3); got != 43 {
+		t.Fatalf("method function returned %d, want 43", got)
+	}
+}
+
+func TestValuePointerMethod(t *testing.T) {
+	target := &methodValueTarget{}
+	method := reflect.ValueOf(target).MethodByName("Set")
+	method.Call([]reflect.Value{reflect.ValueOf(42)})
+	if target.Base != 42 {
+		t.Fatalf("Set stored %d, want 42", target.Base)
+	}
+}
+
+func TestValueVariadicMethod(t *testing.T) {
+	method := reflect.ValueOf(methodValueTarget{Base: 40}).MethodByName("Sum")
+	out := method.Call([]reflect.Value{
+		reflect.ValueOf(1),
+		reflect.ValueOf(2),
+	})
+	if got := int(out[0].Int()); got != 43 {
+		t.Fatalf("variadic method returned %d, want 43", got)
+	}
+	out = method.CallSlice([]reflect.Value{
+		reflect.ValueOf([]int{1, 2}),
+	})
+	if got := int(out[0].Int()); got != 43 {
+		t.Fatalf("variadic CallSlice returned %d, want 43", got)
+	}
+}
+
+func TestValuePromotedMethod(t *testing.T) {
+	target := embeddedMethodTarget{methodValueTarget{Base: 40}}
+	out := reflect.ValueOf(target).MethodByName("Add").Call([]reflect.Value{reflect.ValueOf(2)})
+	if got := int(out[0].Int()); got != 42 {
+		t.Fatalf("promoted method returned %d, want 42", got)
+	}
+}
+
+func TestValueInterfaceMethod(t *testing.T) {
+	var target interface{ Add(int) int } = methodValueTarget{Base: 40}
+	value := reflect.ValueOf(&target).Elem()
+	method := value.MethodByName("Add")
+	target = embeddedMethodTarget{methodValueTarget{Base: 50}}
+	out := method.Call([]reflect.Value{reflect.ValueOf(2)})
+	if got := int(out[0].Int()); got != 52 {
+		t.Fatalf("interface method returned %d, want 52", got)
+	}
+
+	target = nil
+	t.Run("nil at lookup", func(t *testing.T) {
+		shouldPanic("nil interface value", func() { value.Method(0) })
+	})
+	t.Run("nil at call", func(t *testing.T) {
+		shouldPanic("nil interface value", func() { method.Call([]reflect.Value{reflect.ValueOf(2)}) })
+	})
+}
+
+func TestValueMethodByNameMissing(t *testing.T) {
+	if value := reflect.ValueOf(methodValueTarget{}).MethodByName("Missing"); value.IsValid() {
+		t.Fatalf("MethodByName returned %v for a missing method", value)
+	}
+}
+
+type wideMethodTarget struct{}
+
+func (wideMethodTarget) Wide(
+	first, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, last int,
+) int {
+	return first + last
+}
+
+func TestValueWideMethod(t *testing.T) {
+	value := reflect.ValueOf(wideMethodTarget{})
+	args := make([]reflect.Value, 128)
+	for i := range args {
+		args[i] = reflect.ValueOf(i + 1)
+	}
+	for _, method := range []reflect.Value{value.Method(0), value.MethodByName("Wide")} {
+		if got := method.Call(args)[0].Int(); got != 129 {
+			t.Fatalf("wide method returned %d, want 129", got)
+		}
+	}
 }
