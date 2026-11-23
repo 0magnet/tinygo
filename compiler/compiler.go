@@ -1059,14 +1059,10 @@ func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files
 		}
 		file := files[0]
 		bufferValue := c.ctx.ConstString(string(file.Data), false)
-		bufferGlobal := llvm.AddGlobal(c.mod, bufferValue.Type(), c.pkg.Path()+"$embedslice")
-		bufferGlobal.SetInitializer(bufferValue)
-		bufferGlobal.SetLinkage(llvm.InternalLinkage)
-		bufferGlobal.SetAlignment(1)
-		slicePtr := llvm.ConstInBoundsGEP(bufferValue.Type(), bufferGlobal, []llvm.Value{
-			c.uintptrZero,
-			c.uintptrZero,
-		})
+		slicePtr := llvm.AddGlobal(c.mod, bufferValue.Type(), c.pkg.Path()+"$embedslice")
+		slicePtr.SetInitializer(bufferValue)
+		slicePtr.SetLinkage(llvm.InternalLinkage)
+		slicePtr.SetAlignment(1)
 		sliceLen := llvm.ConstInt(c.uintptrType, file.Size, false)
 		sliceObj := c.ctx.ConstStruct([]llvm.Value{slicePtr, sliceLen, sliceLen}, false)
 		global.SetInitializer(sliceObj)
@@ -1082,7 +1078,7 @@ func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files
 				LocalToUnit: true,
 				Expr:        c.dibuilder.CreateExpression(nil),
 			})
-			bufferGlobal.AddMetadata(0, diglobal)
+			slicePtr.AddMetadata(0, diglobal)
 		}
 
 	case *types.Struct:
@@ -1166,12 +1162,8 @@ func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files
 		// Create the slice object itself.
 		// Because embed.FS refers to it as *[]embed.file instead of a plain
 		// []embed.file, we have to store this as a global.
-		slicePtr := llvm.ConstInBoundsGEP(sliceDataInitializer.Type(), sliceDataGlobal, []llvm.Value{
-			c.uintptrZero,
-			c.uintptrZero,
-		})
 		sliceLen := llvm.ConstInt(c.uintptrType, uint64(len(fileStructs)), false)
-		sliceInitializer := c.ctx.ConstStruct([]llvm.Value{slicePtr, sliceLen, sliceLen}, false)
+		sliceInitializer := c.ctx.ConstStruct([]llvm.Value{sliceDataGlobal, sliceLen, sliceLen}, false)
 		sliceGlobal := llvm.AddGlobal(c.mod, sliceInitializer.Type(), c.pkg.Path()+"$embedfsslice")
 		sliceGlobal.SetInitializer(sliceInitializer)
 		sliceGlobal.SetLinkage(llvm.InternalLinkage)
@@ -1209,12 +1201,8 @@ func (c *context) getEmbedFileString(file *loader.EmbedFile) llvm.Value {
 	if dataGlobal.IsNil() {
 		dataGlobal = llvm.AddGlobal(c.mod, dataGlobalType, dataGlobalName)
 	}
-	strPtr := llvm.ConstInBoundsGEP(dataGlobalType, dataGlobal, []llvm.Value{
-		c.uintptrZero,
-		c.uintptrZero,
-	})
 	strLen := llvm.ConstInt(c.uintptrType, file.Size, false)
-	return llvm.ConstNamedStruct(c.getLLVMRuntimeType("_string"), []llvm.Value{strPtr, strLen})
+	return llvm.ConstNamedStruct(c.getLLVMRuntimeType("_string"), []llvm.Value{dataGlobal, strLen})
 }
 
 // Start defining a function so that it can be filled with instructions: load
@@ -1447,6 +1435,9 @@ func (b *builder) createFunction() {
 		return
 	}
 
+	// Find loops that zero a slice, to be replaced with a memset.
+	clearLoops := findClearLoops(b.fn)
+
 	// Fill blocks with instructions.
 	b.loweringBody = true
 	for _, block := range b.fn.DomPreorder() {
@@ -1456,6 +1447,10 @@ func (b *builder) createFunction() {
 		b.currentBlock = block
 		b.currentBlockInfo = &b.blockInfo[block.Index]
 		b.SetInsertPointAtEnd(b.currentBlockInfo.entry)
+		if loop := clearLoops[block]; loop != nil {
+			b.createClearLoop(loop, block)
+			continue
+		}
 		for _, instr := range block.Instrs {
 			if instr, ok := instr.(*ssa.DebugRef); ok {
 				if !b.Debug {
@@ -2194,30 +2189,7 @@ func (b *builder) createBuiltin(argTypes []types.Type, argValues []llvm.Value, c
 		value := argValues[0]
 		switch typ := argTypes[0].Underlying().(type) {
 		case *types.Slice:
-			elementType := b.getLLVMType(typ.Elem())
-			elementSize := b.targetData.TypeAllocSize(elementType)
-			elementAlign := b.targetData.ABITypeAlignment(elementType)
-
-			// The pointer to the data to be cleared.
-			llvmBuf := b.CreateExtractValue(value, 0, "buf")
-
-			// The length (in bytes) to be cleared.
-			llvmLen := b.CreateExtractValue(value, 1, "len")
-			llvmLen = b.CreateMul(llvmLen, llvm.ConstInt(llvmLen.Type(), elementSize, false), "")
-
-			// Do the clear operation using the LLVM memset builtin.
-			// This is also correct for nil slices: in those cases, len will be
-			// 0 which means the memset call is a no-op (according to the LLVM
-			// LangRef).
-			memset := b.getMemsetFunc()
-			call := b.createCall(memset.GlobalValueType(), memset, []llvm.Value{
-				llvmBuf,                       // dest
-				llvm.ConstInt(b.i8, 0, false), // val
-				llvmLen,                       // len
-				b.i1False,                     // isVolatile
-			}, "")
-			call.AddCallSiteAttribute(1, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("align"), uint64(elementAlign)))
-
+			b.createSliceClear(value, typ.Elem())
 			return llvm.Value{}, nil
 		case *types.Map:
 			m := argValues[0]
@@ -2499,6 +2471,34 @@ func (b *builder) createBuiltin(argTypes []types.Type, argValues []llvm.Value, c
 	default:
 		return llvm.Value{}, b.makeError(pos, "todo: builtin: "+callName)
 	}
+}
+
+// createSliceClear zeroes all elements of the given slice value, like the
+// clear builtin does for slices.
+func (b *builder) createSliceClear(value llvm.Value, elemType types.Type) {
+	elementType := b.getLLVMType(elemType)
+	elementSize := b.targetData.TypeAllocSize(elementType)
+	elementAlign := b.targetData.ABITypeAlignment(elementType)
+
+	// The pointer to the data to be cleared.
+	llvmBuf := b.CreateExtractValue(value, 0, "buf")
+
+	// The length (in bytes) to be cleared.
+	llvmLen := b.CreateExtractValue(value, 1, "len")
+	llvmLen = b.CreateMul(llvmLen, llvm.ConstInt(llvmLen.Type(), elementSize, false), "")
+
+	// Do the clear operation using the LLVM memset builtin.
+	// This is also correct for nil slices: in those cases, len will be
+	// 0 which means the memset call is a no-op (according to the LLVM
+	// LangRef).
+	memset := b.getMemsetFunc()
+	call := b.createCall(memset.GlobalValueType(), memset, []llvm.Value{
+		llvmBuf,                       // dest
+		llvm.ConstInt(b.i8, 0, false), // val
+		llvmLen,                       // len
+		b.i1False,                     // isVolatile
+	}, "")
+	call.AddCallSiteAttribute(1, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("align"), uint64(elementAlign)))
 }
 
 // createFunctionCall lowers a Go SSA call instruction (to a simple function,
@@ -3867,8 +3867,7 @@ func (c *context) createConst(expr *ssa.Const, pos token.Pos) llvm.Value {
 					})
 					global.AddMetadata(0, diglobal)
 				}
-				zero := llvm.ConstInt(c.i32, 0, false)
-				strPtr = llvm.ConstInBoundsGEP(globalType, global, []llvm.Value{zero, zero})
+				strPtr = global
 			} else {
 				strPtr = c.dataPtrNull
 			}

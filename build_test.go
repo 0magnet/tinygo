@@ -182,6 +182,7 @@ func TestBuild(t *testing.T) {
 		"cgo/",
 		"channel.go",
 		"chanrecover.go",
+		"clearloop.go",
 		"coreassign.go",
 		"embed/",
 		"finalizer.go",
@@ -269,6 +270,10 @@ func TestBuild(t *testing.T) {
 		t.Run("testing.go-verbose", func(t *testing.T) {
 			t.Parallel()
 			runTest("testing-verbose.go", hostOptions, t, nil, nil)
+		})
+		t.Run("testing-bench.go", func(t *testing.T) {
+			t.Parallel()
+			runTest("testing-bench.go", hostOptions, t, nil, nil)
 		})
 
 		// scheduler.threads needs threadID, which exists only on Linux and Darwin.
@@ -715,17 +720,11 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// These targets grow slices to the next power of two.
 			continue
 		}
-		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386") {
+		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386" || options.GOARCH == "mips" || options.GOARCH == "mipsle") {
 			switch name {
 			case "timers.go":
 				// Timer tests do not work because syscall.seek is implemented
 				// as Assembly in mainline Go and causes linker failure
-				continue
-			}
-		}
-		if options.GOOS == "linux" && (options.GOARCH == "mips" || options.GOARCH == "mipsle") {
-			if name == "atomic.go" || name == "timers.go" {
-				// 64-bit atomic operations aren't currently supported on MIPS.
 				continue
 			}
 		}
@@ -745,8 +744,8 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// Too many goroutines for the LM3S6965's RAM.
 			continue
 		}
-		if options.Target == "riscv-qemu" && name == "gcstacks.go" {
-			// The cores scheduler crashes with timers and runtime.GC, see #6047.
+		if options.Target == "riscv-qemu" && name == "gcstacks.go" && scheduler == "tasks" {
+			// Other targets cover the tasks scheduler, and this run takes 34 seconds.
 			continue
 		}
 		if options.Target == "simavr" {

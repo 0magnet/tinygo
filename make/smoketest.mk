@@ -507,6 +507,10 @@ smoketest-esp: | build/smoke
 ifneq ($(XTENSA), 0)
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-generic       examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-generic -scheduler=cores examples/machinetest
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-generic -scheduler=cores examples/core-assign
+	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-coreboard-v2  examples/adc
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-coreboard-v2  examples/pwm
@@ -526,6 +530,8 @@ ifneq ($(XTENSA), 0)
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-generic -scheduler=cores examples/flash
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-mini32      	examples/blinky1
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-psram       examples/psram
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-supermini   examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -561,6 +567,8 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	# esp32p4-module-devkit
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32p4-module-devkit 	examples/serial
+	# crowpanel-esp32p4-10-1
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=crowpanel-esp32p4-10-1	examples/psram
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	# xiao-esp32s3
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32s3   		examples/blinky1
