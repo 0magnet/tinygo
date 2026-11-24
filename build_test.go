@@ -184,6 +184,7 @@ func TestBuild(t *testing.T) {
 		"chanrecover.go",
 		"clearloop.go",
 		"coreassign.go",
+		"coreswake.go",
 		"embed/",
 		"finalizer.go",
 		"finalizerbits.go",
@@ -232,6 +233,7 @@ func TestBuild(t *testing.T) {
 		"timer_node_reuse_gc.go",
 		"timers.go",
 		"typealias.go",
+		"typeassert-typeid.go",
 		"zeroalloc.go",
 	}
 
@@ -712,8 +714,8 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				continue
 			}
 		}
-		if name == "coreassign.go" && scheduler != "cores" {
-			// Core assignment needs the cores scheduler.
+		if (name == "coreassign.go" || name == "coreswake.go") && scheduler != "cores" {
+			// These tests need the cores scheduler.
 			continue
 		}
 		if name == "slicegrow.go" && (isBaremetal || spec.GC == "leaking") {
@@ -752,7 +754,7 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// Not all tests are currently supported on AVR.
 			// Skip the ones that aren't.
 			switch name {
-			case "reflect.go", "reflect-method-values.go", "reflect-promoted-lookup.go":
+			case "reflect.go", "reflect-method-values.go", "reflect-promoted-lookup.go", "typeassert-typeid.go":
 				// Reflect tests do not run correctly, probably because of the
 				// limited amount of memory.
 				continue

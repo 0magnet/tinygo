@@ -56,39 +56,6 @@ func sleepTicks(d timeUnit) {
 	}
 }
 
-// Currently sleeping core, or 0xff.
-// Must only be accessed with the scheduler lock held.
-var sleepingCore uint8 = 0xff
-
-// Return whether another core is sleeping.
-// May only be called with the scheduler lock held.
-func hasSleepingCore() bool {
-	return sleepingCore != 0xff
-}
-
-// Almost identical to sleepTicks, except that it will unlock/lock the scheduler
-// while sleeping and is interruptible by interruptSleepTicksMulticore.
-// This may only be called with the scheduler lock held.
-func sleepTicksMulticore(d timeUnit) {
-	sleepingCore = uint8(currentCPU())
-
-	// Note: interruptSleepTicksMulticore will be able to interrupt this, since
-	// it executes the "sev" instruction which would make sleepTicks return
-	// immediately without sleeping. Even if it happens while configuring the
-	// sleep operation.
-
-	schedulerLock.Unlock()
-	sleepTicks(d)
-	schedulerLock.Lock()
-
-	sleepingCore = 0xff
-}
-
-// Interrupt an ongoing call to sleepTicksMulticore on another core.
-func interruptSleepTicksMulticore(wakeup timeUnit) {
-	arm.Asm("sev")
-}
-
 // Return the current core number: 0 or 1.
 func currentCPU() uint32 {
 	return rp.SIO.CPUID.Get()
@@ -274,10 +241,12 @@ var (
 	flashSafeLock = spinLock{id: 24}
 )
 
+// resetSpinLocks runs before initHeap, so it must not allocate.
+//
+//go:noheap
 func resetSpinLocks() {
 	for i := uint8(0); i < numSpinlocks; i++ {
-		l := &spinLock{id: i}
-		l.spinlock().Set(0)
+		(*volatile.Register32)(unsafe.Add(unsafe.Pointer(&rp.SIO.SPINLOCK0), i*4)).Set(0)
 	}
 }
 
