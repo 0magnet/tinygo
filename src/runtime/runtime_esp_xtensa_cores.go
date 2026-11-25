@@ -17,30 +17,7 @@ const numCPU = 2
 // XCHAL_INT3_LEVEL in esp-idf components/xtensa/<chip>/include/xtensa/config/core-isa.h.
 const crossCoreCPUInterrupt = 3
 
-var (
-	printLock     spinLock
-	schedulerLock schedulerSpinLock
-	atomicsLock   spinLock
-	futexLock     spinLock
-	ticksLock     spinLock
-)
-
-type spinLock struct {
-	atomic.Uint32
-}
-
-func (l *spinLock) Lock() {
-	for !l.Uint32.CompareAndSwap(0, 1) {
-		spinLoopWait()
-	}
-}
-
-func (l *spinLock) Unlock() {
-	if schedulerAsserts && l.Uint32.Load() != 1 {
-		runtimeFatal("unlock of unlocked spinlock")
-	}
-	l.Uint32.Store(0)
-}
+var ticksLock spinLock
 
 func spinLoopWait() {
 	device.Asm("nop")
@@ -66,10 +43,9 @@ func unlockTicks(mask interrupt.State) {
 var crossCoreInterrupt interrupt.Interrupt
 
 var (
-	core1Started         atomic.Uint32
-	schedulerWakePending [numCPU]atomic.Uint32
-	gcPauseRequest       [numCPU]atomic.Uint32
-	gcSignalWait         [numCPU]atomic.Uint32
+	core1Started   atomic.Uint32
+	gcPauseRequest [numCPU]atomic.Uint32
+	gcSignalWait   [numCPU]atomic.Uint32
 )
 
 func crossCoreHandler(interrupt.Interrupt) {
@@ -149,24 +125,14 @@ func runCore1() {
 	exit(0)
 }
 
-// Put the scheduler to sleep, since there are no tasks to run.
-// This will unlock the scheduler lock, and must be called with the scheduler
-// lock held.
-func schedulerUnlockAndWait() {
-	core := currentCPU()
-	waitingCores |= 1 << core
+// The FROM_CPU interrupt can wake a waiting core.
+const hasExternalWakeups = true
 
-	// waiti lowers PS.INTLEVEL and waits in one step, so a wake sent after the
-	// unlock is not lost. See the Xtensa ISA Reference Manual, WAITI.
-	// Interrupts stay off from the unlock until the lock is taken again.
-	state := schedulerLock.unlockMasked()
-	coreIdle[core].Store(1)
-	for schedulerWakePending[core].Swap(0) == 0 {
-		device.Asm("waiti 0")
-		interrupt.Disable()
-	}
-	coreIdle[core].Store(0)
-	schedulerLock.lockMasked(state)
+// waiti lowers PS.INTLEVEL and waits in one step, so a wake sent after the
+// unlock is not lost. See the Xtensa ISA Reference Manual, WAITI.
+func coreWait() {
+	device.Asm("waiti 0")
+	interrupt.Disable()
 }
 
 // End schedulerUnlockAndWait on the given core.

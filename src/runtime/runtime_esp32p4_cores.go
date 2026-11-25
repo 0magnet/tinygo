@@ -16,30 +16,7 @@ const numCPU = 2
 // CPU interrupt line for the FROM_CPU software interrupts, on both cores.
 const crossCoreCPUInterrupt = 11
 
-var (
-	printLock     spinLock
-	schedulerLock schedulerSpinLock
-	atomicsLock   spinLock
-	futexLock     spinLock
-	ticksLock     spinLock
-)
-
-type spinLock struct {
-	atomic.Uint32
-}
-
-func (l *spinLock) Lock() {
-	for !l.Uint32.CompareAndSwap(0, 1) {
-		spinLoopWait()
-	}
-}
-
-func (l *spinLock) Unlock() {
-	if schedulerAsserts && l.Uint32.Load() != 1 {
-		runtimeFatal("unlock of unlocked spinlock")
-	}
-	l.Uint32.Store(0)
-}
+var ticksLock spinLock
 
 func spinLoopWait() {
 	riscv.Asm("nop")
@@ -63,10 +40,9 @@ func unlockTicks(mask interrupt.State) {
 var crossCoreInterrupt interrupt.Interrupt
 
 var (
-	core1Started         atomic.Uint32
-	schedulerWakePending [numCPU]atomic.Uint32
-	gcPauseRequest       [numCPU]atomic.Uint32
-	gcSignalWait         [numCPU]atomic.Uint32
+	core1Started   atomic.Uint32
+	gcPauseRequest [numCPU]atomic.Uint32
+	gcSignalWait   [numCPU]atomic.Uint32
 )
 
 // Set (1) or clear (0) the FROM_CPU interrupt of the given core.
@@ -162,23 +138,15 @@ func runCore1() {
 	exit(0)
 }
 
-// Put the scheduler to sleep, since there are no tasks to run.
-// This will unlock the scheduler lock, and must be called with the scheduler
-// lock held.
-func schedulerUnlockAndWait() {
-	core := currentCPU()
-	waitingCores |= 1 << core
+// The FROM_CPU interrupt can wake a waiting core.
+const hasExternalWakeups = true
 
-	// wfi wakes on a pending interrupt even with MSTATUS.MIE clear, so a wake
-	// sent after the unlock is not lost. Interrupts are turned on for a moment
-	// after each wake, so a GC pause request can run.
-	state := schedulerLock.unlockMasked()
-	for schedulerWakePending[core].Swap(0) == 0 {
-		riscv.Asm("wfi")
-		riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
-		riscv.MSTATUS.ClearBits(riscv.MSTATUS_MIE)
-	}
-	schedulerLock.lockMasked(state)
+// wfi wakes on a pending interrupt even with MSTATUS.MIE clear, so a wake sent
+// after the unlock is not lost. MIE goes on briefly so a GC pause request can run.
+func coreWait() {
+	riscv.Asm("wfi")
+	riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
+	riscv.MSTATUS.ClearBits(riscv.MSTATUS_MIE)
 }
 
 // End schedulerUnlockAndWait on the given core.

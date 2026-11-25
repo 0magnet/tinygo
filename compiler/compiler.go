@@ -376,7 +376,7 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 	}
 
 	// Compile all functions, methods, and global variables in this package.
-	irbuilder := c.ctx.NewBuilder()
+	irbuilder := c.mod.NewBuilder()
 	defer irbuilder.Dispose()
 	c.createPackage(irbuilder, ssaPkg)
 
@@ -1520,7 +1520,7 @@ func (b *builder) createFunction() {
 	}
 
 	// Resolve phi nodes
-	phiBuilder := b.ctx.NewBuilder()
+	phiBuilder := b.mod.NewBuilder()
 	originalBuilder := b.Builder
 	b.Builder = phiBuilder
 	for _, phi := range b.phis {
@@ -2526,9 +2526,7 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 		case strings.HasPrefix(name, "(device/riscv.CSR)."):
 			return b.emitCSROperation(instr)
 		case (strings.HasPrefix(name, "syscall.Syscall") || strings.HasPrefix(name, "syscall.RawSyscall") || strings.HasPrefix(name, "golang.org/x/sys/unix.Syscall") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscall")) && name != "syscall.SyscallN":
-			if b.GOOS != "darwin" {
-				return b.createSyscall(instr)
-			}
+			return b.createSyscall(instr)
 		case name == "syscall.syscalln":
 			if b.GOOS == "windows" {
 				return b.createSyscalln(instr)
@@ -4038,9 +4036,9 @@ func (b *builder) createConvert(typeFrom, typeTo types.Type, value llvm.Value, p
 			var significandBits int
 			switch typeFrom.Kind() {
 			case types.Float32:
-				significandBits = 23
+				significandBits = 24
 			case types.Float64:
-				significandBits = 52
+				significandBits = 53
 			}
 			if typeTo.Info()&types.IsUnsigned != 0 { // if unsigned
 				// Select the maximum value for this unsigned integer type.

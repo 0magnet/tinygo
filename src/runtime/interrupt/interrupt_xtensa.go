@@ -1,8 +1,8 @@
-//go:build xtensa && !esp32s3 && !esp32
+//go:build xtensa
 
 package interrupt
 
-import "device"
+import "device/xtensa"
 
 // State represents the previous global interrupt state.
 type State uintptr
@@ -17,7 +17,7 @@ type State uintptr
 // Critical sections can be nested. Make sure to call Restore in the same order
 // as you called Disable (this happens naturally with the pattern above).
 func Disable() (state State) {
-	return State(device.AsmFull("rsil {}, 15", nil))
+	return State(xtensa.DisableInterrupts())
 }
 
 // Restore restores interrupts to what they were before. Give the previous state
@@ -25,15 +25,5 @@ func Disable() (state State) {
 // calling Disable, this will not re-enable interrupts, allowing for nested
 // critical sections.
 func Restore(state State) {
-	device.AsmFull("wsr {state}, PS", map[string]interface{}{
-		"state": state,
-	})
-}
-
-// In returns whether the system is currently in an interrupt.
-//
-// Warning: interrupts have not been implemented for Xtensa yet so this always
-// returns false.
-func In() bool {
-	return false
+	xtensa.EnableInterrupts(uintptr(state))
 }

@@ -3,35 +3,9 @@
 package interrupt
 
 import (
-	"device"
+	"device/xtensa"
 	"errors"
 )
-
-// State represents the previous global interrupt state.
-type State uintptr
-
-// Disable disables all interrupts and returns the previous interrupt state. It
-// can be used in a critical section like this:
-//
-//	state := interrupt.Disable()
-//	// critical section
-//	interrupt.Restore(state)
-//
-// Critical sections can be nested. Make sure to call Restore in the same order
-// as you called Disable (this happens naturally with the pattern above).
-func Disable() (state State) {
-	return State(device.AsmFull("rsil {}, 15", nil))
-}
-
-// Restore restores interrupts to what they were before. Give the previous state
-// returned by Disable as a parameter. If interrupts were disabled before
-// calling Disable, this will not re-enable interrupts, allowing for nested
-// critical sections.
-func Restore(state State) {
-	device.AsmFull("wsr {state}, PS", map[string]interface{}{
-		"state": state,
-	})
-}
 
 // The ESP32 (Xtensa LX6) and ESP32-S3 (Xtensa LX7) interrupt model:
 //
@@ -206,20 +180,18 @@ func enableOnCore0(num uint32)
 
 // readINTENABLE reads the INTENABLE special register (SR 228).
 func readINTENABLE() uint32 {
-	return uint32(device.AsmFull("rsr {}, INTENABLE", nil))
+	return xtensa.ReadINTENABLE()
 }
 
 // writeINTENABLE writes the INTENABLE special register (SR 228).
 func writeINTENABLE(val uint32) {
-	device.AsmFull("wsr {val}, INTENABLE", map[string]interface{}{
-		"val": val,
-	})
+	xtensa.WriteINTENABLE(val)
 }
 
 // readINTERRUPT reads the INTERRUPT special register (SR 226), which
 // reflects the currently pending CPU interrupts.
 func readINTERRUPT() uint32 {
-	return uint32(device.AsmFull("rsr {}, INTERRUPT", nil))
+	return xtensa.ReadINTERRUPT()
 }
 
 // writeINTCLEAR writes the INTCLEAR special register (SR 227).
@@ -227,7 +199,5 @@ func readINTERRUPT() uint32 {
 // software-triggered.  Bits corresponding to level-triggered interrupts
 // are ignored by hardware.
 func writeINTCLEAR(val uint32) {
-	device.AsmFull("wsr {val}, INTCLEAR", map[string]interface{}{
-		"val": val,
-	})
+	xtensa.WriteINTCLEAR(val)
 }
