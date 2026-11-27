@@ -517,6 +517,8 @@ ifneq ($(XTENSA), 0)
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-coreboard-v2  examples/watchdog
 	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-coreboard-v2  examples/touch
+	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32c3-generic     examples/machinetest
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-generic     examples/machinetest
@@ -532,6 +534,8 @@ ifneq ($(XTENSA), 0)
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32s3-generic -scheduler=cores examples/flash
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-mini32      	examples/blinky1
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=adafruit-esp32-feather-v2 examples/blinky1
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32-psram       examples/psram
 	@$(MD5SUM) $(SMOKE_OUT).bin
@@ -561,6 +565,11 @@ ifneq ($(XTENSA), 0)
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/i2c-scan
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=xiao-esp32c6   		examples/i2s-tone
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	# waveshare-esp32c6-lcd-1.47
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=waveshare-esp32c6-lcd-1.47 examples/machinetest
+	@$(MD5SUM) $(SMOKE_OUT).bin
+	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=waveshare-esp32c6-lcd-1.47 examples/pwm
 	@$(MD5SUM) $(SMOKE_OUT).bin
 	# esp32h2-devkitm-1
 	$(TINYGO) build -size short -o $(SMOKE_OUT).bin -target=esp32h2-devkitm-1 	examples/machinetest
