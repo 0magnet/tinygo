@@ -15,11 +15,11 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	go.bug.st/serial v1.8.0
 	golang.org/x/mod v0.42.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/tools v0.52.0
 	gopkg.in/yaml.v2 v2.4.0
-	tinygo.org/x/espflasher v0.9.5
-	tinygo.org/x/go-llvm v0.0.0-20261118231036-8ac15cf747df
+	tinygo.org/x/espflasher v0.10.0
+	tinygo.org/x/go-llvm v0.0.0-20261124104951-403326da7a68
 )
 
 require (

@@ -345,7 +345,7 @@ func (c *context) maybeCreateSyntheticFunction(fn *ssa.Function, llvmFn llvm.Val
 			// can only really be implemented in the compiler.
 			// For simplicity we'll only implement pointer parameters for now.
 			if _, ok := fn.Params[0].Type().Underlying().(*types.Pointer); ok {
-				irbuilder := c.ctx.NewBuilder()
+				irbuilder := c.mod.NewBuilder()
 				defer irbuilder.Dispose()
 				b := newBuilder(c, irbuilder, fn)
 				b.createAbiEscapeImpl()
@@ -361,7 +361,7 @@ func (c *context) maybeCreateSyntheticFunction(fn *ssa.Function, llvmFn llvm.Val
 			c.addError(fn.Pos(), "missing function body")
 			return
 		}
-		irbuilder := c.ctx.NewBuilder()
+		irbuilder := c.mod.NewBuilder()
 		b := newBuilder(c, irbuilder, fn)
 		b.createFunction()
 		irbuilder.Dispose()

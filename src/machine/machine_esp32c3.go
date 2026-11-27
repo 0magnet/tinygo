@@ -140,7 +140,7 @@ func (p Pin) outFunc() *volatile.Register32 {
 }
 
 func (p Pin) pinReg() *volatile.Register32 {
-	return (*volatile.Register32)(unsafe.Pointer((uintptr(unsafe.Pointer(&esp.GPIO.PIN0)) + uintptr(p)*4)))
+	return (*volatile.Register32)(unsafe.Add(unsafe.Pointer(&esp.GPIO.PIN0), uintptr(p)*4))
 }
 
 // inFunc returns the FUNCy_IN_SEL_CFG register used for configuring the input
@@ -269,6 +269,11 @@ func setupPinInterrupt() error {
 	}).Enable()
 }
 
+func init() {
+	UART0.interrupt = interrupt.New(cpuInterruptFromUART0, _UART0.serveInterrupt)
+	UART1.interrupt = interrupt.New(cpuInterruptFromUART1, _UART1.serveInterrupt)
+}
+
 var (
 	DefaultUART = UART0
 
@@ -277,7 +282,6 @@ var (
 	UART1  = &_UART1
 	_UART1 = UART{Bus: esp.UART1, Buffer: NewRingBuffer()}
 
-	onceUart            = sync.Once{}
 	errSamePins         = errors.New("UART: invalid pin combination")
 	errWrongUART        = errors.New("UART: unsupported UARTn")
 	errWrongBitSize     = errors.New("UART: invalid data size")
@@ -287,23 +291,29 @@ var (
 const uartClockFreq = 80_000_000 // APB_CLK, SCLK_SEL 1. See ESP-IDF hal/esp32c3/include/hal/uart_ll.h uart_ll_set_sclk.
 
 type registerSet struct {
+	cpuInterrupt     uint32
 	interruptMapReg  *volatile.Register32
 	uartClockBitMask uint32
 	gpioMatrixSignal uint32
 }
 
-const cpuInterruptFromUART = 7
+const (
+	cpuInterruptFromUART0 = 7
+	cpuInterruptFromUART1 = 8
+)
 
 func busFor(bus *esp.UART_Type) registerSet {
 	switch bus {
 	case esp.UART0:
 		return registerSet{
+			cpuInterrupt:     cpuInterruptFromUART0,
 			interruptMapReg:  &esp.INTERRUPT_CORE0.UART_INTR_MAP,
 			uartClockBitMask: esp.SYSTEM_PERIP_CLK_EN0_UART_CLK_EN,
 			gpioMatrixSignal: 6,
 		}
 	case esp.UART1:
 		return registerSet{
+			cpuInterrupt:     cpuInterruptFromUART1,
 			interruptMapReg:  &esp.INTERRUPT_CORE0.UART1_INTR_MAP,
 			uartClockBitMask: esp.SYSTEM_PERIP_CLK_EN0_UART1_CLK_EN,
 			gpioMatrixSignal: 9,
@@ -344,7 +354,7 @@ func (uart *UART) configure(config UARTConfig, regs registerSet) error {
 	uart.Bus.SetID_REG_UPDATE(1)
 
 	uart.setupPins(config, regs)
-	uart.configureInterrupt(regs.interruptMapReg)
+	uart.configureInterrupt(regs)
 	uart.enableTransmitter()
 	uart.enableReceiver()
 
@@ -451,4 +461,37 @@ func initADCClock() {
 
 	esp.APB_SARADC.SetCTRL_SARADC_SAR_CLK_DIV(1)
 	esp.APB_SARADC.SetCLKM_CONF_CLK_EN(1)
+}
+
+const spiClockFreq = 80_000_000 // APB_CLK, MST_CLK_SEL 1. See ESP-IDF hal/esp32c3/include/hal/spi_ll.h spi_ll_master_cal_clock.
+
+const (
+	FSPICLK_IN_IDX  = uint32(63)
+	FSPICLK_OUT_IDX = uint32(63)
+	FSPIQ_IN_IDX    = uint32(64)
+	FSPIQ_OUT_IDX   = uint32(64)
+	FSPID_IN_IDX    = uint32(65)
+	FSPID_OUT_IDX   = uint32(65)
+	FSPIHD_IN_IDX   = uint32(66)
+	FSPIHD_OUT_IDX  = uint32(66)
+	FSPIWP_IN_IDX   = uint32(67)
+	FSPIWP_OUT_IDX  = uint32(67)
+	FSPICS0_IN_IDX  = uint32(68)
+	FSPICS0_OUT_IDX = uint32(68)
+	FSPICS1_OUT_IDX = uint32(69)
+	FSPICS2_OUT_IDX = uint32(70)
+	FSPICS3_OUT_IDX = uint32(71)
+	FSPICS4_OUT_IDX = uint32(72)
+	FSPICS5_OUT_IDX = uint32(73)
+)
+
+// enableSPIClock enables and resets the clock of an SPI bus.
+func enableSPIClock(bus *esp.SPI2_Type) {
+	switch bus {
+	case esp.SPI2:
+		esp.SYSTEM.SetPERIP_RST_EN0_SPI2_RST(1)
+		esp.SYSTEM.SetPERIP_RST_EN0_SPI2_RST(0)
+		esp.SYSTEM.SetPERIP_CLK_EN0_SPI2_CLK_EN(1)
+		esp.SYSTEM.SetPERIP_RST_EN0_SPI2_RST(0)
+	}
 }

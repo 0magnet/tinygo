@@ -9,343 +9,62 @@ golden-check: ## Fail if regenerating the golden IR files changes them
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test -buildmode exe -tags "byollvm llvm22 osusergo" ./compiler ./transform -update
 	git diff --exit-code -- compiler/testdata transform/testdata
 
-# Standard library packages that pass tests on darwin, linux, wasi, and windows, but take over a minute in wasi
-TEST_PACKAGES_SLOW = \
-	compress/bzip2 \
-	crypto/dsa \
-	index/suffixarray \
-
-# Standard library packages that pass tests quickly on darwin, linux, wasi, and windows
-TEST_PACKAGES_FAST = \
-	cmp \
-	compress/lzw \
-	compress/zlib \
-	container/heap \
-	container/list \
-	container/ring \
-	crypto/des \
-	crypto/ecdsa \
-	crypto/elliptic \
-	crypto/hmac \
-	crypto/md5 \
-	crypto/sha1 \
-	crypto/sha256 \
-	crypto/sha512 \
-	database/sql/driver \
-	debug/macho \
-	embed/internal/embedtest \
-	encoding \
-	encoding/ascii85 \
-	errors \
-	encoding/asn1 \
-	encoding/base32 \
-	encoding/base64 \
-	encoding/csv \
-	encoding/hex \
-	expvar \
-	go/ast \
-	go/format \
-	go/scanner \
-	go/token \
-	go/version \
-	hash \
-	hash/adler32 \
-	hash/crc64 \
-	hash/fnv \
-	hash/maphash \
-	html \
-	image \
-	internal/itoa \
-	internal/profile \
-	internal/reflectlite \
-	math \
-	math/cmplx \
-	net/http/internal/ascii \
-	net/mail \
-	net/url \
-	os \
-	path \
-	reflect \
-	regexp/syntax \
-	runtime \
-	strconv \
-	sync \
-	testing \
-	testing/iotest \
-	text/scanner \
-	text/tabwriter \
-	text/template/parse \
-	unicode \
-	unicode/utf16 \
-	unicode/utf8 \
-	unique \
-	$(nil)
-
-# archive/zip requires os.ReadAt, which is not yet supported on windows
-# bytes requires mmap
-# compress/flate appears to hang on wasi
-# crypto/aes needs reflect.Type.Method(), not yet implemented
-# debug/plan9obj requires os.ReadAt, which is not yet supported on windows
-# encoding/xml takes a minute on linux and gives a stack overflow on wasi
-# io/ioutil requires os.ReadDir, which is not yet supported on wasi
-# mime fails on wasi: bufio.Scanner reports an impossible read count
-# mime/multipart: needs wasip1 syscall.FDFLAG_NONBLOCK
-# mime/quotedprintable requires syscall.Faccessat
-# net/mail: needs wasip1  syscall.FDFLAG_NONBLOCK
-# net/ntextproto: needs wasip1 syscall.FDFLAG_NONBLOCK
-# testing/fstest requires os.ReadDir, which is not yet supported on wasi
-
-# Additional standard library packages that pass tests on individual platforms
-TEST_PACKAGES_LINUX := \
-	archive/zip \
-	bytes \
-	compress/flate \
-	context \
-	crypto/aes \
-	crypto/ecdh \
-	crypto/mldsa \
-	debug/dwarf \
-	debug/gosym \
-	debug/plan9obj \
-	encoding/gob \
-	encoding/xml \
-	go/build/constraint \
-	go/parser \
-	go/printer \
-	io/ioutil \
-	iter \
-	mime \
-	mime/multipart \
-	mime/quotedprintable \
-	net \
-	net/mail \
-	net/netip \
-	net/textproto \
-	os/user \
-	path/filepath \
-	regexp \
-	slices \
-	strings \
-	testing/cryptotest \
-	testing/fstest \
-	testing/quick \
-	time \
-	$(nil)
-
-TEST_PACKAGES_DARWIN := $(TEST_PACKAGES_LINUX)
-
-# os/user requires t.Skip() support
-# time takes more than 25 minutes on Windows.
-TEST_PACKAGES_WINDOWS := \
-	compress/flate \
-	io/ioutil \
-	mime \
-	testing/fstest \
-	$(nil)
-
-
-# These packages cannot be tested on wasm, mostly because these tests assume a
-# working filesystem. This could perhaps be fixed, by supporting filesystem
-# access when running inside Node.js.
-TEST_PACKAGES_WASM = $(filter-out $(TEST_PACKAGES_NONWASM), $(TEST_PACKAGES_FAST))
-TEST_PACKAGES_NONWASM = \
-	compress/lzw \
-	compress/zlib \
-	crypto/ecdsa \
-	debug/macho \
-	embed/internal/embedtest \
-	expvar \
-	go/format \
-	image \
-	os \
-	testing \
-	$(nil)
-
-# These packages cannot be tested on baremetal.
-#
-# Some reasons why the tests don't pass on baremetal:
-#
-#   * No filesystem is available, so packages like compress/zlib can't be tested
-#     (just like wasm).
-#   * Since Go 1.27 the crypto tests below go through cryptotest.TestHash, which
-#     calls cryptotest.BoundarySlices. These targets report GOOS=linux, so they
-#     build boundary.go (//go:build linux || darwin) rather than
-#     boundary_compat.go, and that needs a working syscall.Mmap/syscall.Mprotect
-#     which we don't have. See #5593.
-TEST_PACKAGES_BAREMETAL = $(filter-out $(TEST_PACKAGES_NONBAREMETAL), $(TEST_PACKAGES_FAST))
-TEST_PACKAGES_NONBAREMETAL = \
-	$(TEST_PACKAGES_NONWASM) \
-	$(TEST_PACKAGES_NOBOUNDARYSLICES) \
-	crypto/des \
-	encoding/gob \
-	regexp/syntax \
-	$(nil)
-
-TEST_PACKAGES_FAST_WASI = $(filter-out $(TEST_PACKAGES_NOWASI), $(TEST_PACKAGES_FAST))
-TEST_PACKAGES_NOWASI = \
-	$(nil)
-
-# wasip1 reports GOOS=wasip1 and so gets the boundary_compat.go fallback, but
-# wasip2 reports GOOS=linux and hits the same BoundarySlices problem as
-# baremetal. On wasip2 syscall.Mmap returns ENOSYS and t.Fatalf cannot Goexit,
-# so the test falls through and panics with "slice out of range".
-TEST_PACKAGES_FAST_WASIP2 = $(filter-out $(TEST_PACKAGES_NOBOUNDARYSLICES), $(TEST_PACKAGES_FAST_WASI))
-
-TEST_PACKAGES_NOBOUNDARYSLICES = \
-	crypto/hmac \
-	crypto/md5 \
-	crypto/sha1 \
-	crypto/sha256 \
-	crypto/sha512 \
-	$(nil)
-
-# Report platforms on which each standard library package is known to pass tests
-report-stdlib-tests-pass:
-	$(eval jointmp := $(shell echo /tmp/join.$$$$))
-	@for t in $(TEST_PACKAGES_DARWIN); do echo "$$t darwin"; done | sort > $(jointmp).darwin
-	@for t in $(TEST_PACKAGES_LINUX); do echo "$$t linux"; done | sort > $(jointmp).linux
-	@for t in $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW); do echo "$$t darwin linux wasi windows"; done | sort > $(jointmp).portable
-	@join -a1 -a2 $(jointmp).darwin $(jointmp).linux | \
-	join -a1 -a2 - $(jointmp).portable
-	@rm $(jointmp).*
-
-# Standard library packages that pass tests quickly on the current platform
-TEST_PACKAGES_HOST_FULL_ONLY := internal/synctest testing/synctest
-ifeq ($(uname),Darwin)
-TEST_PACKAGES_HOST := $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_DARWIN)
-TEST_PACKAGES_HOST_FULL_ONLY += io/fs
-endif
-ifeq ($(uname),Linux)
-TEST_PACKAGES_HOST := $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_LINUX)
-TEST_PACKAGES_HOST_FULL_ONLY += io/fs
-endif
-ifeq ($(OS),Windows_NT)
-TEST_PACKAGES_HOST := $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_WINDOWS)
-TEST_PACKAGES_HOST_FULL_ONLY += io/fs
-endif
-
-TEST_SKIP_FLAG := -skip='TestAsValidation|TestUnmarshalNestingLimitSlice|TestUnmarshalNestingLimitStruct'
 TEST_ADDITIONAL_FLAGS ?=
+STDLIB_TEST_FLAGS ?=
 
-TEST_OPTIONS_crypto/dsa := -short
-TEST_OPTIONS_crypto/sha256 := -skip='^(TestAllocations|TestAllocatonsWithTypeAsserts)$$'
-TEST_OPTIONS_crypto/sha512 := -skip='^TestAllocations$$'
-TEST_OPTIONS_fmt := -stack-size=1MB -skip='^TestCountMallocs$$'
-TEST_OPTIONS_strconv := -skip='^(TestCountMallocs|TestAllocationsFromBytes)$$'
-TEST_OPTIONS_unicode/utf16 := -skip='^(TestAllocationsDecode)$$'
-TEST_OPTIONS_mime := -skip='^TestLookupMallocs$$'
-TEST_OPTIONS_reflect := -skip='^TestMapIterSet$$'
-TEST_OPTIONS_bytes := -skip='^TestNewBufferShallow$$'
-TEST_OPTIONS_slices := -skip='^(TestGrow|TestInsert|TestConcat)$$'
-TEST_OPTIONS_strings := -skip='^(TestBuilderAllocs|TestBuilderGrow|TestBuilderGrowSizeclasses|TestIndexRune|TestReplace)$$'
-TEST_OPTIONS_crypto/mldsa := -short -stack-size=1MB -skip='^TestAllocations$$'
-TEST_OPTIONS_encoding/gob := -skip='^(TestIgnoreDepthLimit|TestCountDecodeMallocs)$$'
+stdlib-test = GOOS="$(shell $(GO) env GOHOSTOS)" GOARCH="$(shell $(GO) env GOHOSTARCH)" \
+	$(GO) run ./tools/stdlibtest -goos="$(GOOS)" -goarch="$(GOARCH)" $(STDLIB_TEST_FLAGS) $(1) \
+	"$(GO)" "$(TINYGO)" $(TEST_ADDITIONAL_FLAGS) $(2)
+stdlib-test-sum = $(if $(filter -plan -packages,$(STDLIB_TEST_FLAGS)),,gotestsum --raw-command -- env) \
+	$(call stdlib-test,-json -mode=$(1),-target=wasip2 -x -work)
 
-tinygo-test tinygo-test-fast: TEST_OPTIONS_time := -skip='^TestTimerGC$$'
-ifeq ($(uname),Darwin)
-# These tests start 1,000 to 5,000 goroutines and can exceed macOS's thread limit.
-# https://go.dev/src/time/sleep_test.go and https://go.dev/src/time/tick_test.go
-tinygo-test tinygo-test-fast: TEST_OPTIONS_time := -skip='^(TestTimerGC|TestStopResult|TestResetResult|TestLongAdjustTimers)$$|^TestZeroTimer$$/^impl=(func|cache)$$'
-endif
-tinygo-test tinygo-test-fast: TEST_OPTIONS_go/printer := -stack-size=1MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_encoding/gob := -stack-size=1MB -skip='^TestCountDecodeMallocs$$'
-tinygo-test tinygo-test-fast: TEST_OPTIONS_testing/quick := -stack-size=1MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_go/build/constraint = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=1MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_regexp = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=1MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_path/filepath = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=4MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_go/parser = $(HOST_TEST_STACK_SKIP_FLAG) -stack-size=256MB
-tinygo-test tinygo-test-fast: TEST_OPTIONS_encoding/xml = $(TEST_SKIP_FLAG) -short -stack-size=16MB
-tinygo-test: TEST_OPTIONS_archive/zip = $(TEST_SKIP_FLAG) -short
-tinygo-test: TEST_OPTIONS_index/suffixarray = $(TEST_SKIP_FLAG) -short
-tinygo-test: TEST_OPTIONS_net/netip := -skip='^TestAddrStringAllocs$$|^TestNoAllocs$$/^(Addr.IsGlobalUnicast|Addr.IsInterfaceLocalMulticast|Addr.IsLinkLocalMulticast|Addr.IsLinkLocalUnicast|Addr.IsPrivate)$$'
-tinygo-test: TEST_OPTIONS_io/fs := -stack-size=6MB
-ifeq ($(OS),Windows_NT)
-# TestWalkDir needs File.Chdir, which is a stub in src/os/file_windows.go.
-tinygo-test: TEST_OPTIONS_io/fs := -stack-size=8MB -skip='^TestWalkDir$$'
-endif
-tinygo-test: TEST_OPTIONS_internal/synctest = -skip='^(TestReflectFuncOf|TestChannelMovedOutOfBubble|TestTimerFromInsideBubble|TestWaitGroupMovedIntoBubble|TestWaitGroupMovedOutOfBubble|TestWaitGroupMovedBetweenBubblesWithNonZeroCount$(TEST_SYNCTEST_THREAD_LIMIT_SKIP))$$'
-tinygo-test: TEST_OPTIONS_testing/synctest := -skip='^(TestFatal|TestError|TestVerboseError|TestSkip|TestVerboseSkip|TestHelper|TestHTTPTransport100Continue)$$'
-tinygo-test-fast: HOST_TEST_STACK_SKIP_FLAG = $(TEST_SKIP_FLAG)
+.PHONY: tinygo-test tinygo-test-plan tinygo-test-fast tinygo-test-wasm
+.PHONY: tinygo-test-wasi tinygo-test-wasip1 tinygo-test-wasip1-fast
+.PHONY: tinygo-test-wasip2-slow tinygo-test-wasip2-fast tinygo-test-wasip2-sum-slow tinygo-test-wasip2-sum-fast
+.PHONY: tinygo-test-baremetal tinygo-bench tinygo-bench-fast
+.PHONY: tinygo-bench-wasip1 tinygo-bench-wasip1-fast tinygo-bench-wasip2 tinygo-bench-wasip2-fast
+.PHONY: report-stdlib-tests-pass
 
-tinygo-test-baremetal: TEST_OPTIONS_strconv := -skip='TestCountMallocs|TestAllocationsFromBytes'
-tinygo-test-baremetal: TEST_OPTIONS_unicode/utf16 := -skip='TestAllocationsDecode'
-tinygo-test-baremetal: TEST_OPTIONS_reflect := -skip='TestMapIterSet'
-
-# Explicit options replace default flags, even when empty.
-# https://www.gnu.org/software/make/manual/html_node/Origin-Function.html
-test-packages-with-options = $(foreach package,$(1),$(if $(filter undefined,$(origin TEST_OPTIONS_$(package))),,$(package)))
-
-define run-tinygo-test-package
-$(3) $(TINYGO) test $(2) $(TEST_OPTIONS_$(1)) $(1)
-
-endef
-
-define run-tinygo-tests
-$(if $(strip $(filter-out $(call test-packages-with-options,$(1)),$(1))),$(4) $(TINYGO) test $(2) $(3) $(filter-out $(call test-packages-with-options,$(1)),$(1)))
-$(foreach package,$(call test-packages-with-options,$(1)),$(call run-tinygo-test-package,$(package),$(2),$(4)))
-endef
-
-# https://go.dev/src/internal/synctest/synctest_test.go creates 100 x 100
-# goroutines, which can exceed macOS's thread limit with the threads scheduler.
-ifeq ($(uname),Darwin)
-TEST_SYNCTEST_THREAD_LIMIT_SKIP := |TestWaitGroupManyBubbles
-endif
-
-# Test known-working standard library packages.
-# TODO: parallelize, and only show failing tests (no implied -v flag).
-.PHONY: tinygo-test
 tinygo-test:
-	@# TestUnmarshalNestingLimit{Slice,Struct}: encoding/asn1 nesting limit added in
-	@# https://github.com/golang/go/commit/6a6d115f9a7422b2fa081ba6f567eefb4a099462
-	$(call run-tinygo-tests,$(TEST_PACKAGES_HOST) $(TEST_PACKAGES_SLOW) $(TEST_PACKAGES_HOST_FULL_ONLY),$(TEST_ADDITIONAL_FLAGS),$(TEST_SKIP_FLAG))
-	$(TINYGO) test $(TEST_ADDITIONAL_FLAGS) -run='^TestSynctestMarshal$$' encoding/json
+	$(call stdlib-test)
+tinygo-test-plan:
+	$(call stdlib-test,-plan)
 tinygo-test-fast:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_HOST),,$(TEST_SKIP_FLAG))
-tinygo-bench:
-	$(TINYGO) test -bench . $(TEST_PACKAGES_HOST) $(TEST_PACKAGES_SLOW)
-tinygo-bench-fast:
-	$(TINYGO) test -bench . $(TEST_PACKAGES_HOST)
-
-# Same thing, except for wasi rather than the current platform.
+	$(call stdlib-test,-mode=fast)
 tinygo-test-wasm:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_WASM),-target wasm,$(TEST_SKIP_FLAG))
+	$(call stdlib-test,-mode=fast,-target=wasm)
 tinygo-test-wasi:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW) ./tests/runtime_wasi,-target wasip1,$(TEST_SKIP_FLAG))
+	$(call stdlib-test,,-target=wasip1)
 tinygo-test-wasip1:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW) ./tests/runtime_wasi,,$(TEST_SKIP_FLAG),GOOS=wasip1 GOARCH=wasm)
+	$(call stdlib-test,-goos=wasip1 -goarch=wasm)
 tinygo-test-wasip1-fast:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_FAST_WASI) ./tests/runtime_wasi,-target=wasip1,$(TEST_SKIP_FLAG))
-
+	$(call stdlib-test,-mode=fast,-target=wasip1)
 tinygo-test-wasip2-slow:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_SLOW),-target=wasip2,$(TEST_SKIP_FLAG))
+	$(call stdlib-test,-mode=slow,-target=wasip2)
 tinygo-test-wasip2-fast:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_FAST_WASIP2) ./tests/runtime_wasi,-target=wasip2,$(TEST_SKIP_FLAG))
-
+	$(call stdlib-test,-mode=fast,-target=wasip2)
 tinygo-test-wasip2-sum-slow:
-	TINYGO=$(TINYGO) \
-	TARGET=wasip2 \
-	TESTOPTS="-x -work" \
-	PACKAGES="$(TEST_PACKAGES_SLOW)" \
-	gotestsum --raw-command -- ./tools/tgtestjson.sh
+	$(call stdlib-test-sum,slow)
 tinygo-test-wasip2-sum-fast:
-	TINYGO=$(TINYGO) \
-	TARGET=wasip2 \
-	TESTOPTS="-x -work" \
-	PACKAGES="$(TEST_PACKAGES_FAST)" \
-	gotestsum --raw-command -- ./tools/tgtestjson.sh
-tinygo-bench-wasip1:
-	$(TINYGO) test -target wasip1 -bench . $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW)
-tinygo-bench-wasip1-fast:
-	$(TINYGO) test -target wasip1 -bench . $(TEST_PACKAGES_FAST)
-
-tinygo-bench-wasip2:
-	$(TINYGO) test -target wasip2 -bench . $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW)
-tinygo-bench-wasip2-fast:
-	$(TINYGO) test -target wasip2 -bench . $(TEST_PACKAGES_FAST)
-
-# Run tests on riscv-qemu since that one provides a large amount of memory.
+	$(call stdlib-test-sum,fast)
 tinygo-test-baremetal:
-	$(call run-tinygo-tests,$(TEST_PACKAGES_BAREMETAL),-target riscv-qemu,$(TEST_SKIP_FLAG))
+	$(call stdlib-test,-mode=fast,-target=riscv-qemu)
+
+tinygo-bench:
+	$(call stdlib-test,-bench)
+tinygo-bench-fast:
+	$(call stdlib-test,-bench -mode=fast)
+tinygo-bench-wasip1:
+	$(call stdlib-test,-bench,-target=wasip1)
+tinygo-bench-wasip1-fast:
+	$(call stdlib-test,-bench -mode=fast,-target=wasip1)
+tinygo-bench-wasip2:
+	$(call stdlib-test,-bench,-target=wasip2)
+tinygo-bench-wasip2-fast:
+	$(call stdlib-test,-bench -mode=fast,-target=wasip2)
+
+report-stdlib-tests-pass:
+	@$(call stdlib-test,-report)
 
 # Test external packages in a large corpus.
 test-corpus:

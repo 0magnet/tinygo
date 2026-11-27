@@ -203,7 +203,6 @@ func (spi *SPI) initSPI(config SPIConfig) (err error) {
 	return err
 }
 
-//go:inline
 func (spi *SPI) setFormat(mode uint8) {
 	cpha := uint32(mode) & 1
 	cpol := uint32(mode>>1) & 1
@@ -215,14 +214,11 @@ func (spi *SPI) setFormat(mode uint8) {
 }
 
 // reset resets SPI and waits until reset is done.
-//
-//go:inline
 func (spi *SPI) reset() {
 	resetVal := spi.deinit()
 	unresetBlockWait(resetVal)
 }
 
-//go:inline
 func (spi *SPI) deinit() (resetVal uint32) {
 	switch spi.Bus {
 	case rp.SPI0:
@@ -236,15 +232,11 @@ func (spi *SPI) deinit() (resetVal uint32) {
 }
 
 // isWritable returns false if no space is available to write. True if a write is possible
-//
-//go:inline
 func (spi *SPI) isWritable() bool {
 	return spi.Bus.SSPSR.HasBits(rp.SPI0_SSPSR_TNF)
 }
 
 // isReadable returns true if a read is possible i.e. data is present
-//
-//go:inline
 func (spi *SPI) isReadable() bool {
 	return spi.Bus.SSPSR.HasBits(rp.SPI0_SSPSR_RNE)
 }
@@ -265,7 +257,6 @@ func (spi *SPI) PrintRegs() {
 	println("RIS:", ris)
 }
 
-//go:inline
 func (spi *SPI) isBusy() bool {
 	return spi.Bus.SSPSR.HasBits(rp.SPI0_SSPSR_BSY)
 }

@@ -5,6 +5,7 @@ package runtime
 import (
 	"device/stm32"
 	"machine"
+	_ "machine/usb/cdc"
 )
 
 const (
@@ -108,20 +109,4 @@ func initCLK() {
 	// verify system clock source is ready
 	for !stm32.RCC.CFGR.HasBits(SYSCLK_STAT_PLL) {
 	}
-}
-
-func putchar(c byte) {
-	machine.Serial.WriteByte(c)
-}
-
-func getchar() byte {
-	for machine.Serial.Buffered() == 0 {
-		Gosched()
-	}
-	v, _ := machine.Serial.ReadByte()
-	return v
-}
-
-func buffered() int {
-	return machine.Serial.Buffered()
 }

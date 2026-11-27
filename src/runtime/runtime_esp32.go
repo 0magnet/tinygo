@@ -3,16 +3,19 @@
 package runtime
 
 import (
-	"device"
 	"device/esp"
+	"device/xtensa"
 	"machine"
 	"unsafe"
 )
+
+const numCPU = 2
 
 // TIMG0 counts at 40MHz. The 80MHz timer clock is divided by 2.
 const (
 	timerDivider = 2
 	nsPerTick    = 25
+	timerConfig  = esp.TIMG_T0CONFIG_EN | esp.TIMG_T0CONFIG_INCREASE | timerDivider<<esp.TIMG_T0CONFIG_DIVIDER_Pos
 )
 
 // This is the function called on startup right after the stack pointer has been
@@ -25,9 +28,9 @@ func main() {
 	esp.RTC_CNTL.WDTWPROTECT.Set(0x050D83AA1)
 
 	// Disable both watchdog timers that are enabled by default on startup.
-	// Note that these watchdogs can be protected, but the ROM bootloader
-	// doesn't seem to protect them.
+	// Unlock TIMG0 first, see ESP32 TRM v5.9 section 11.3.3 Write Protection.
 	esp.RTC_CNTL.WDTCONFIG0.Set(0)
+	esp.TIMG0.WDTWPROTECT.Set(0x50D83AA1)
 	esp.TIMG0.WDTCONFIG0.Set(0)
 
 	// Switch SoC clock source to PLL (instead of the default which is XTAL).
@@ -53,6 +56,9 @@ func main() {
 	// faster.
 	clearbss()
 
+	// PSRAM needs the 80MHz APB clock set above. Only with the machine.psram tag.
+	startPSRAM()
+
 	// Initialize main system timer used for time.Now.
 	initTimer()
 
@@ -67,6 +73,7 @@ func main() {
 	// Initialize UART. This enables the UART RX interrupt, which must happen
 	// after interruptInit so the INTENABLE bit is not cleared again.
 	machine.InitSerial()
+	checkPSRAM()
 
 	// Initialize the heap, call main.main, etc.
 	run()
@@ -89,15 +96,10 @@ var _vector_table [0]uintptr
 // initially disabled.
 func interruptInit() {
 	// Disable all CPU interrupts while we configure.
-	device.AsmFull("wsr {zero}, INTENABLE", map[string]interface{}{
-		"zero": uintptr(0),
-	})
+	xtensa.WriteINTENABLE(0)
 
 	// Write the vector table address to VECBASE (SR 231).
-	vecbase := uintptr(unsafe.Pointer(&_vector_table))
-	device.AsmFull("wsr {vecbase}, VECBASE", map[string]interface{}{
-		"vecbase": vecbase,
-	})
+	xtensa.WriteVECBASE(uintptr(unsafe.Pointer(&_vector_table)))
 
 	// Clear PS.EXCM and PS.INTLEVEL so that level-1 interrupts can fire.
 	// The ROM bootloader leaves PS.EXCM=1 (exception mode), which masks
@@ -109,13 +111,8 @@ func interruptInit() {
 	// the User exception vector at VECBASE+0x340, where our handler lives.
 	// With PS.UM=0 (the ROM default), they would go to the Kernel exception
 	// vector at VECBASE+0x300 which is a reset stub.
-	ps := uintptr(device.AsmFull("rsr {}, PS", nil))
+	ps := xtensa.ReadPS()
 	ps &^= 0x1F // clear INTLEVEL (bits 0-3) and EXCM (bit 4)
 	ps |= 0x20  // set PS.UM (bit 5) — use User exception vector
-	device.AsmFull("wsr {ps}, PS", map[string]interface{}{
-		"ps": ps,
-	})
-
-	// Synchronize pipeline after writing special registers.
-	device.Asm("rsync")
+	xtensa.EnableInterrupts(ps)
 }

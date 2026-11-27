@@ -16,6 +16,17 @@ const deviceName = esp.Device
 
 const peripheralClock = 80000000 // 80MHz
 
+// CurrentCore returns the core number the call was made from.
+func CurrentCore() int {
+	return int(currentCPU())
+}
+
+//go:linkname currentCPU runtime.currentCPU
+func currentCPU() uint32
+
+// NumCores returns number of cores available on the device.
+func NumCores() int { return 2 }
+
 // CPUFrequency returns the current CPU frequency of the chip.
 // Currently it is a fixed frequency but it may allow changing in the future.
 func CPUFrequency() uint32 {
@@ -541,6 +552,9 @@ func (uart *UART) Configure(config UARTConfig) error {
 			config.RX = 16
 		}
 	}
+	if psramPin(config.TX) || psramPin(config.RX) || psramPin(config.RTS) || psramPin(config.CTS) {
+		return errPinUsedByPSRAM
+	}
 
 	uart.Bus.CLKDIV.Set(peripheralClock / config.BaudRate)
 
@@ -837,7 +851,7 @@ func (spi *SPI) Tx(w, r []byte) error {
 		}
 
 		// Fill tx buffer.
-		transferWords := (*[16]volatile.Register32)(unsafe.Pointer(uintptr(unsafe.Pointer(&spi.Bus.W0))))
+		transferWords := (*[16]volatile.Register32)(unsafe.Pointer(&spi.Bus.W0))
 		if len(w) >= 64 {
 			// We can fill the entire 64-byte transfer buffer with data.
 			// This loop is slightly faster than the loop below.

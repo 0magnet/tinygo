@@ -5,8 +5,6 @@ package runtime
 import (
 	"device/riscv"
 	"internal/task"
-	"math/bits"
-	"runtime/interrupt"
 	"runtime/volatile"
 	"sync/atomic"
 	"unsafe"
@@ -42,9 +40,6 @@ func main() {
 		// handles a GC pause request that may have arrived with it.
 		riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
 
-		// Also enable timer interrupts, for sleepTicksMulticore.
-		riscv.MIE.SetBits(riscv.MIE_MTIE)
-
 		// The stop-the-world interrupt must be enabled before the
 		// secondary core is allowed to enter the scheduler.
 		waitForSecondaryCoresReady()
@@ -68,18 +63,8 @@ func main() {
 		}
 	}
 
-	// Enable global interrupts now that they've been set up.
-	// This is currently only for timer interrupts.
+	// Enable interrupts, for GC pause and exit requests from other harts.
 	riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
-
-	// Set all MTIMECMP registers to a value that clears the MTIP bit in MIP.
-	// If we don't do this, the wfi instruction won't work as expected.
-	for i := 0; i < numCPU; i++ {
-		aclintMTIMECMP[i].Set(0xffff_ffff_ffff_ffff)
-	}
-
-	// Enable timer interrupts on hart 0.
-	riscv.MIE.SetBits(riscv.MIE_MTIE)
 
 	run()
 	exit(0)
@@ -110,21 +95,6 @@ func handleInterrupt() {
 			}
 			if exitCodePlusOne.Load() != 0 {
 				exitNow(exitCodePlusOne.Load() - 1)
-			}
-			checkpoint := &schedulerWaitCheckpoints[hartID]
-			// schedulerLock prevents this flag from being set before the
-			// checkpoint is saved.
-			if schedulerWakePending[hartID].Swap(0) != 0 && checkpoint.Saved() {
-				riscv.MCAUSE.Set(0)
-				checkpoint.Jump()
-			}
-		case riscv.MachineTimerInterrupt:
-			// Raise MTIMECMP so MTIP goes low, also after a stale wakeup.
-			// See RISC-V Privileged ISA, section 3.2.1.
-			aclintMTIMECMP[hartID].Set(0xffff_ffff_ffff_ffff)
-			if uint32(sleepingCore) == hartID && sleepCheckpoint.Saved() {
-				riscv.MCAUSE.Set(0)
-				sleepCheckpoint.Jump()
 			}
 		default:
 			runtimeFatal("unknown interrupt")
@@ -242,85 +212,6 @@ func nanosecondsToTicks(ns int64) timeUnit {
 	return timeUnit(ns / 100) // one tick is 100ns
 }
 
-var sleepCheckpoint interrupt.Checkpoint
-
-func sleepTicks(d timeUnit) {
-	hartID := currentCPU()
-	if sleepCheckpoint.Save() {
-		sleepingCore = uint8(hartID)
-
-		// Configure timeout.
-		target := uint64(ticks() + d)
-		aclintMTIMECMP[hartID].Set(target)
-
-		// Wait for the interrupt to happen.
-		for {
-			riscv.Asm("wfi")
-		}
-	}
-
-	// We got awoken.
-	sleepingCore = 0xff
-}
-
-// Currently sleeping core, or 0xff.
-// Written with the scheduler lock held, read without it by the timer interrupt.
-var sleepingCore uint8 = 0xff
-
-// Return whether another core is sleeping.
-// May only be called with the scheduler lock held.
-func hasSleepingCore() bool {
-	return sleepingCore != 0xff
-}
-
-// Almost identical to sleepTicks, except that it will unlock/lock the scheduler
-// while sleeping and is interruptible by interruptSleepTicksMulticore.
-// This may only be called with the scheduler lock held.
-func sleepTicksMulticore(d timeUnit) {
-	// Disable interrupts while configuring sleep.
-	// This is needed because unlocking the scheduler and setting the timer
-	// interrupt need to happen atomically.
-	riscv.MSTATUS.ClearBits(riscv.MSTATUS_MIE)
-
-	hartID := currentCPU()
-	if sleepCheckpoint.Save() {
-		sleepingCore = uint8(hartID)
-
-		// Configure timeout.
-		target := uint64(ticks() + d)
-		aclintMTIMECMP[hartID].Set(target)
-
-		// Unlock, now that the timeout has been set (so that
-		// interruptSleepTicksMulticore will see the correct wakeup time).
-		schedulerLock.Unlock()
-
-		// Sleep has been configured, interrupts may happen again.
-		riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
-
-		// Wait for the interrupt to happen.
-		for {
-			riscv.Asm("wfi")
-		}
-	}
-	// We got awoken.
-
-	// Lock again, after we finished sleeping.
-	schedulerLock.Lock()
-	sleepingCore = 0xff
-}
-
-// Interrupt an ongoing call to sleepTicksMulticore on another core.
-// This may only be called with the scheduler lock held.
-func interruptSleepTicksMulticore(wakeup timeUnit) {
-	if sleepingCore != 0xff {
-		// Immediately exit the sleep.
-		old := aclintMTIMECMP[sleepingCore].Get()
-		if uint64(wakeup) < old {
-			aclintMTIMECMP[sleepingCore].Set(uint64(wakeup))
-		}
-	}
-}
-
 func ticks() timeUnit {
 	// Combining the low bits and the high bits (at a rate of 100ns per tick)
 	// yields a time span of over 59930 years without counter rollover.
@@ -355,54 +246,10 @@ var (
 		low  volatile.Register32
 		high volatile.Register32
 	})(unsafe.Pointer(uintptr(0x0200_bff8)))
-	aclintMTIMECMP = (*[4095]volatile.Register64)(unsafe.Pointer(uintptr(0x0200_4000)))
-	aclintMSWI     = (*struct {
+	aclintMSWI = (*struct {
 		MSIP [4095]volatile.Register32
 	})(unsafe.Pointer(uintptr(0x0200_0000)))
 )
-
-func putchar(c byte) {
-	stdoutWrite.Set(uint8(c))
-}
-
-func getchar() byte {
-	// dummy, TODO
-	return 0
-}
-
-func buffered() int {
-	// dummy, TODO
-	return 0
-}
-
-// Define the various spinlocks needed by the runtime.
-var (
-	schedulerLock schedulerSpinLock
-	futexLock     spinLock
-	atomicsLock   spinLock
-	printLock     spinLock
-)
-
-type spinLock struct {
-	atomic.Uint32
-}
-
-func (l *spinLock) Lock() {
-	// Try to replace 0 with 1. Once we succeed, the lock has been acquired.
-	for !l.Uint32.CompareAndSwap(0, 1) {
-		spinLoopWait()
-	}
-}
-
-func (l *spinLock) Unlock() {
-	// Safety check: the spinlock should have been locked.
-	if schedulerAsserts && l.Uint32.Load() != 1 {
-		runtimeFatal("unlock of unlocked spinlock")
-	}
-
-	// Unlock the lock. Simply write 0, because we already know it is locked.
-	l.Uint32.Store(0)
-}
 
 // Hint to the CPU that this core is just waiting, and the core can go into a
 // lower energy state.
@@ -412,90 +259,12 @@ func spinLoopWait() {
 	riscv.Asm("pause")
 }
 
-func currentCPU() uint32 {
-	return uint32(riscv.MHARTID.Get())
-}
-
 func startSecondaryCores() {
 	// Start all the other cores besides hart 0.
 	for hart := 1; hart < numCPU; hart++ {
 		// Signal the given hart it is ready to start using a software
 		// interrupt.
 		signalHart(uint32(hart))
-	}
-}
-
-// Bitset of harts that are currently sleeping in schedulerUnlockAndWait.
-// This supports up to 8 harts.
-// This variable may only be accessed with the scheduler lock held.
-var sleepingHarts uint8
-
-// Checkpoints for cores waiting for runnable tasks.
-var schedulerWaitCheckpoints [numCPU]interrupt.Checkpoint
-
-// State used to distinguish scheduler wakeups from other software interrupts.
-var schedulerWakePending [numCPU]atomic.Uint32
-
-// Put the scheduler to sleep, since there are no tasks to run.
-// This will unlock the scheduler lock, and must be called with the scheduler
-// lock held.
-func schedulerUnlockAndWait() {
-	hartID := currentCPU()
-
-	// Mark the current hart as sleeping.
-	sleepingHarts |= uint8(1 << hartID)
-
-	// If this is the last core awake and is going to sleep, the scheduler is
-	// deadlocked.
-	// We can do this check since this is not baremetal: there won't be any
-	// external interrupts that might unblock a goroutine.
-	if sleepingHarts == (1<<numCPU)-1 {
-		runtimeFatal("all cores are sleeping - deadlock!")
-	}
-
-	// Need to disable interrupts while saving the checkpoint, otherwise if the
-	// software interrupt happens earlier for another reason (e.g. a GC cycle)
-	// it will see an incomplete checkpoint and the schedulerLock might not be
-	// unlocked yet. That will lead to an invalid state.
-	riscv.MSTATUS.ClearBits(riscv.MSTATUS_MIE)
-	if schedulerWaitCheckpoints[hartID].Save() {
-		schedulerLock.Unlock()
-		riscv.MSTATUS.SetBits(riscv.MSTATUS_MIE)
-
-		// Wait until we get awoken :)
-		for {
-			riscv.Asm("wfi")
-		}
-	}
-
-	// We got awoken again. We need to lock the scheduler again before
-	// returning.
-	schedulerLock.Lock()
-}
-
-// Wake another core, if one is sleeping. Must be called with the scheduler lock
-// held.
-func schedulerWake() {
-	// Look up the lowest-numbered hart that is sleeping.
-	// Returns 8 if there are no sleeping harts.
-	hart := bits.TrailingZeros8(sleepingHarts)
-
-	if hart < 8 {
-		// There is a sleeping hart. Wake it.
-		schedulerWakeCore(uint32(hart))
-	}
-}
-
-// Wake the given core if it is sleeping. Must be called with the scheduler lock
-// held.
-func schedulerWakeCore(hart uint32) {
-	if sleepingHarts&(1<<hart) != 0 {
-		// Clear the sleeping bit before sending the wakeup.
-		sleepingHarts &^= 1 << hart
-		schedulerWakePending[hart].Store(1)
-		signalHart(hart)
-	} else if uint32(sleepingCore) == hart {
-		interruptSleepTicksMulticore(0)
 	}
 }
 

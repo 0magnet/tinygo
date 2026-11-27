@@ -193,6 +193,7 @@ func TestCompiler(t *testing.T) {
 		{"pointer.go", "", ""},
 		{"slice.go", "", ""},
 		{"rangeloop.go", "", ""},
+		{"clearloop.go", "", ""},
 		{"string.go", "", ""},
 		{"float.go", "", ""},
 		{"interface.go", "", ""},
@@ -211,6 +212,7 @@ func TestCompiler(t *testing.T) {
 		{"lenrange.go", "", ""},
 		{"lenrange.go", "arduino", ""},
 		{"lenrange-wasmexport.go", "", ""},
+		{"volatile.go", "", ""},
 	}
 	if goMinor >= 27 {
 		tests = append(tests, testCase{"go1.27.go", "", ""})
@@ -762,7 +764,7 @@ func TestValidateWasmFunctionParameters(t *testing.T) {
 			defer ctx.Dispose()
 			mod := ctx.NewModule("test")
 			defer mod.Dispose()
-			builder := ctx.NewBuilder()
+			builder := mod.NewBuilder()
 			defer builder.Dispose()
 
 			paramTypes := make([]llvm.Type, test.params)

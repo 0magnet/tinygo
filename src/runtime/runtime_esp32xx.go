@@ -1,10 +1,9 @@
-//go:build esp32 || esp32c3 || esp32c6 || esp32h2 || esp32p4
+//go:build esp32 || esp32s3 || esp32c3 || esp32c6 || esp32h2 || esp32p4
 
 package runtime
 
 import (
 	"device/esp"
-	"machine"
 	"unsafe"
 )
 
@@ -23,8 +22,10 @@ func initTimer() {
 	//   EN:       Enable the timer.
 	//   INCREASE: Count up every tick (as opposed to counting down).
 	//   DIVIDER:  16-bit prescaler. Each chip sets timerDivider.
+	// Each chip sets timerConfig, because the esp32s3 SVD names the fields
+	// TIMG_TCONFIG_* where the other chips use TIMG_T0CONFIG_*.
 	// esp.TIMG0.T0CONFIG.Set(0 << esp.TIMG_T0CONFIG_T0_EN_Pos)
-	esp.TIMG0.T0CONFIG.Set(esp.TIMG_T0CONFIG_EN | esp.TIMG_T0CONFIG_INCREASE | timerDivider<<esp.TIMG_T0CONFIG_DIVIDER_Pos)
+	esp.TIMG0.T0CONFIG.Set(timerConfig)
 	// esp.TIMG0.T0CONFIG.Set(1 << esp.TIMG_T0CONFIG_T0_DIVCNT_RST_Pos)
 	// esp.TIMG0.T0CONFIG.Set(esp.TIMG_T0CONFIG_T0_EN)
 
@@ -35,13 +36,18 @@ func initTimer() {
 }
 
 func ticks() timeUnit {
+	// A latch from the other core between the LO and HI reads would mix two
+	// captures, so the latch and the reads are done under lockTicks.
+	mask := lockTicks()
 	// Latch the counter into LO and HI, and wait until the latch is done.
 	// See timer_ll_trigger_soft_capture in ESP-IDF esp_hal_timg.
 	esp.TIMG0.T0UPDATE.Set(1)
 	for esp.TIMG0.T0UPDATE.Get() != 0 {
 	}
 	// Then read the two 32-bit parts of the timer.
-	return timeUnit(uint64(esp.TIMG0.T0LO.Get()) | uint64(esp.TIMG0.T0HI.Get())<<32)
+	t := timeUnit(uint64(esp.TIMG0.T0LO.Get()) | uint64(esp.TIMG0.T0HI.Get())<<32)
+	unlockTicks(mask)
+	return t
 }
 
 func nanosecondsToTicks(ns int64) timeUnit {
@@ -53,20 +59,4 @@ func nanosecondsToTicks(ns int64) timeUnit {
 func ticksToNanoseconds(ticks timeUnit) int64 {
 	// See nanosecondsToTicks.
 	return int64(ticks) * nsPerTick
-}
-
-func putchar(c byte) {
-	machine.Serial.WriteByte(c)
-}
-
-func getchar() byte {
-	for machine.Serial.Buffered() == 0 {
-		Gosched()
-	}
-	v, _ := machine.Serial.ReadByte()
-	return v
-}
-
-func buffered() int {
-	return machine.Serial.Buffered()
 }

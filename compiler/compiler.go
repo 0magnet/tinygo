@@ -376,7 +376,7 @@ func CompilePackage(moduleName string, pkg *loader.Package, ssaPkg *ssa.Package,
 	}
 
 	// Compile all functions, methods, and global variables in this package.
-	irbuilder := c.ctx.NewBuilder()
+	irbuilder := c.mod.NewBuilder()
 	defer irbuilder.Dispose()
 	c.createPackage(irbuilder, ssaPkg)
 
@@ -973,7 +973,10 @@ func (c *context) createPackage(irbuilder llvm.Builder, pkg *ssa.Package) {
 						continue
 					}
 					if fn.Blocks == nil {
-						continue // external function
+						// Try to define this as an intrinsic method, or leave it
+						// as an external function.
+						newBuilder(c, irbuilder, fn).defineIntrinsicFunction()
+						continue
 					}
 					if fn.Synthetic != "" && fn.Synthetic != "package initializer" {
 						// This function is a kind of wrapper function (created by
@@ -1064,14 +1067,10 @@ func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files
 		}
 		file := files[0]
 		bufferValue := c.ctx.ConstString(string(file.Data), false)
-		bufferGlobal := llvm.AddGlobal(c.mod, bufferValue.Type(), c.pkg.Path()+"$embedslice")
-		bufferGlobal.SetInitializer(bufferValue)
-		bufferGlobal.SetLinkage(llvm.InternalLinkage)
-		bufferGlobal.SetAlignment(1)
-		slicePtr := llvm.ConstInBoundsGEP(bufferValue.Type(), bufferGlobal, []llvm.Value{
-			c.uintptrZero,
-			c.uintptrZero,
-		})
+		slicePtr := llvm.AddGlobal(c.mod, bufferValue.Type(), c.pkg.Path()+"$embedslice")
+		slicePtr.SetInitializer(bufferValue)
+		slicePtr.SetLinkage(llvm.InternalLinkage)
+		slicePtr.SetAlignment(1)
 		sliceLen := llvm.ConstInt(c.uintptrType, file.Size, false)
 		sliceObj := c.ctx.ConstStruct([]llvm.Value{slicePtr, sliceLen, sliceLen}, false)
 		global.SetInitializer(sliceObj)
@@ -1087,7 +1086,7 @@ func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files
 				LocalToUnit: true,
 				Expr:        c.dibuilder.CreateExpression(nil),
 			})
-			bufferGlobal.AddMetadata(0, diglobal)
+			slicePtr.AddMetadata(0, diglobal)
 		}
 
 	case *types.Struct:
@@ -1171,12 +1170,8 @@ func (c *context) createEmbedGlobal(member *ssa.Global, global llvm.Value, files
 		// Create the slice object itself.
 		// Because embed.FS refers to it as *[]embed.file instead of a plain
 		// []embed.file, we have to store this as a global.
-		slicePtr := llvm.ConstInBoundsGEP(sliceDataInitializer.Type(), sliceDataGlobal, []llvm.Value{
-			c.uintptrZero,
-			c.uintptrZero,
-		})
 		sliceLen := llvm.ConstInt(c.uintptrType, uint64(len(fileStructs)), false)
-		sliceInitializer := c.ctx.ConstStruct([]llvm.Value{slicePtr, sliceLen, sliceLen}, false)
+		sliceInitializer := c.ctx.ConstStruct([]llvm.Value{sliceDataGlobal, sliceLen, sliceLen}, false)
 		sliceGlobal := llvm.AddGlobal(c.mod, sliceInitializer.Type(), c.pkg.Path()+"$embedfsslice")
 		sliceGlobal.SetInitializer(sliceInitializer)
 		sliceGlobal.SetLinkage(llvm.InternalLinkage)
@@ -1214,12 +1209,8 @@ func (c *context) getEmbedFileString(file *loader.EmbedFile) llvm.Value {
 	if dataGlobal.IsNil() {
 		dataGlobal = llvm.AddGlobal(c.mod, dataGlobalType, dataGlobalName)
 	}
-	strPtr := llvm.ConstInBoundsGEP(dataGlobalType, dataGlobal, []llvm.Value{
-		c.uintptrZero,
-		c.uintptrZero,
-	})
 	strLen := llvm.ConstInt(c.uintptrType, file.Size, false)
-	return llvm.ConstNamedStruct(c.getLLVMRuntimeType("_string"), []llvm.Value{strPtr, strLen})
+	return llvm.ConstNamedStruct(c.getLLVMRuntimeType("_string"), []llvm.Value{dataGlobal, strLen})
 }
 
 // Start defining a function so that it can be filled with instructions: load
@@ -1452,6 +1443,9 @@ func (b *builder) createFunction() {
 		return
 	}
 
+	// Find loops that zero a slice, to be replaced with a memset.
+	clearLoops := findClearLoops(b.fn)
+
 	// Fill blocks with instructions.
 	b.loweringBody = true
 	for _, block := range b.fn.DomPreorder() {
@@ -1461,6 +1455,10 @@ func (b *builder) createFunction() {
 		b.currentBlock = block
 		b.currentBlockInfo = &b.blockInfo[block.Index]
 		b.SetInsertPointAtEnd(b.currentBlockInfo.entry)
+		if loop := clearLoops[block]; loop != nil {
+			b.createClearLoop(loop, block)
+			continue
+		}
 		for _, instr := range block.Instrs {
 			if instr, ok := instr.(*ssa.DebugRef); ok {
 				if !b.Debug {
@@ -1530,7 +1528,7 @@ func (b *builder) createFunction() {
 	}
 
 	// Resolve phi nodes
-	phiBuilder := b.ctx.NewBuilder()
+	phiBuilder := b.mod.NewBuilder()
 	originalBuilder := b.Builder
 	b.Builder = phiBuilder
 	for _, phi := range b.phis {
@@ -2259,30 +2257,7 @@ func (b *builder) createBuiltin(argTypes []types.Type, argValues []llvm.Value, c
 		value := argValues[0]
 		switch typ := argTypes[0].Underlying().(type) {
 		case *types.Slice:
-			elementType := b.getLLVMType(typ.Elem())
-			elementSize := b.targetData.TypeAllocSize(elementType)
-			elementAlign := b.targetData.ABITypeAlignment(elementType)
-
-			// The pointer to the data to be cleared.
-			llvmBuf := b.CreateExtractValue(value, 0, "buf")
-
-			// The length (in bytes) to be cleared.
-			llvmLen := b.CreateExtractValue(value, 1, "len")
-			llvmLen = b.CreateMul(llvmLen, llvm.ConstInt(llvmLen.Type(), elementSize, false), "")
-
-			// Do the clear operation using the LLVM memset builtin.
-			// This is also correct for nil slices: in those cases, len will be
-			// 0 which means the memset call is a no-op (according to the LLVM
-			// LangRef).
-			memset := b.getMemsetFunc()
-			call := b.createCall(memset.GlobalValueType(), memset, []llvm.Value{
-				llvmBuf,                       // dest
-				llvm.ConstInt(b.i8, 0, false), // val
-				llvmLen,                       // len
-				b.i1False,                     // isVolatile
-			}, "")
-			call.AddCallSiteAttribute(1, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("align"), uint64(elementAlign)))
-
+			b.createSliceClear(value, typ.Elem())
 			return llvm.Value{}, nil
 		case *types.Map:
 			m := argValues[0]
@@ -2566,6 +2541,34 @@ func (b *builder) createBuiltin(argTypes []types.Type, argValues []llvm.Value, c
 	}
 }
 
+// createSliceClear zeroes all elements of the given slice value, like the
+// clear builtin does for slices.
+func (b *builder) createSliceClear(value llvm.Value, elemType types.Type) {
+	elementType := b.getLLVMType(elemType)
+	elementSize := b.targetData.TypeAllocSize(elementType)
+	elementAlign := b.targetData.ABITypeAlignment(elementType)
+
+	// The pointer to the data to be cleared.
+	llvmBuf := b.CreateExtractValue(value, 0, "buf")
+
+	// The length (in bytes) to be cleared.
+	llvmLen := b.CreateExtractValue(value, 1, "len")
+	llvmLen = b.CreateMul(llvmLen, llvm.ConstInt(llvmLen.Type(), elementSize, false), "")
+
+	// Do the clear operation using the LLVM memset builtin.
+	// This is also correct for nil slices: in those cases, len will be
+	// 0 which means the memset call is a no-op (according to the LLVM
+	// LangRef).
+	memset := b.getMemsetFunc()
+	call := b.createCall(memset.GlobalValueType(), memset, []llvm.Value{
+		llvmBuf,                       // dest
+		llvm.ConstInt(b.i8, 0, false), // val
+		llvmLen,                       // len
+		b.i1False,                     // isVolatile
+	}, "")
+	call.AddCallSiteAttribute(1, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("align"), uint64(elementAlign)))
+}
+
 // createFunctionCall lowers a Go SSA call instruction (to a simple function,
 // closure, function pointer, builtin, method, etc.) to LLVM IR, usually a call
 // instruction.
@@ -2590,10 +2593,12 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			return b.emitSV64Call(instr.Args, getPos(instr))
 		case strings.HasPrefix(name, "(device/riscv.CSR)."):
 			return b.emitCSROperation(instr)
-		case (strings.HasPrefix(name, "syscall.Syscall") || strings.HasPrefix(name, "syscall.RawSyscall") || strings.HasPrefix(name, "golang.org/x/sys/unix.Syscall") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscall")) && name != "syscall.SyscallN":
-			if b.GOOS != "darwin" {
-				return b.createSyscall(instr)
+		case strings.HasPrefix(name, "runtime/volatile.") || strings.HasPrefix(name, "(*runtime/volatile."):
+			if val, ok, err := b.createVolatileCall(instr, name); ok {
+				return val, err
 			}
+		case (strings.HasPrefix(name, "syscall.Syscall") || strings.HasPrefix(name, "syscall.RawSyscall") || strings.HasPrefix(name, "golang.org/x/sys/unix.Syscall") || strings.HasPrefix(name, "golang.org/x/sys/unix.RawSyscall")) && name != "syscall.SyscallN":
+			return b.createSyscall(instr)
 		case name == "syscall.syscalln":
 			if b.GOOS == "windows" {
 				return b.createSyscalln(instr)
@@ -2619,8 +2624,6 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 		case name == "runtime.exportedFuncPtr":
 			_, ptr := b.getFunction(instr.Args[0].(*ssa.Function))
 			return b.CreatePtrToInt(ptr, b.uintptrType, ""), nil
-		case name == "(*runtime/interrupt.Checkpoint).Save":
-			return b.createInterruptCheckpoint(instr.Args[0]), nil
 		case name == "internal/abi.FuncPCABI0":
 			retval := b.createDarwinFuncPCABI0Call(instr)
 			if !retval.IsNil() {
@@ -3978,8 +3981,7 @@ func (c *context) createConst(expr *ssa.Const, pos token.Pos) llvm.Value {
 					})
 					global.AddMetadata(0, diglobal)
 				}
-				zero := llvm.ConstInt(c.i32, 0, false)
-				strPtr = llvm.ConstInBoundsGEP(globalType, global, []llvm.Value{zero, zero})
+				strPtr = global
 			} else {
 				strPtr = c.dataPtrNull
 			}
@@ -4152,9 +4154,9 @@ func (b *builder) createConvert(typeFrom, typeTo types.Type, value llvm.Value, p
 			var significandBits int
 			switch typeFrom.Kind() {
 			case types.Float32:
-				significandBits = 23
+				significandBits = 24
 			case types.Float64:
-				significandBits = 52
+				significandBits = 53
 			}
 			if typeTo.Info()&types.IsUnsigned != 0 { // if unsigned
 				// Select the maximum value for this unsigned integer type.

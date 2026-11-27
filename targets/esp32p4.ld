@@ -25,9 +25,8 @@
  * This avoids the ROM's watchdog-triggering behaviour of memcpy-ing large
  * flash-mapped segments to their VMA in the flash cache address space.
  *
- * Unlike the ESP32-C6 which has separate IROM (0x42000000) and DROM
- * (0x42800000) address ranges, the ESP32-P4 uses a unified address space at
- * 0x40000000 for both. We use a single FLASH memory region to avoid lld
+ * Like the ESP32-C6, the ESP32-P4 uses one address space for IROM and DROM,
+ * here at 0x40000000. We use a single FLASH memory region to avoid lld
  * virtual-address-overlap errors.
  */
 
@@ -70,6 +69,9 @@ SECTIONS
         . = ALIGN(16);
         . += _stack_size;
         _stack_top = .;
+        . = ALIGN(16);
+        . += DEFINED(__num_stacks) && __num_stacks >= 2 ? _stack_size : 0;
+        _stack1_top = .;
     } >SRAM
 
     /* Mutable global variables. This data (in the SRAM segment) is initialized
@@ -207,6 +209,7 @@ _stack_size = 32K;
  * Source: ESP-IDF components/esp_rom/esp32p4/ld/esp32p4.rom.ld
  */
 PROVIDE( ets_delay_us = 0x4fc0003c );
+PROVIDE( ets_set_appcpu_boot_addr = 0x4fc000a8 );
 
 /* Cache / MMU ROM functions called from call_start_cpu0.
  * Source: ESP-IDF components/esp_rom/esp32p4/ld/esp32p4.rom.ld

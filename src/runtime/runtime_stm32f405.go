@@ -5,6 +5,7 @@ package runtime
 import (
 	"device/stm32"
 	"machine"
+	_ "machine/usb/cdc"
 )
 
 const (
@@ -157,20 +158,4 @@ func initCOM() {
 	if machine.NUM_UART_INTERFACES > 0 {
 		machine.InitSerial()
 	}
-}
-
-func putchar(c byte) {
-	machine.Serial.WriteByte(c)
-}
-
-func getchar() byte {
-	for machine.Serial.Buffered() == 0 {
-		Gosched()
-	}
-	v, _ := machine.Serial.ReadByte()
-	return v
-}
-
-func buffered() int {
-	return machine.Serial.Buffered()
 }

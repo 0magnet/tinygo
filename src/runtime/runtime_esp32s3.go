@@ -3,11 +3,22 @@
 package runtime
 
 import (
-	"device"
 	"device/esp"
+	"device/xtensa"
 	"machine"
+	"runtime/interrupt"
+	"runtime/volatile"
 	"unsafe"
 )
+
+// TIMG0 counts at 40MHz. The 80MHz APB clock is divided by 2.
+const (
+	timerDivider = 2
+	nsPerTick    = 25
+	timerConfig  = esp.TIMG_TCONFIG_EN | esp.TIMG_TCONFIG_INCREASE | timerDivider<<esp.TIMG_TCONFIG_DIVIDER_Pos
+)
+
+const numCPU = 2
 
 // This is the function called on startup after the flash (IROM/DROM) is
 // initialized and the stack pointer has been set.
@@ -104,15 +115,10 @@ func init() {
 // initially disabled.
 func interruptInit() {
 	// Disable all CPU interrupts while we configure.
-	device.AsmFull("wsr {zero}, INTENABLE", map[string]interface{}{
-		"zero": uintptr(0),
-	})
+	xtensa.WriteINTENABLE(0)
 
 	// Write the vector table address to VECBASE (SR 231).
-	vecbase := uintptr(unsafe.Pointer(&_vector_table))
-	device.AsmFull("wsr {vecbase}, VECBASE", map[string]interface{}{
-		"vecbase": vecbase,
-	})
+	xtensa.WriteVECBASE(uintptr(unsafe.Pointer(&_vector_table)))
 
 	// Clear PS.EXCM and PS.INTLEVEL so that level-1 interrupts can fire.
 	// The ROM bootloader leaves PS.EXCM=1 (exception mode), which masks
@@ -124,15 +130,10 @@ func interruptInit() {
 	// the User exception vector at VECBASE+0x340, where our handler lives.
 	// With PS.UM=0 (the ROM default), they would go to the Kernel exception
 	// vector at VECBASE+0x300 which is an infinite-loop stub.
-	ps := uintptr(device.AsmFull("rsr {}, PS", nil))
+	ps := xtensa.ReadPS()
 	ps &^= 0x1F // clear INTLEVEL (bits 0-3) and EXCM (bit 4)
 	ps |= 0x20  // set PS.UM (bit 5) — use User exception vector
-	device.AsmFull("wsr {ps}, PS", map[string]interface{}{
-		"ps": ps,
-	})
-
-	// Synchronize pipeline after writing special registers.
-	device.Asm("rsync")
+	xtensa.EnableInterrupts(ps)
 }
 
 //go:extern _vector_table
@@ -143,3 +144,66 @@ var _sbss [0]byte
 
 //go:extern _ebss
 var _ebss [0]byte
+
+// CPU interrupt number used for the TIMG0 timer alarm.
+const timerAlarmCPUInterrupt = 9
+
+var interruptPending [numCPU]volatile.Register8
+
+func signalInterrupt() {
+	interruptPending[currentCPU()].Set(1)
+}
+
+var timerAlarmInterrupt interrupt.Interrupt
+
+// timerAlarmHandler clears the timer interrupt at the peripheral level
+// and disables INT_ENA to prevent level-triggered re-assertion.
+func timerAlarmHandler(interrupt.Interrupt) {
+	esp.TIMG0.INT_ENA_TIMERS.ClearBits(1)
+	esp.TIMG0.INT_CLR_TIMERS.Set(1)
+}
+
+// initTimerInterrupt routes the TIMG0 timer 0 alarm interrupt to a CPU
+// interrupt and registers a handler that clears the alarm flag.
+func initTimerInterrupt() {
+	// Clear any stale timer interrupt before enabling.
+	esp.TIMG0.INT_CLR_TIMERS.Set(1)
+
+	// Map the TIMG0 T0 peripheral interrupt to a CPU interrupt line.
+	esp.INTERRUPT_CORE0.SetTG_T0_INT_MAP(timerAlarmCPUInterrupt)
+
+	// Register the interrupt handler and enable it once.
+	timerAlarmInterrupt = interrupt.New(timerAlarmCPUInterrupt, timerAlarmHandler)
+	timerAlarmInterrupt.Enable()
+}
+
+// sleepTicks spins until the given number of ticks have elapsed, using the
+// TIMG0 alarm interrupt to avoid busy-waiting for the entire duration.
+func sleepTicks(d timeUnit) {
+	printlock()
+	machine.FlushSerial()
+	printunlock()
+	core := currentCPU()
+	target := ticks() + d
+	for ticks() < target {
+		// Set the alarm to fire at the target tick count.
+		interruptPending[core].Set(0)
+
+		esp.TIMG0.T0ALARMLO.Set(uint32(target))
+		esp.TIMG0.T0ALARMHI.Set(uint32(target >> 32))
+
+		// Enable the alarm (auto-clears when alarm fires).
+		esp.TIMG0.T0CONFIG.SetBits(esp.TIMG_TCONFIG_ALARM_EN)
+
+		// Re-enable the timer interrupt (handler disables INT_ENA).
+		esp.TIMG0.INT_CLR_TIMERS.Set(1)
+		esp.TIMG0.INT_ENA_TIMERS.SetBits(1)
+
+		// Wait for any interrupt (timer alarm or other) or timeout.
+		for interruptPending[core].Get() == 0 {
+			if ticks() >= target || sleepWoken(core) {
+				return
+			}
+		}
+	}
+}

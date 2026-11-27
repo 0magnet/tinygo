@@ -11,6 +11,7 @@ import (
 
 	"device/riscv"
 	"device/sifive"
+	"runtime/interrupt"
 	"runtime/volatile"
 )
 
@@ -102,23 +103,23 @@ func initPeripherals() {
 	machine.InitSerial()
 }
 
-func putchar(c byte) {
-	machine.Serial.WriteByte(c)
-}
-
-func getchar() byte {
-	for machine.Serial.Buffered() == 0 {
-		Gosched()
-	}
-	v, _ := machine.Serial.ReadByte()
-	return v
-}
-
-func buffered() int {
-	return machine.Serial.Buffered()
-}
-
 var timerWakeup volatile.Register8
+
+// ticksToNanoseconds converts RTC ticks (at 32768Hz) to nanoseconds.
+func ticksToNanoseconds(ticks timeUnit) int64 {
+	// The following calculation is actually the following, but with both sides
+	// reduced to reduce the risk of overflow:
+	//     ticks * 1e9 / 32768
+	return int64(ticks) * 1953125 / 64
+}
+
+// nanosecondsToTicks converts nanoseconds to RTC ticks (running at 32768Hz).
+func nanosecondsToTicks(ns int64) timeUnit {
+	// The following calculation is actually the following, but with both sides
+	// reduced to reduce the risk of overflow:
+	//     ns * 32768 / 1e9
+	return timeUnit(ns * 64 / 1953125)
+}
 
 func ticks() timeUnit {
 	// Combining the low bits and the high bits yields a time span of over 270
@@ -141,15 +142,17 @@ func sleepTicks(d timeUnit) {
 	target := uint64(ticks() + d)
 	sifive.CLINT.MTIMECMPH.Set(uint32(target >> 32))
 	sifive.CLINT.MTIMECMP.Set(uint32(target))
+	// wfi wakes on a pending interrupt even with MSTATUS.MIE clear, so the timer
+	// interrupt cannot run between the check and the wfi and be lost.
+	state := interrupt.Disable()
 	riscv.MIE.SetBits(riscv.MIE_MTIE)
-	for {
-		if timerWakeup.Get() != 0 {
-			timerWakeup.Set(0)
-			// Disable timer.
-			break
-		}
+	for timerWakeup.Get() == 0 {
 		riscv.Asm("wfi")
+		interrupt.Restore(state)
+		interrupt.Disable()
 	}
+	timerWakeup.Set(0)
+	interrupt.Restore(state)
 }
 
 // handleException is called from the interrupt handler for any exception.
@@ -164,4 +167,15 @@ func handleException(code uint) {
 	print(riscv.MEPC.Get())
 	println()
 	abort()
+}
+
+func exit(code int) {
+	abort()
+}
+
+func abort() {
+	// lock up forever
+	for {
+		riscv.Asm("wfi")
+	}
 }

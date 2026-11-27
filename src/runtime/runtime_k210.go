@@ -9,6 +9,7 @@ import (
 	"device/kendryte"
 	"device/riscv"
 	"machine"
+	"runtime/interrupt"
 	"runtime/volatile"
 	"unsafe"
 )
@@ -114,22 +115,6 @@ func initPeripherals() {
 	machine.InitSerial()
 }
 
-func putchar(c byte) {
-	machine.Serial.WriteByte(c)
-}
-
-func getchar() byte {
-	for machine.Serial.Buffered() == 0 {
-		Gosched()
-	}
-	v, _ := machine.Serial.ReadByte()
-	return v
-}
-
-func buffered() int {
-	return machine.Serial.Buffered()
-}
-
 var timerWakeup volatile.Register8
 
 func ticks() timeUnit {
@@ -147,15 +132,17 @@ func ticks() timeUnit {
 func sleepTicks(d timeUnit) {
 	target := uint64(ticks() + d)
 	kendryte.CLINT.MTIMECMP[0].Set(target)
+	// wfi wakes on a pending interrupt even with MSTATUS.MIE clear, so the timer
+	// interrupt cannot run between the check and the wfi and be lost.
+	state := interrupt.Disable()
 	riscv.MIE.SetBits(riscv.MIE_MTIE)
-	for {
-		if timerWakeup.Get() != 0 {
-			timerWakeup.Set(0)
-			// Disable timer.
-			break
-		}
+	for timerWakeup.Get() == 0 {
 		riscv.Asm("wfi")
+		interrupt.Restore(state)
+		interrupt.Disable()
 	}
+	timerWakeup.Set(0)
+	interrupt.Restore(state)
 }
 
 // handleException is called from the interrupt handler for any exception.

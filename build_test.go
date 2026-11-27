@@ -183,7 +183,9 @@ func TestBuild(t *testing.T) {
 		"cgo/",
 		"channel.go",
 		"chanrecover.go",
+		"clearloop.go",
 		"coreassign.go",
+		"coreswake.go",
 		"embed/",
 		"finalizer.go",
 		"finalizerbits.go",
@@ -234,6 +236,7 @@ func TestBuild(t *testing.T) {
 		"timer_node_reuse_gc.go",
 		"timers.go",
 		"typealias.go",
+		"typeassert-typeid.go",
 		"weak.go",
 		"zeroalloc.go",
 	}
@@ -273,6 +276,10 @@ func TestBuild(t *testing.T) {
 		t.Run("testing.go-verbose", func(t *testing.T) {
 			t.Parallel()
 			runTest("testing-verbose.go", hostOptions, t, nil, nil)
+		})
+		t.Run("testing-bench.go", func(t *testing.T) {
+			t.Parallel()
+			runTest("testing-bench.go", hostOptions, t, nil, nil)
 		})
 
 		// scheduler.threads needs threadID, which exists only on Linux and Darwin.
@@ -674,6 +681,7 @@ func TestBuild(t *testing.T) {
 			options := optionsFromOSARCH(osArch, sema)
 			if options.GOARCH != runtime.GOARCH { // Native architecture already run above.
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					runPlatTests(options, tests, t)
 				})
 			}
@@ -826,8 +834,8 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 				continue
 			}
 		}
-		if name == "coreassign.go" && scheduler != "cores" {
-			// Core assignment needs the cores scheduler.
+		if (name == "coreassign.go" || name == "coreswake.go") && scheduler != "cores" {
+			// These tests need the cores scheduler.
 			continue
 		}
 		if name == "weak.go" && spec.GC != "boehm" {
@@ -843,17 +851,11 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// gc-boehm-slicegrow.go checks; this one checks Go's own steps.
 			continue
 		}
-		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386") {
+		if options.GOOS == "linux" && (options.GOARCH == "arm" || options.GOARCH == "386" || options.GOARCH == "mips" || options.GOARCH == "mipsle") {
 			switch name {
 			case "timers.go":
 				// Timer tests do not work because syscall.seek is implemented
 				// as Assembly in mainline Go and causes linker failure
-				continue
-			}
-		}
-		if options.GOOS == "linux" && (options.GOARCH == "mips" || options.GOARCH == "mipsle") {
-			if name == "atomic.go" || name == "timers.go" {
-				// 64-bit atomic operations aren't currently supported on MIPS.
 				continue
 			}
 		}
@@ -877,15 +879,15 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 			// Too many goroutines for the LM3S6965's RAM.
 			continue
 		}
-		if options.Target == "riscv-qemu" && name == "gcstacks.go" {
-			// The cores scheduler crashes with timers and runtime.GC, see #6047.
+		if options.Target == "riscv-qemu" && name == "gcstacks.go" && scheduler == "tasks" {
+			// Other targets cover the tasks scheduler, and this run takes 34 seconds.
 			continue
 		}
 		if options.Target == "simavr" {
 			// Not all tests are currently supported on AVR.
 			// Skip the ones that aren't.
 			switch name {
-			case "reflect.go", "reflect-method-values.go", "reflect-promoted-lookup.go", "reflectmethod.go", "reflectmethodcall.go":
+			case "reflect.go", "reflect-method-values.go", "reflect-promoted-lookup.go", "reflectmethod.go", "reflectmethodcall.go", "typeassert-typeid.go":
 				// Reflect tests do not run correctly, probably because of the
 				// limited amount of memory.
 				continue
@@ -1005,6 +1007,12 @@ func runPlatTests(options compileopts.Options, tests []string, t *testing.T) {
 		t.Run("filesystem.go", func(t *testing.T) {
 			t.Parallel()
 			runTest("filesystem.go", options, t, nil, nil)
+		})
+	}
+	if options.Target == "" && (options.GOOS == "darwin" || options.GOOS == "linux") {
+		t.Run("syscall.go", func(t *testing.T) {
+			t.Parallel()
+			runTest("syscall.go", options, t, nil, nil)
 		})
 	}
 	// js opens the host's /dev/null through its filesystem, not the emulated null device.
