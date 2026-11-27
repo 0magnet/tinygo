@@ -381,6 +381,11 @@ func (uart *UART) setFormat(dataBits, stopBits int, parity UARTParity) {
 }
 
 func initUARTClock(bus *esp.UART_Type, regs registerSet) {
+	// The core reset below drops whatever the ROM is still sending, so let it drain.
+	clocked := (bus == esp.UART0 && esp.PCR.GetUART0_CONF_UART0_CLK_EN() != 0) ||
+		(bus == esp.UART1 && esp.PCR.GetUART1_CONF_UART1_CLK_EN() != 0)
+	for clocked && (bus.GetSTATUS_TXFIFO_CNT() != 0 || bus.GetFSM_STATUS_ST_UTX_OUT() != 0) {
+	}
 	// On ESP32-C6, UART clock is controlled via PCR (Peripheral Clock Reset).
 	switch bus {
 	case esp.UART0:
